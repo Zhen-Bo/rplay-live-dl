@@ -5,11 +5,9 @@ services:
     image: rplay-live-dl:latest
     container_name: rplay-live-dl
     environment:
-      - INTERVAL=${INTERVAL}
-      - USER_OID=${USER_OID}
-      - AUTH_TOKEN=${AUTH_TOKEN}
       - PYTHONUNBUFFERED=1
     volumes:
+      - ./env:/app/.env
       - ./config.yaml:/app/config.yaml
       - ./archive:/app/archive
       - ./logs:/app/logs
