@@ -25,7 +25,7 @@ def load_env() -> EnvConfig:
 
     auth_token: Optional[str] = os.getenv("AUTH_TOKEN")
     user_oid: Optional[str] = os.getenv("USER_OID")
-    interval: str = os.getenv("INTERVAL", "10")
+    interval: str = os.getenv("INTERVAL", "60")
 
     if not auth_token or not user_oid:
         raise FileNotFoundError(
