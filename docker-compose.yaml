@@ -6,6 +6,7 @@ services:
     container_name: rplay-live-dl
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=Asia/Taipei
     volumes:
       - ./env:/app/.env
       - ./config.yaml:/app/config.yaml
