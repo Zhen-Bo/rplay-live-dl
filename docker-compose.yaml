@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   rplay-live-dl:
-    image: rplay-live-dl:latest
+    image: paverz/rplay-live-dl:latest
     container_name: rplay-live-dl
     environment:
       - PYTHONUNBUFFERED=1

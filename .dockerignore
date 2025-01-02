@@ -1,0 +1,27 @@
+# Git related
+.git/
+.gitignore
+.github/
+
+# Docker related
+.dockerignore 
+docker-compose.yaml
+Dockerfile
+
+# Environment and config
+.env*
+config.yaml*
+.vscode/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Project specific
+archive/
+logs/
+
+# Development files
+poetry.lock
+pyproject.toml
