@@ -58,12 +58,8 @@ class StreamDownloader:
 
         # Configure yt-dlp options
         ydl_opts = {
-            "format": "best",
+            "format": "bestvideo+bestaudio/best",
             "outtmpl": str(output_path),
-            "postprocessor_args": [
-                "-c",
-                "copy",
-            ],
             "http_headers": {
                 "Referer": "https://rplay.live",
                 "Origin": "https://rplay.live",
