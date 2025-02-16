@@ -60,6 +60,10 @@ class StreamDownloader:
         ydl_opts = {
             "format": "best",
             "outtmpl": str(output_path),
+            "postprocessor_args": [
+                "-c",
+                "copy",
+            ],
             "http_headers": {
                 "Referer": "https://rplay.live",
                 "Origin": "https://rplay.live",
