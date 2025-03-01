@@ -18,7 +18,7 @@ class RPlayAPI:
     """
 
     # API endpoint constants
-    API_BASE_URL = "https://api.rplay.live"
+    API_BASE_URL = "https://api.rplay-cdn.com"
     SITE_URL = "https://rplay.live"
 
     # Default request headers
