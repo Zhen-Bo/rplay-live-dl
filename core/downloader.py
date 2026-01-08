@@ -59,11 +59,16 @@ class StreamDownloader:
             creator_name: Name of the content creator
         """
         self.creator_name = creator_name
-        safe_name = sanitize_filename(creator_name, replacement_text="_")
-        self.logger = setup_logger(f"Downloader-{safe_name}")
+        self._log_prefix = f"[{creator_name}]"
+        self.logger = setup_logger("Downloader")
         self.download_thread: Optional[threading.Thread] = None
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
+
+    def _log(self, level: str, message: str) -> None:
+        """Log a message with creator name prefix."""
+        full_message = f"{self._log_prefix} {message}"
+        getattr(self.logger, level)(full_message)
 
     def download(self, stream_url: str, live_title: str) -> None:
         """
@@ -92,8 +97,8 @@ class StreamDownloader:
         # Configure yt-dlp options
         ydl_opts = self._build_ydl_options(output_path)
 
-        self.logger.info(f"📥 Starting download: \"{safe_title}\"")
-        self.logger.info(f"   Output: {output_path.name}")
+        self._log("info", f"📥 Starting download: \"{safe_title}\"")
+        self._log("info", f"   Output: {output_path.name}")
 
         # Start download in a separate thread
         self.download_thread = threading.Thread(
@@ -216,13 +221,15 @@ class StreamDownloader:
             if output_path.exists():
                 file_size = output_path.stat().st_size
                 size_str = format_file_size(file_size)
-                self.logger.info(
+                self._log(
+                    "info",
                     f"✅ Download completed: {output_path.name} "
-                    f"({size_str}, {duration_str})"
+                    f"({size_str}, {duration_str})",
                 )
             else:
-                self.logger.warning(
-                    f"⚠️  Download finished but file not found: {output_path}"
+                self._log(
+                    "warning",
+                    f"⚠️  Download finished but file not found: {output_path}",
                 )
 
         except yt_dlp.utils.DownloadError as e:

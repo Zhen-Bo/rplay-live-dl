@@ -35,8 +35,12 @@ DEFAULT_BACKUP_COUNT = 5
 DEFAULT_LOG_RETENTION_DAYS = 30
 
 # Logger name display width (for alignment)
-# Set to 28 to accommodate "Downloader-" prefix + CJK creator names
-LOGGER_NAME_WIDTH = 28
+# Set to match the longest logger name: "Downloader" = 10 characters
+LOGGER_NAME_WIDTH = 10
+
+# Log level display width (for alignment)
+# Set to match the longest level name: "CRITICAL" = 8 characters
+LOG_LEVEL_WIDTH = 8
 
 # Global logs directory
 _logs_dir: Optional[Path] = None
@@ -74,16 +78,53 @@ def _get_display_width(text: str) -> int:
     return width
 
 
+def _truncate_to_width(text: str, max_width: int, suffix: str = "…") -> str:
+    """
+    Truncate a string to fit within a maximum display width.
+
+    Args:
+        text: The string to truncate
+        max_width: Maximum display width allowed
+        suffix: Suffix to append when truncating (default: "…")
+
+    Returns:
+        Truncated string that fits within max_width
+    """
+    current_width = _get_display_width(text)
+    if current_width <= max_width:
+        return text
+
+    suffix_width = _get_display_width(suffix)
+    target_width = max_width - suffix_width
+
+    # Build truncated string character by character
+    result = []
+    width = 0
+    for char in text:
+        char_width = wcwidth.wcwidth(char)
+        if char_width < 0:
+            char_width = 0
+        if width + char_width > target_width:
+            break
+        result.append(char)
+        width += char_width
+
+    return "".join(result) + suffix
+
+
 def _pad_to_width(text: str, target_width: int) -> str:
     """
     Pad a string to a target display width.
+
+    If the text is longer than target_width, it will be returned as-is
+    (no truncation). If shorter, it will be padded with spaces.
 
     Args:
         text: The string to pad
         target_width: The desired display width
 
     Returns:
-        The padded string
+        String padded to at least target_width display width
     """
     current_width = _get_display_width(text)
     if current_width >= target_width:
@@ -92,29 +133,67 @@ def _pad_to_width(text: str, target_width: int) -> str:
     return text + " " * padding
 
 
+def _center_to_width(text: str, target_width: int) -> str:
+    """
+    Center a string within a target display width.
+
+    If the text is longer than target_width, it will be returned as-is
+    (no truncation). If shorter, it will be padded with spaces on both sides.
+
+    Args:
+        text: The string to center
+        target_width: The desired display width
+
+    Returns:
+        String centered within target_width display width
+    """
+    current_width = _get_display_width(text)
+    if current_width >= target_width:
+        return text
+    total_padding = target_width - current_width
+    left_padding = total_padding // 2
+    right_padding = total_padding - left_padding
+    return " " * left_padding + text + " " * right_padding
+
+
 class AlignedFormatter(logging.Formatter):
     """
-    A formatter that properly aligns logger names with CJK/emoji characters.
+    A formatter for file output with centered logger names and levels.
+
+    Centers logger names and level names to fixed widths for consistent alignment.
     """
 
-    def __init__(self, fmt: str, datefmt: str, name_width: int = LOGGER_NAME_WIDTH):
-        # Use a placeholder for the name field
-        self._name_width = name_width
-        self._base_fmt = fmt
+    def __init__(
+        self,
+        fmt: str,
+        datefmt: str,
+        name_width: int = LOGGER_NAME_WIDTH,
+        level_width: int = LOG_LEVEL_WIDTH,
+    ):
         super().__init__(fmt=fmt, datefmt=datefmt)
+        self.name_width = name_width
+        self.level_width = level_width
 
     def format(self, record: logging.LogRecord) -> str:
-        # Pad the logger name to the target width
-        original_name = record.name
-        record.name = _pad_to_width(original_name, self._name_width)
-        result = super().format(record)
-        record.name = original_name  # Restore original
-        return result
+        """Format the record with centered logger name and level."""
+        # Center the name
+        name = record.name
+        name = _truncate_to_width(name, self.name_width)
+        name = _center_to_width(name, self.name_width)
+        record.name = name
+
+        # Center the level name
+        levelname = record.levelname
+        record.levelname = _center_to_width(levelname, self.level_width)
+
+        return super().format(record)
 
 
 class ColoredAlignedFormatter(colorlog.ColoredFormatter):
     """
-    A colored formatter that properly aligns logger names with CJK/emoji characters.
+    A colored formatter for console output with centered logger names and levels.
+
+    Centers logger names and level names to fixed widths for consistent alignment.
     """
 
     def __init__(
@@ -123,16 +202,37 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
         datefmt: str,
         log_colors: dict,
         name_width: int = LOGGER_NAME_WIDTH,
+        level_width: int = LOG_LEVEL_WIDTH,
     ):
-        self._name_width = name_width
         super().__init__(fmt=fmt, datefmt=datefmt, log_colors=log_colors)
+        self.name_width = name_width
+        self.level_width = level_width
 
     def format(self, record: logging.LogRecord) -> str:
-        # Pad the logger name to the target width
+        """Format the record with centered logger name and level."""
+        # Center the name
         original_name = record.name
-        record.name = _pad_to_width(original_name, self._name_width)
+        name = _truncate_to_width(original_name, self.name_width)
+        name = _center_to_width(name, self.name_width)
+        record.name = name
+
+        # Save original levelname for color lookup
+        original_levelname = record.levelname
+
+        # Let colorlog format with original levelname (for correct color lookup)
         result = super().format(record)
-        record.name = original_name  # Restore original
+
+        # Restore original name
+        record.name = original_name
+
+        # Replace levelname with centered version in the output
+        # The format is: "date │ <color>LEVELNAME<reset> │ name │ message"
+        centered_levelname = _center_to_width(original_levelname, self.level_width)
+        parts = result.split('│', 2)
+        if len(parts) >= 2:
+            parts[1] = parts[1].replace(original_levelname, centered_levelname, 1)
+            result = '│'.join(parts)
+
         return result
 
 
@@ -240,9 +340,9 @@ def setup_logger(
     if logger.handlers:
         return logger
 
-    # Format strings - name field is handled by custom formatter
-    console_fmt = "%(asctime)s │ %(name)s │ %(log_color)s%(levelname)-8s%(reset)s │ %(message)s"
-    file_fmt = "%(asctime)s │ %(name)s │ %(levelname)-8s │ %(message)s"
+    # Format strings - level and name are centered by the formatter
+    console_fmt = "%(asctime)s │ %(log_color)s%(levelname)s%(reset)s │ %(name)s │ %(message)s"
+    file_fmt = "%(asctime)s │ %(levelname)s │ %(name)s │ %(message)s"
     date_fmt = "%Y-%m-%d %H:%M:%S"
 
     if log_to_console:
@@ -252,7 +352,6 @@ def setup_logger(
             fmt=console_fmt,
             datefmt=date_fmt,
             log_colors=LOG_COLORS,
-            name_width=LOGGER_NAME_WIDTH,
         )
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
@@ -271,7 +370,6 @@ def setup_logger(
         file_formatter = AlignedFormatter(
             fmt=file_fmt,
             datefmt=date_fmt,
-            name_width=LOGGER_NAME_WIDTH,
         )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
