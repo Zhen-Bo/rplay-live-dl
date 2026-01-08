@@ -63,7 +63,8 @@ class StreamDownloader:
             creator_name: Name of the content creator
         """
         self.creator_name = creator_name
-        self.logger = setup_logger(f"Downloader-{creator_name}")
+        safe_name = self._sanitize_filename(creator_name)
+        self.logger = setup_logger(f"Downloader-{safe_name}")
         self.download_thread: Optional[threading.Thread] = None
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
@@ -161,6 +162,7 @@ class StreamDownloader:
         return {
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
+            "merge_output_format": "mp4",
             "http_headers": DEFAULT_HTTP_HEADERS.copy(),
             "logger": self.logger,
             "quiet": True,

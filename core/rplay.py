@@ -6,6 +6,7 @@ including methods for retrieving stream status and generating stream URLs.
 """
 
 from typing import List
+from urllib.parse import urlencode
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -154,10 +155,12 @@ class RPlayAPI:
         """
         stream_key = self._get_stream_key()
 
-        return (
-            f"{RPLAY_API_BASE_URL}/live/stream/playlist.m3u8?"
-            f"creatorOid={creator_oid}&key2={stream_key}"
-        )
+        params = urlencode({
+            "creatorOid": creator_oid,
+            "key2": stream_key,
+        })
+
+        return f"{RPLAY_API_BASE_URL}/live/stream/playlist.m3u8?{params}"
 
     def _get_stream_key(self) -> str:
         """
