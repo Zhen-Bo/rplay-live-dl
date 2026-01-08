@@ -11,7 +11,7 @@ from typing import NoReturn
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from core.env import EnvConfig, load_env
+from core.env import EnvConfig, EnvironmentError, load_env
 from core.live_stream_monitor import LiveStreamMonitor
 from core.logger import cleanup_old_logs, setup_logger
 
@@ -106,11 +106,14 @@ def main() -> NoReturn:
     try:
         env = load_env()
         logger.info("Environment configuration loaded successfully")
-    except FileNotFoundError as e:
+    except EnvironmentError as e:
         logger.error(f"Configuration error: {e}")
         sys.exit(1)
     except ValueError as e:
         logger.error(f"Invalid configuration: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unexpected error loading configuration: {e}")
         sys.exit(1)
 
     # Start the scheduler
