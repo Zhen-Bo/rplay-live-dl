@@ -35,7 +35,8 @@ DEFAULT_BACKUP_COUNT = 5
 DEFAULT_LOG_RETENTION_DAYS = 30
 
 # Logger name display width (for alignment)
-LOGGER_NAME_WIDTH = 20
+# Set to 28 to accommodate "Downloader-" prefix + CJK creator names
+LOGGER_NAME_WIDTH = 28
 
 # Global logs directory
 _logs_dir: Optional[Path] = None
