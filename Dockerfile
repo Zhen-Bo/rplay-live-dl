@@ -1,11 +1,8 @@
 # Build stage
-FROM alpine:3.19 AS builder
+FROM python:3.11-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
-    python3~=3.11 \
-    python3-dev \
-    py3-pip \
     gcc \
     musl-dev \
     linux-headers \
@@ -13,22 +10,21 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Create virtual environment
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Install Poetry
+RUN pip install --no-cache-dir poetry
 
-# Copy only requirements file
-COPY requirements.txt .
+# Copy dependency files
+COPY pyproject.toml poetry.lock ./
 
-# Install dependencies in venv
-RUN pip install --no-cache-dir -r requirements.txt
+# Configure Poetry: no virtualenv, install to system
+RUN poetry config virtualenvs.create false && \
+    poetry install --only main --no-interaction --no-ansi
 
 # Runtime stage
-FROM alpine:3.19 AS runtime
+FROM python:3.11-alpine AS runtime
 
 # Install runtime dependencies
 RUN apk add --no-cache \
-    python3~=3.11 \
     ffmpeg \
     ca-certificates \
     yaml \
@@ -36,9 +32,9 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Copy venv from builder stage
-COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY . .

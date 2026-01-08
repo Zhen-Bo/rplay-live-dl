@@ -10,7 +10,7 @@ from core.env import EnvConfigError, load_env
 from core.logger import cleanup_old_logs, setup_logger
 from core.scheduler import run_scheduler
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 
 def main() -> None:
