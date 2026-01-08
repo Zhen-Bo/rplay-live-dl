@@ -23,5 +23,6 @@ archive/
 logs/
 
 # Development files
-poetry.lock
-pyproject.toml
+*.egg-info/
+.coverage
+.venv/
