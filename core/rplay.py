@@ -1,25 +1,62 @@
-from typing import List
+"""
+RPlay API client module.
+
+Provides a client for interacting with the RPlay live streaming platform API,
+including methods for retrieving stream status and generating stream URLs.
+"""
+
+import time
+from typing import List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
+from core.logger import setup_logger
 from models.rplay import LiveStream
 
 
+class RPlayAPIError(Exception):
+    """Base exception for RPlay API errors."""
+
+    pass
+
+
+class RPlayAuthError(RPlayAPIError):
+    """Exception raised for authentication-related errors."""
+
+    pass
+
+
+class RPlayConnectionError(RPlayAPIError):
+    """Exception raised for connection-related errors."""
+
+    pass
+
+
 class RPlayAPI:
-    """RPlay livestream platform API client.
+    """
+    RPlay livestream platform API client.
 
     A client for interacting with the RPlay live streaming platform API.
-    Provides methods for retrieving stream status information and stream URLs.
+    Provides methods for retrieving stream status information and stream URLs
+    with automatic retry on transient failures.
 
     Attributes:
         API_BASE_URL: Base URL for all API endpoints
         SITE_URL: Main website URL used for headers
-        DEFAULT_HEADERS: Standard HTTP headers used in requests
+        DEFAULT_TIMEOUT: Default request timeout in seconds
+        MAX_RETRIES: Maximum number of retry attempts
     """
 
     # API endpoint constants
     API_BASE_URL = "https://api.rplay-cdn.com"
     SITE_URL = "https://rplay.live"
+
+    # Request configuration
+    DEFAULT_TIMEOUT = 30
+    MAX_RETRIES = 3
+    RETRY_BACKOFF_FACTOR = 0.5
 
     # Default request headers
     DEFAULT_HEADERS = {
@@ -32,11 +69,12 @@ class RPlayAPI:
     }
 
     def __init__(self, auth_token: str, user_oid: str) -> None:
-        """Initialize the API client with authentication credentials.
+        """
+        Initialize the API client with authentication credentials.
 
         Args:
-            auth_token (str): JWT authentication token from user login
-            user_oid (str): Unique identifier for the authenticated user
+            auth_token: JWT authentication token from user login
+            user_oid: Unique identifier for the authenticated user
 
         Note:
             Both auth_token and user_oid are required for authenticated endpoints
@@ -44,9 +82,36 @@ class RPlayAPI:
         self.auth_token = auth_token
         self.user_oid = user_oid
         self.headers = self.DEFAULT_HEADERS.copy()
+        self.logger = setup_logger("RPlayAPI")
+
+        # Configure session with retry strategy
+        self._session = self._create_session()
+
+    def _create_session(self) -> requests.Session:
+        """
+        Create a requests session with retry configuration.
+
+        Returns:
+            requests.Session: Configured session with retry adapter
+        """
+        session = requests.Session()
+
+        retry_strategy = Retry(
+            total=self.MAX_RETRIES,
+            backoff_factor=self.RETRY_BACKOFF_FACTOR,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        return session
 
     def get_livestream_status(self) -> List[LiveStream]:
-        """Retrieve status information for all currently active livestreams.
+        """
+        Retrieve status information for all currently active livestreams.
 
         Returns:
             List[LiveStream]: A list of LiveStream objects, each containing
@@ -54,51 +119,115 @@ class RPlayAPI:
                 and stream metadata.
 
         Raises:
-            requests.exceptions.HTTPError: If the API request fails
+            RPlayConnectionError: If the API request fails after retries
         """
-        response = requests.get(f"{self.API_BASE_URL}/live/livestreams")
-        response.raise_for_status()
-        streams_data = response.json()
-        return [LiveStream(**stream) for stream in streams_data]
+        url = f"{self.API_BASE_URL}/live/livestreams"
+
+        try:
+            response = self._session.get(
+                url,
+                headers=self.headers,
+                timeout=self.DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+            streams_data = response.json()
+            return [LiveStream(**stream) for stream in streams_data]
+
+        except requests.exceptions.Timeout:
+            self.logger.error(f"Timeout while fetching livestream status from {url}")
+            raise RPlayConnectionError("Request timed out")
+
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error(f"Connection error while fetching livestream status: {e}")
+            raise RPlayConnectionError(f"Connection failed: {e}")
+
+        except requests.exceptions.HTTPError as e:
+            self.logger.error(f"HTTP error while fetching livestream status: {e}")
+            raise RPlayAPIError(f"HTTP error: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Unexpected error while fetching livestream status: {e}")
+            raise RPlayAPIError(f"Unexpected error: {e}")
 
     def get_stream_url(self, creator_oid: str) -> str:
-        """Generate the playback URL for a specific creator's livestream.
+        """
+        Generate the playback URL for a specific creator's livestream.
 
         Args:
-            creator_oid (str): Unique identifier of the streamer
+            creator_oid: Unique identifier of the streamer
 
         Returns:
             str: Complete M3U8 format stream URL with authentication parameters
 
         Raises:
-            requests.exceptions.HTTPError: If stream key retrieval fails
-            ValueError: If authentication credentials are invalid
+            RPlayAuthError: If authentication fails
+            RPlayAPIError: If stream key retrieval fails
         """
-        # Get authentication key for stream access
-        stream_key = self.__get_stream_key()
+        stream_key = self._get_stream_key()
 
-        # Construct full stream URL with required parameters
         return (
             f"{self.API_BASE_URL}/live/stream/playlist.m3u8?"
             f"creatorOid={creator_oid}&key2={stream_key}"
         )
 
-    def __get_stream_key(self) -> str:
-        """Retrieve the authentication key required for stream access.
+    def _get_stream_key(self) -> str:
+        """
+        Retrieve the authentication key required for stream access.
 
         Returns:
             str: Stream authentication key from the API
 
         Raises:
-            requests.exceptions.HTTPError: If the API request fails
-            ValueError: If auth_token or user_oid are missing or invalid
+            RPlayAuthError: If authentication is invalid or expired
+            RPlayConnectionError: If the API request fails
         """
-        # Add authorization header to default headers
         auth_headers = self.headers.copy()
         auth_headers["Authorization"] = self.auth_token
 
-        # Request stream key with authentication
-        url = f"{self.API_BASE_URL}/live/key2?lang=en&requestorOid={self.user_oid}&loginType=plax"
-        response = requests.get(url, headers=auth_headers)
-        response.raise_for_status()
-        return response.json()["authKey"]
+        url = (
+            f"{self.API_BASE_URL}/live/key2?"
+            f"lang=en&requestorOid={self.user_oid}&loginType=plax"
+        )
+
+        try:
+            response = self._session.get(
+                url,
+                headers=auth_headers,
+                timeout=self.DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if "authKey" not in data:
+                self.logger.error("Invalid response: missing authKey")
+                raise RPlayAuthError("Invalid authentication response")
+
+            return data["authKey"]
+
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code in (401, 403):
+                self.logger.error("Authentication failed - token may be expired")
+                raise RPlayAuthError(
+                    "Authentication failed. Please check your AUTH_TOKEN."
+                )
+            raise RPlayAPIError(f"Failed to get stream key: {e}")
+
+        except requests.exceptions.Timeout:
+            self.logger.error("Timeout while getting stream key")
+            raise RPlayConnectionError("Request timed out while getting stream key")
+
+        except requests.exceptions.ConnectionError as e:
+            self.logger.error(f"Connection error while getting stream key: {e}")
+            raise RPlayConnectionError(f"Connection failed: {e}")
+
+    def close(self) -> None:
+        """Close the API client session."""
+        self._session.close()
+
+    def __enter__(self) -> "RPlayAPI":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit."""
+        self.close()
