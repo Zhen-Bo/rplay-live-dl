@@ -52,6 +52,9 @@ class StreamDownloader:
     # yt-dlp configuration
     DEFAULT_FORMAT = "bestvideo+bestaudio/best"
 
+    # Maximum number of duplicate files before raising an error
+    MAX_DUPLICATE_FILES = 1000
+
     def __init__(self, creator_name: str) -> None:
         """
         Initialize a new stream downloader for a creator.
@@ -60,7 +63,7 @@ class StreamDownloader:
             creator_name: Name of the content creator
         """
         self.creator_name = creator_name
-        self.logger = setup_logger(f"DL-{creator_name[:10]}")
+        self.logger = setup_logger(f"Downloader-{creator_name}")
         self.download_thread: Optional[threading.Thread] = None
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
@@ -170,8 +173,8 @@ class StreamDownloader:
             "continuedl": True,
         }
 
-    @staticmethod
-    def _get_unique_path(base_path: Path) -> Path:
+    @classmethod
+    def _get_unique_path(cls, base_path: Path) -> Path:
         """
         Generate a unique file path by appending a counter if file exists.
 
@@ -180,6 +183,9 @@ class StreamDownloader:
 
         Returns:
             Unique file path that doesn't exist
+
+        Raises:
+            RuntimeError: If more than MAX_DUPLICATE_FILES duplicates exist
         """
         if not base_path.exists():
             return base_path
@@ -195,7 +201,7 @@ class StreamDownloader:
                 return new_path
             counter += 1
             # Safety limit to prevent infinite loop
-            if counter > 1000:
+            if counter > cls.MAX_DUPLICATE_FILES:
                 raise RuntimeError(f"Too many duplicate files for {stem}")
 
     def _download_worker(

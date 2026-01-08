@@ -123,7 +123,15 @@ class LiveStream(BaseModel):
 
     @property
     def duration_seconds(self) -> float:
-        """Calculate stream duration in seconds from start time."""
+        """
+        Calculate stream duration in seconds from start time.
+
+        Note:
+            This method uses the timezone info from stream_start_time to ensure
+            correct calculation. If stream_start_time is timezone-aware, the
+            current time will be fetched with the same timezone. If it's naive
+            (tzinfo is None), a naive datetime.now() is used for comparison.
+        """
         return (datetime.now(self.stream_start_time.tzinfo) - self.stream_start_time).total_seconds()
 
     def __str__(self) -> str:
