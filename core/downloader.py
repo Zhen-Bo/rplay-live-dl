@@ -1,12 +1,29 @@
-import re
+"""
+Stream downloader module.
+
+Provides functionality to download live streams using yt-dlp,
+with support for concurrent downloads and automatic file management.
+"""
+
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import yt_dlp
+from pathvalidate import sanitize_filename
 
+from core.constants import (
+    DEFAULT_DOWNLOAD_RETRIES,
+    DEFAULT_FRAGMENT_RETRIES,
+    DEFAULT_HTTP_HEADERS,
+)
 from core.logger import setup_logger
+from core.utils import format_file_size
+
+__all__ = [
+    "StreamDownloader",
+]
 
 
 class StreamDownloader:
@@ -18,70 +35,77 @@ class StreamDownloader:
     - Managing download threads
     - Handling file paths and naming
     - Executing the actual download process
+
+    Attributes:
+        creator_name: Name of the content creator
+        logger: Logger instance for this downloader
+        download_thread: Reference to the active download thread
     """
 
-    def __init__(self, creator_name: str):
+    # Default archive directory
+    ARCHIVE_DIR = "archive"
+
+    # yt-dlp configuration
+    DEFAULT_FORMAT = "bestvideo+bestaudio/best"
+
+    # Maximum number of duplicate files before raising an error
+    MAX_DUPLICATE_FILES = 1000
+
+    def __init__(self, creator_name: str) -> None:
         """
         Initialize a new stream downloader for a creator.
 
         Args:
-            creator_name (str): Name of the content creator
+            creator_name: Name of the content creator
         """
         self.creator_name = creator_name
-        # Setup logging using the centralized logger configuration
-        self.logger = setup_logger(self.creator_name)
-        # Initialize download thread reference
+        self._log_prefix = f"[{creator_name}]"
+        self.logger = setup_logger("Downloader")
         self.download_thread: Optional[threading.Thread] = None
+        self._current_output_path: Optional[Path] = None
+        self._download_start_time: Optional[datetime] = None
+
+    def _log(self, level: str, message: str) -> None:
+        """Log a message with creator name prefix."""
+        full_message = f"{self._log_prefix} {message}"
+        getattr(self.logger, level)(full_message)
 
     def download(self, stream_url: str, live_title: str) -> None:
         """
         Initiate a new download operation in a separate thread.
 
         Args:
-            stream_url (str): URL of the stream m3u8 to download
-            live_title (str): Title of the live stream for the output filename
+            stream_url: URL of the stream m3u8 to download
+            live_title: Title of the live stream for the output filename
         """
-        # Sanitize filename by removing invalid characters
-        safe_title = re.sub(r'[\\/:*?"<>|]', "", live_title)
+        # Sanitize filename using pathvalidate
+        safe_title = sanitize_filename(live_title, replacement_text="_")
+        if not safe_title:
+            safe_title = "untitled"
 
-        # Construct output path with format: archive/creator_name/YYYY-MM-DD_title.mp4
-        output_path = (
-            Path.cwd()
-            / "archive"
-            / self.creator_name
-            / f"#{self.creator_name} {datetime.today():%Y-%m-%d} {safe_title}.mp4"
-        )
+        # Construct output path
+        output_path = self._build_output_path(safe_title)
 
         # Ensure unique file path and create directories
-        output_path = self.__get_unique_path(output_path)
+        output_path = self._get_unique_path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Configure yt-dlp options
-        ydl_opts = {
-            "format": "bestvideo+bestaudio/best",
-            "outtmpl": str(output_path),
-            "http_headers": {
-                "Referer": "https://rplay.live",
-                "Origin": "https://rplay.live",
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-                ),
-            },
-            "logger": self.logger,
-            "quiet": True,
-            "no_progress": True,
-            "no_warnings": True,
-        }
+        # Store current download info
+        self._current_output_path = output_path
+        self._download_start_time = datetime.now()
 
-        self.logger.info(
-            f"Starting download: {safe_title} time: {datetime.today()}, "
-            f"saving to: {output_path}"
-        )
+        # Configure yt-dlp options
+        ydl_opts = self._build_ydl_options(output_path)
+
+        self._log("info", f"📥 Starting download: \"{safe_title}\"")
+        self._log("info", f"   Output: {output_path.name}")
 
         # Start download in a separate thread
         self.download_thread = threading.Thread(
-            target=self.__download_worker, args=(stream_url, ydl_opts, output_path)
+            target=self._download_worker,
+            args=(stream_url, ydl_opts, output_path),
+            name=f"download-{self.creator_name}",
+            daemon=True,
         )
         self.download_thread.start()
 
@@ -90,19 +114,64 @@ class StreamDownloader:
         Check if the current download operation is still active.
 
         Returns:
-            bool: True if download is in progress, False otherwise
+            True if download is in progress, False otherwise
         """
         return self.download_thread is not None and self.download_thread.is_alive()
 
-    def __get_unique_path(self, base_path: Path) -> Path:
+    def _build_output_path(self, safe_title: str) -> Path:
+        """
+        Construct the output file path.
+
+        Args:
+            safe_title: Sanitized stream title
+
+        Returns:
+            Path object for the output file
+        """
+        date_str = datetime.today().strftime("%Y-%m-%d")
+        filename = f"#{self.creator_name} {date_str} {safe_title}.mp4"
+
+        return Path.cwd() / self.ARCHIVE_DIR / self.creator_name / filename
+
+    def _build_ydl_options(self, output_path: Path) -> Dict[str, Any]:
+        """
+        Build yt-dlp options dictionary.
+
+        Args:
+            output_path: Path for the output file
+
+        Returns:
+            Dictionary of yt-dlp options
+        """
+        return {
+            "format": self.DEFAULT_FORMAT,
+            "outtmpl": str(output_path),
+            "merge_output_format": "mp4",
+            "http_headers": DEFAULT_HTTP_HEADERS.copy(),
+            "logger": self.logger,
+            "quiet": True,
+            "no_progress": True,
+            "no_warnings": True,
+            # Retry settings for reliability
+            "retries": DEFAULT_DOWNLOAD_RETRIES,
+            "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
+            # Continue partial downloads
+            "continuedl": True,
+        }
+
+    @classmethod
+    def _get_unique_path(cls, base_path: Path) -> Path:
         """
         Generate a unique file path by appending a counter if file exists.
 
         Args:
-            base_path (Path): Initial desired file path
+            base_path: Initial desired file path
 
         Returns:
-            Path: Unique file path that doesn't exist
+            Unique file path that doesn't exist
+
+        Raises:
+            RuntimeError: If more than MAX_DUPLICATE_FILES duplicates exist
         """
         if not base_path.exists():
             return base_path
@@ -117,21 +186,70 @@ class StreamDownloader:
             if not new_path.exists():
                 return new_path
             counter += 1
+            # Safety limit to prevent infinite loop
+            if counter > cls.MAX_DUPLICATE_FILES:
+                raise RuntimeError(f"Too many duplicate files for {stem}")
 
-    def __download_worker(
-        self, stream_url: str, ydl_opts: dict, output_path: Path
+    def _download_worker(
+        self,
+        stream_url: str,
+        ydl_opts: Dict[str, Any],
+        output_path: Path,
     ) -> None:
         """
         Worker function that performs the actual download operation.
 
+        This runs in a separate thread to avoid blocking the main thread.
+
         Args:
-            stream_url (str): URL of the stream to download
-            ydl_opts (dict): Options for yt-dlp downloader
-            output_path (Path): Path where the stream will be saved
+            stream_url: URL of the stream to download
+            ydl_opts: Options for yt-dlp downloader
+            output_path: Path where the stream will be saved
         """
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([stream_url])
-                self.logger.info(f"Download completed: {output_path}")
+
+            # Calculate download duration
+            if self._download_start_time:
+                duration = datetime.now() - self._download_start_time
+                duration_str = str(duration).split(".")[0]  # Remove microseconds
+            else:
+                duration_str = "unknown"
+
+            # Check file size
+            if output_path.exists():
+                file_size = output_path.stat().st_size
+                size_str = format_file_size(file_size)
+                self._log(
+                    "info",
+                    f"✅ Download completed: {output_path.name} "
+                    f"({size_str}, {duration_str})",
+                )
+            else:
+                self._log(
+                    "warning",
+                    f"⚠️  Download finished but file not found: {output_path}",
+                )
+
+        except yt_dlp.utils.DownloadError as e:
+            self.logger.error(f"❌ Download error: {e}")
+
         except Exception as e:
-            self.logger.error(f"Download failed: {str(e)})")
+            self.logger.error(f"❌ Unexpected download error: {e}")
+
+        finally:
+            self._current_output_path = None
+            self._download_start_time = None
+
+    @property
+    def current_output_path(self) -> Optional[Path]:
+        """Get the current download output path, if any."""
+        return self._current_output_path
+
+    @property
+    def download_duration(self) -> Optional[float]:
+        """Get the current download duration in seconds, if downloading."""
+        if self._download_start_time and self.is_alive():
+            return (datetime.now() - self._download_start_time).total_seconds()
+        return None

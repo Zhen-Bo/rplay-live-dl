@@ -1,62 +1,49 @@
+"""
+rplay-live-dl - Automated RPlay live stream downloader.
+
+Entry point for the application.
+"""
+
 import sys
 
-from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from core.env import EnvConfigError, load_env
+from core.logger import cleanup_old_logs, setup_logger
+from core.scheduler import run_scheduler
 
-from core.env import EnvConfig, load_env
-from core.live_stream_monitor import LiveStreamMonitor
-from core.logger import setup_logger
-
-
-class LiveStreamScheduler:
-    def __init__(self, env: EnvConfig, logger):
-        self.logger = logger
-        self.logger.info("Starting live stream monitoring system")
-        self.env = env
-        self.monitor = LiveStreamMonitor(self.env.auth_token, self.env.user_oid)
-        self.scheduler = BlockingScheduler()
-
-    def check_and_download(self):
-        """Execute check and download task"""
-        try:
-            self.monitor.check_live_streams_and_start_download()
-        except Exception as e:
-            self.logger.error(f"Error while checking live streams: {str(e)}")
-
-    def start(self):
-        try:
-            self.scheduler.add_job(
-                self.check_and_download,
-                trigger=IntervalTrigger(seconds=self.env.interval),
-                name="check_livestreams",
-            )
-
-            self.check_and_download()
-            self.logger.info(
-                f"Scheduler started, checking every {self.env.interval} seconds"
-            )
-            self.scheduler.start()
-
-        except KeyboardInterrupt:
-            self.logger.info("Monitoring system manually stopped")
-        except Exception as e:
-            self.logger.error(f"System runtime error: {str(e)}")
-            raise
+__version__ = "1.2.0"
 
 
-def main():
+def main() -> None:
+    """Main entry point for the application."""
     logger = setup_logger("Main")
+
+    # Cleanup old log files on startup
+    try:
+        removed = cleanup_old_logs()
+        if removed > 0:
+            logger.info(f"Cleaned up {removed} old log file(s)")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup old logs: {e}")
+
+    # Load environment configuration
     try:
         env = load_env()
+        logger.info("Environment configuration loaded successfully")
+    except EnvConfigError as e:
+        logger.error(f"Configuration error: {e}")
+        sys.exit(1)
+    except ValueError as e:
+        logger.error(f"Invalid configuration: {e}")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Environment configuration error: {str(e)}")
+        logger.error(f"Unexpected error loading configuration: {e}")
         sys.exit(1)
 
+    # Start the scheduler
     try:
-        scheduler = LiveStreamScheduler(env=env, logger=logger)
-        scheduler.start()
+        run_scheduler(env=env, logger=logger, version=__version__)
     except Exception as e:
-        logger.error(f"Scheduler error: {str(e)}")
+        logger.error(f"Scheduler error: {e}")
         sys.exit(1)
 
 

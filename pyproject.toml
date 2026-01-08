@@ -1,10 +1,11 @@
 [tool.poetry]
 name = "rplay-live-dl"
-version = "1.1.2"
+version = "1.2.0"
 description = ""
 authors = ["paver(kevinsun)"]
 license = "MIT"
 readme = "README.md"
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -14,9 +15,37 @@ yt-dlp = "^2024.12.23"
 python-dotenv = "^1.0.1"
 requests = "^2.32.3"
 apscheduler = "^3.11.0"
-urllib3 = "^2.6.0"
+urllib3 = "^2.6.3"
+colorlog = "^6.10.1"
+pydantic-settings = "^2.12.0"
+pathvalidate = "^3.3.1"
+wcwidth = "^0.2.14"
 
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-cov (>=7.0.0,<8.0.0)"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["core", "models"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

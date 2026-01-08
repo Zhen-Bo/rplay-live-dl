@@ -62,10 +62,7 @@ rplay-live-dl is a easily deployable solution for recording Rplay live stream co
 
 ## ❗ Known Issues
 
--   [ ] 💩 doc
--   [ ] 💩 & completely untested code
--   [ ] Logger will 💩 around in logs folder
--   [ ] Can't handle M3U8 404 Error (EX: useBonusCoinTicket, useSecretKey...)
+-   [ ] Can't handle M3U8 404 Error (EX: useBonusCoinTicket, useSecretKey...) - paid content is not supported
 
 ---
 
