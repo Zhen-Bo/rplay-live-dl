@@ -16,7 +16,7 @@ from core.env import EnvConfig, EnvironmentError, load_env
 from core.live_stream_monitor import LiveStreamMonitor
 from core.logger import cleanup_old_logs, setup_logger
 
-__version__ = "1.1.2"
+__version__ = "1.2.0"
 
 # Global scheduler reference for signal handling
 _scheduler: Optional["LiveStreamScheduler"] = None
