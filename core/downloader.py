@@ -13,7 +13,18 @@ from typing import Any, Dict, Optional
 
 import yt_dlp
 
+from core.constants import (
+    DEFAULT_DOWNLOAD_RETRIES,
+    DEFAULT_FRAGMENT_RETRIES,
+    DEFAULT_HTTP_HEADERS,
+)
 from core.logger import setup_logger
+from core.utils import format_file_size
+
+__all__ = [
+    "StreamDownloader",
+    "INVALID_FILENAME_CHARS",
+]
 
 # Characters that are invalid in filenames across different operating systems
 INVALID_FILENAME_CHARS = r'[\\/:*?"<>|]'
@@ -40,14 +51,6 @@ class StreamDownloader:
 
     # yt-dlp configuration
     DEFAULT_FORMAT = "bestvideo+bestaudio/best"
-    DEFAULT_HEADERS = {
-        "Referer": "https://rplay.live",
-        "Origin": "https://rplay.live",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-        ),
-    }
 
     def __init__(self, creator_name: str) -> None:
         """
@@ -155,14 +158,14 @@ class StreamDownloader:
         return {
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
-            "http_headers": self.DEFAULT_HEADERS.copy(),
+            "http_headers": DEFAULT_HTTP_HEADERS.copy(),
             "logger": self.logger,
             "quiet": True,
             "no_progress": True,
             "no_warnings": True,
             # Retry settings for reliability
-            "retries": 10,
-            "fragment_retries": 10,
+            "retries": DEFAULT_DOWNLOAD_RETRIES,
+            "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
             # Continue partial downloads
             "continuedl": True,
         }
@@ -225,7 +228,7 @@ class StreamDownloader:
             # Check file size
             if output_path.exists():
                 file_size = output_path.stat().st_size
-                size_str = self._format_file_size(file_size)
+                size_str = format_file_size(file_size)
                 self.logger.info(
                     f"✅ Download completed: {output_path.name} "
                     f"({size_str}, {duration_str})"
@@ -244,23 +247,6 @@ class StreamDownloader:
         finally:
             self._current_output_path = None
             self._download_start_time = None
-
-    @staticmethod
-    def _format_file_size(size_bytes: int) -> str:
-        """
-        Format file size in human-readable format.
-
-        Args:
-            size_bytes: File size in bytes
-
-        Returns:
-            Human-readable size string (e.g., "1.5 GB")
-        """
-        for unit in ["B", "KB", "MB", "GB", "TB"]:
-            if size_bytes < 1024:
-                return f"{size_bytes:.1f} {unit}"
-            size_bytes /= 1024
-        return f"{size_bytes:.1f} PB"
 
     @property
     def current_output_path(self) -> Optional[Path]:

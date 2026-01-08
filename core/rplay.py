@@ -11,8 +11,23 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from core.constants import (
+    DEFAULT_HTTP_HEADERS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_REQUEST_TIMEOUT,
+    DEFAULT_RETRY_BACKOFF_FACTOR,
+    RETRY_STATUS_CODES,
+    RPLAY_API_BASE_URL,
+)
 from core.logger import setup_logger
 from models.rplay import LiveStream
+
+__all__ = [
+    "RPlayAPI",
+    "RPlayAPIError",
+    "RPlayAuthError",
+    "RPlayConnectionError",
+]
 
 
 class RPlayAPIError(Exception):
@@ -40,32 +55,7 @@ class RPlayAPI:
     A client for interacting with the RPlay live streaming platform API.
     Provides methods for retrieving stream status information and stream URLs
     with automatic retry on transient failures.
-
-    Attributes:
-        API_BASE_URL: Base URL for all API endpoints
-        SITE_URL: Main website URL used for headers
-        DEFAULT_TIMEOUT: Default request timeout in seconds
-        MAX_RETRIES: Maximum number of retry attempts
     """
-
-    # API endpoint constants
-    API_BASE_URL = "https://api.rplay-cdn.com"
-    SITE_URL = "https://rplay.live"
-
-    # Request configuration
-    DEFAULT_TIMEOUT = 30
-    MAX_RETRIES = 3
-    RETRY_BACKOFF_FACTOR = 0.5
-
-    # Default request headers
-    DEFAULT_HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-        ),
-        "Referer": SITE_URL,
-        "Origin": SITE_URL,
-    }
 
     def __init__(self, auth_token: str, user_oid: str) -> None:
         """
@@ -80,7 +70,7 @@ class RPlayAPI:
         """
         self.auth_token = auth_token
         self.user_oid = user_oid
-        self.headers = self.DEFAULT_HEADERS.copy()
+        self.headers = DEFAULT_HTTP_HEADERS.copy()
         self.logger = setup_logger("RPlayAPI")
 
         # Configure session with retry strategy
@@ -96,9 +86,9 @@ class RPlayAPI:
         session = requests.Session()
 
         retry_strategy = Retry(
-            total=self.MAX_RETRIES,
-            backoff_factor=self.RETRY_BACKOFF_FACTOR,
-            status_forcelist=[429, 500, 502, 503, 504],
+            total=DEFAULT_MAX_RETRIES,
+            backoff_factor=DEFAULT_RETRY_BACKOFF_FACTOR,
+            status_forcelist=RETRY_STATUS_CODES,
             allowed_methods=["GET", "POST"],
         )
 
@@ -120,13 +110,13 @@ class RPlayAPI:
         Raises:
             RPlayConnectionError: If the API request fails after retries
         """
-        url = f"{self.API_BASE_URL}/live/livestreams"
+        url = f"{RPLAY_API_BASE_URL}/live/livestreams"
 
         try:
             response = self._session.get(
                 url,
                 headers=self.headers,
-                timeout=self.DEFAULT_TIMEOUT,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
             streams_data = response.json()
@@ -165,7 +155,7 @@ class RPlayAPI:
         stream_key = self._get_stream_key()
 
         return (
-            f"{self.API_BASE_URL}/live/stream/playlist.m3u8?"
+            f"{RPLAY_API_BASE_URL}/live/stream/playlist.m3u8?"
             f"creatorOid={creator_oid}&key2={stream_key}"
         )
 
@@ -184,7 +174,7 @@ class RPlayAPI:
         auth_headers["Authorization"] = self.auth_token
 
         url = (
-            f"{self.API_BASE_URL}/live/key2?"
+            f"{RPLAY_API_BASE_URL}/live/key2?"
             f"lang=en&requestorOid={self.user_oid}&loginType=plax"
         )
 
@@ -192,7 +182,7 @@ class RPlayAPI:
             response = self._session.get(
                 url,
                 headers=auth_headers,
-                timeout=self.DEFAULT_TIMEOUT,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
             response.raise_for_status()
             data = response.json()

@@ -22,7 +22,6 @@ creators:
     id: "def456"
 """)
         result = read_config(str(config_file))
-        assert not isinstance(result, ConfigError)
         assert len(result) == 2
         assert result[0].creator_name == "Creator One"
         assert result[0].creator_oid == "abc123"
@@ -32,27 +31,25 @@ creators:
         config_file = tmp_path / "config.yaml"
         config_file.write_text("")
         result = read_config(str(config_file))
-        assert not isinstance(result, ConfigError)
         assert len(result) == 0
 
     def test_missing_file(self, tmp_path):
         """Test reading a non-existent configuration file."""
-        result = read_config(str(tmp_path / "nonexistent.yaml"))
-        assert isinstance(result, ConfigError)
+        with pytest.raises(ConfigError):
+            read_config(str(tmp_path / "nonexistent.yaml"))
 
     def test_invalid_yaml(self, tmp_path):
         """Test reading an invalid YAML file."""
         config_file = tmp_path / "config.yaml"
         config_file.write_text("invalid: yaml: content:")
-        result = read_config(str(config_file))
-        assert isinstance(result, ConfigError)
+        with pytest.raises(ConfigError):
+            read_config(str(config_file))
 
     def test_missing_creators_key(self, tmp_path):
         """Test reading a file without creators key."""
         config_file = tmp_path / "config.yaml"
         config_file.write_text("other_key: value")
         result = read_config(str(config_file))
-        assert not isinstance(result, ConfigError)
         assert len(result) == 0
 
     def test_creators_not_list(self, tmp_path):
@@ -60,7 +57,6 @@ creators:
         config_file = tmp_path / "config.yaml"
         config_file.write_text("creators: not_a_list")
         result = read_config(str(config_file))
-        assert not isinstance(result, ConfigError)
         assert len(result) == 0
 
     def test_missing_name(self, tmp_path):
@@ -73,7 +69,6 @@ creators:
     id: "def456"
 """)
         result = read_config(str(config_file))
-        assert not isinstance(result, ConfigError)
         assert len(result) == 1
         assert result[0].creator_name == "Valid Creator"
 
@@ -87,7 +82,6 @@ creators:
     id: "def456"
 """)
         result = read_config(str(config_file))
-        assert not isinstance(result, ConfigError)
         assert len(result) == 1
         assert result[0].creator_name == "Valid Creator"
 

@@ -6,13 +6,19 @@ containing creator profiles for monitoring.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import yaml
 from pydantic import ValidationError
 
 from core.logger import setup_logger
 from models.config import CreatorProfile
+
+__all__ = [
+    "ConfigError",
+    "read_config",
+    "validate_config",
+]
 
 logger = setup_logger("Config")
 
@@ -28,7 +34,7 @@ class ConfigError(Exception):
     pass
 
 
-def read_config(config_path: str) -> Union[List[CreatorProfile], ConfigError]:
+def read_config(config_path: str) -> List[CreatorProfile]:
     """
     Read and parse the YAML configuration file to extract creator profiles.
 
@@ -41,7 +47,6 @@ def read_config(config_path: str) -> Union[List[CreatorProfile], ConfigError]:
 
     Returns:
         List[CreatorProfile]: List of validated creator profiles
-        ConfigError: If any error occurs during parsing or validation
 
     Raises:
         ConfigError: If the file cannot be read or parsed
@@ -57,13 +62,13 @@ def read_config(config_path: str) -> Union[List[CreatorProfile], ConfigError]:
     if not path.exists():
         error_msg = f"Configuration file not found: {config_path}"
         logger.error(error_msg)
-        return ConfigError(error_msg)
+        raise ConfigError(error_msg)
 
     # Check if file is readable
     if not path.is_file():
         error_msg = f"Configuration path is not a file: {config_path}"
         logger.error(error_msg)
-        return ConfigError(error_msg)
+        raise ConfigError(error_msg)
 
     try:
         with open(path, "r", encoding="utf-8") as file:
@@ -78,7 +83,7 @@ def read_config(config_path: str) -> Union[List[CreatorProfile], ConfigError]:
             if not isinstance(data, dict):
                 error_msg = "Configuration file must contain a YAML dictionary"
                 logger.error(error_msg)
-                return ConfigError(error_msg)
+                raise ConfigError(error_msg)
 
             if "creators" not in data:
                 logger.warning("No 'creators' key found in configuration")
@@ -91,17 +96,20 @@ def read_config(config_path: str) -> Union[List[CreatorProfile], ConfigError]:
     except yaml.YAMLError as e:
         error_msg = f"YAML format error: {e}"
         logger.error(error_msg)
-        return ConfigError(error_msg)
+        raise ConfigError(error_msg) from e
 
-    except PermissionError:
+    except PermissionError as e:
         error_msg = f"Permission denied reading configuration file: {config_path}"
         logger.error(error_msg)
-        return ConfigError(error_msg)
+        raise ConfigError(error_msg) from e
+
+    except ConfigError:
+        raise
 
     except Exception as e:
         error_msg = f"Unexpected error while reading configuration: {e}"
         logger.error(error_msg)
-        return ConfigError(error_msg)
+        raise ConfigError(error_msg) from e
 
 
 def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:
@@ -178,12 +186,10 @@ def validate_config(config_path: str) -> tuple[bool, Optional[str]]:
         - is_valid: True if configuration is valid
         - error_message: Error description if invalid, None otherwise
     """
-    result = read_config(config_path)
-
-    if isinstance(result, ConfigError):
-        return False, str(result)
-
-    if len(result) == 0:
-        return False, "No valid creator profiles found"
-
-    return True, None
+    try:
+        result = read_config(config_path)
+        if len(result) == 0:
+            return False, "No valid creator profiles found"
+        return True, None
+    except ConfigError as e:
+        return False, str(e)

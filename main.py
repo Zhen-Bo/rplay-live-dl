@@ -5,6 +5,7 @@ This module serves as the entry point for the application,
 initializing the scheduler and starting the monitoring system.
 """
 
+import logging
 import signal
 import sys
 from typing import NoReturn, Optional
@@ -12,7 +13,7 @@ from typing import NoReturn, Optional
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from core.env import EnvConfig, EnvironmentError, load_env
+from core.env import EnvConfig, EnvConfigError, load_env
 from core.live_stream_monitor import LiveStreamMonitor
 from core.logger import cleanup_old_logs, setup_logger
 
@@ -39,7 +40,7 @@ class LiveStreamScheduler:
     of configured creators for active live streams.
     """
 
-    def __init__(self, env: EnvConfig, logger) -> None:
+    def __init__(self, env: EnvConfig, logger: logging.Logger) -> None:
         """
         Initialize the scheduler with environment configuration.
 
@@ -125,7 +126,7 @@ def main() -> NoReturn:
     try:
         env = load_env()
         logger.info("Environment configuration loaded successfully")
-    except EnvironmentError as e:
+    except EnvConfigError as e:
         logger.error(f"Configuration error: {e}")
         sys.exit(1)
     except ValueError as e:

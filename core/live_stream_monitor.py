@@ -5,7 +5,7 @@ Provides functionality to monitor configured creators for active streams
 and automatically initiate downloads when streams are detected.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from models.rplay import StreamState
 
@@ -13,6 +13,10 @@ from .config import ConfigError, read_config
 from .downloader import StreamDownloader
 from .logger import setup_logger
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
+
+__all__ = [
+    "LiveStreamMonitor",
+]
 
 
 class LiveStreamMonitor:
@@ -30,6 +34,7 @@ class LiveStreamMonitor:
         auth_token: str,
         user_oid: str,
         config_path: str = "./config.yaml",
+        api: Optional[RPlayAPI] = None,
     ) -> None:
         """
         Initialize monitor with authentication and configuration.
@@ -38,8 +43,9 @@ class LiveStreamMonitor:
             auth_token: JWT token for API auth
             user_oid: User's identifier
             config_path: Path to creator profiles YAML config
+            api: Optional RPlayAPI instance for dependency injection (testing)
         """
-        self.api = RPlayAPI(auth_token, user_oid)
+        self.api = api if api is not None else RPlayAPI(auth_token, user_oid)
         self.config_path = config_path
         self.downloaders: Dict[str, StreamDownloader] = {}
         self.logger = setup_logger("Monitor")
@@ -157,10 +163,6 @@ class LiveStreamMonitor:
         """
         try:
             creator_profiles = read_config(self.config_path)
-
-            # Handle config read error (returns ConfigError instead of list)
-            if isinstance(creator_profiles, ConfigError):
-                raise creator_profiles
 
             # Track new creators for logging
             new_creators = []
