@@ -5,8 +5,9 @@ This module serves as the entry point for the application,
 initializing the scheduler and starting the monitoring system.
 """
 
+import signal
 import sys
-from typing import NoReturn
+from typing import NoReturn, Optional
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -16,6 +17,18 @@ from core.live_stream_monitor import LiveStreamMonitor
 from core.logger import cleanup_old_logs, setup_logger
 
 __version__ = "1.1.2"
+
+# Global scheduler reference for signal handling
+_scheduler: Optional["LiveStreamScheduler"] = None
+
+
+def _signal_handler(signum: int, frame) -> None:
+    """Handle shutdown signals gracefully."""
+    signal_name = signal.Signals(signum).name
+    if _scheduler:
+        _scheduler.logger.info(f"Received {signal_name}, shutting down gracefully...")
+        _scheduler.stop()
+    sys.exit(0)
 
 
 class LiveStreamScheduler:
@@ -92,6 +105,12 @@ def main() -> NoReturn:
 
     Initializes logging, loads configuration, and starts the scheduler.
     """
+    global _scheduler
+
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
     logger = setup_logger("Main")
 
     # Cleanup old log files on startup
@@ -118,8 +137,8 @@ def main() -> NoReturn:
 
     # Start the scheduler
     try:
-        scheduler = LiveStreamScheduler(env=env, logger=logger)
-        scheduler.start()
+        _scheduler = LiveStreamScheduler(env=env, logger=logger)
+        _scheduler.start()
     except Exception as e:
         logger.error(f"Scheduler error: {e}")
         sys.exit(1)
