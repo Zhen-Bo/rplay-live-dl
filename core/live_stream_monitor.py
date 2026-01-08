@@ -5,7 +5,7 @@ Provides functionality to monitor configured creators for active streams
 and automatically initiate downloads when streams are detected.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from models.rplay import StreamState
 

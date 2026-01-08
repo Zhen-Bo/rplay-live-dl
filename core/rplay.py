@@ -5,8 +5,7 @@ Provides a client for interacting with the RPlay live streaming platform API,
 including methods for retrieving stream status and generating stream URLs.
 """
 
-import time
-from typing import List, Optional
+from typing import List
 
 import requests
 from requests.adapters import HTTPAdapter

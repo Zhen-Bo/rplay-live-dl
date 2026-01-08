@@ -9,11 +9,10 @@ Provides a unified logging system with:
 """
 
 import logging
-import os
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Default log configuration
 DEFAULT_LOG_LEVEL = logging.INFO
@@ -115,7 +114,7 @@ def cleanup_old_logs(retention_days: int = DEFAULT_LOG_RETENTION_DAYS) -> int:
     return removed_count
 
 
-def get_all_loggers() -> list[str]:
+def get_all_loggers() -> List[str]:
     """
     Get names of all active loggers.
 
