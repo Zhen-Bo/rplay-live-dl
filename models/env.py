@@ -1,18 +1,19 @@
 """
 Environment configuration model.
 
-Defines the Pydantic model for environment-based configuration
+Defines the Pydantic Settings model for environment-based configuration
 used by the rplay-live-dl application.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class EnvConfig(BaseModel):
+class EnvConfig(BaseSettings):
     """
-    Environment configuration model.
+    Environment configuration model using pydantic-settings.
 
-    Handles authentication and application settings for the downloader.
+    Automatically loads values from environment variables and .env file.
     All fields are validated using Pydantic for type safety and constraints.
 
     Attributes:
@@ -38,6 +39,13 @@ class EnvConfig(BaseModel):
         le=3600,  # Maximum 1 hour
     )
 
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        str_strip_whitespace=True,
+        extra="ignore",
+    )
+
     @field_validator("auth_token")
     @classmethod
     def validate_auth_token(cls, v: str) -> str:
@@ -53,14 +61,3 @@ class EnvConfig(BaseModel):
         if not v.strip():
             raise ValueError("USER_OID cannot be empty or whitespace")
         return v.strip()
-
-    model_config = {
-        "str_strip_whitespace": True,
-        "json_schema_extra": {
-            "example": {
-                "auth_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                "user_oid": "abc123def456",
-                "interval": 60,
-            }
-        },
-    }

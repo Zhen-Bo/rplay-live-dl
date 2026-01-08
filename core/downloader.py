@@ -5,13 +5,13 @@ Provides functionality to download live streams using yt-dlp,
 with support for concurrent downloads and automatic file management.
 """
 
-import re
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yt_dlp
+from pathvalidate import sanitize_filename
 
 from core.constants import (
     DEFAULT_DOWNLOAD_RETRIES,
@@ -23,11 +23,7 @@ from core.utils import format_file_size
 
 __all__ = [
     "StreamDownloader",
-    "INVALID_FILENAME_CHARS",
 ]
-
-# Characters that are invalid in filenames across different operating systems
-INVALID_FILENAME_CHARS = r'[\\/:*?"<>|]'
 
 
 class StreamDownloader:
@@ -63,7 +59,7 @@ class StreamDownloader:
             creator_name: Name of the content creator
         """
         self.creator_name = creator_name
-        safe_name = self._sanitize_filename(creator_name)
+        safe_name = sanitize_filename(creator_name, replacement_text="_")
         self.logger = setup_logger(f"Downloader-{safe_name}")
         self.download_thread: Optional[threading.Thread] = None
         self._current_output_path: Optional[Path] = None
@@ -77,8 +73,10 @@ class StreamDownloader:
             stream_url: URL of the stream m3u8 to download
             live_title: Title of the live stream for the output filename
         """
-        # Sanitize filename by removing invalid characters
-        safe_title = self._sanitize_filename(live_title)
+        # Sanitize filename using pathvalidate
+        safe_title = sanitize_filename(live_title, replacement_text="_")
+        if not safe_title:
+            safe_title = "untitled"
 
         # Construct output path
         output_path = self._build_output_path(safe_title)
@@ -114,25 +112,6 @@ class StreamDownloader:
             True if download is in progress, False otherwise
         """
         return self.download_thread is not None and self.download_thread.is_alive()
-
-    @staticmethod
-    def _sanitize_filename(filename: str) -> str:
-        """
-        Remove invalid characters from a filename.
-
-        Args:
-            filename: Original filename
-
-        Returns:
-            Sanitized filename safe for filesystem use
-        """
-        # Remove invalid characters
-        sanitized = re.sub(INVALID_FILENAME_CHARS, "", filename)
-        # Remove leading/trailing whitespace
-        sanitized = sanitized.strip()
-        # Replace multiple spaces with single space
-        sanitized = re.sub(r"\s+", " ", sanitized)
-        return sanitized or "untitled"
 
     def _build_output_path(self, safe_title: str) -> Path:
         """
