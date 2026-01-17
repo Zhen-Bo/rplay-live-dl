@@ -9,6 +9,7 @@
     <img src="https://img.shields.io/github/last-commit/Zhen-Bo/rplay-live-dl?style=flat&logo=git&logoColor=white&color=00BFFF" alt="last-commit">
     <img src="https://img.shields.io/github/languages/top/Zhen-Bo/rplay-live-dl?style=flat&color=00BFFF" alt="repo-top-language">
     <img src="https://img.shields.io/github/languages/count/Zhen-Bo/rplay-live-dl?style=flat&color=00BFFF" alt="repo-language-count">
+    <a href="https://codecov.io/gh/Zhen-Bo/rplay-live-dl"><img src="https://codecov.io/gh/Zhen-Bo/rplay-live-dl/graph/badge.svg" alt="codecov"></a>
 </p>
 <p align="center">Built with the tools and technologies:</p>
 <p align="center">
@@ -198,13 +199,23 @@ rplay-live-dl/
     │   ├── env.py
     │   ├── live_stream_monitor.py
     │   ├── logger.py
-    │   └── rplay.py
+    │   ├── rplay.py
+    │   ├── scheduler.py
+    │   └── utils.py
     ├── models/
     │   ├── config.py
     │   ├── env.py
     │   └── rplay.py
+    ├── tests/
+    │   ├── test_downloader.py
+    │   ├── test_env.py
+    │   ├── test_live_stream_monitor.py
+    │   ├── test_logger.py
+    │   ├── test_rplay.py
+    │   ├── test_scheduler.py
+    │   └── test_utils.py
     ├── images/
-    │   ├── auth_toke.png
+    │   ├── auth_token.png
     │   ├── user_oid.png
     │   └── creator_oid.png
     ├── LICENSE
@@ -256,8 +267,9 @@ Notice! Please ensure your PR:
 
 1. Follows the existing code style (black + flake8 + isort).
 2. Use [conventional commit messages format](https://www.conventionalcommits.org/en/v1.0.0/)
-3. Updates documentation.
-4. Describes the changes made.
+3. Includes tests for new functionality (run `poetry run pytest`).
+4. Updates documentation.
+5. Describes the changes made.
  </details>
 
 ### Contributor Graph
