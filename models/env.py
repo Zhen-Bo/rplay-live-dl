@@ -35,8 +35,27 @@ class EnvConfig(BaseSettings):
     interval: int = Field(
         default=60,
         description="Check interval in seconds",
-        ge=10,  # Minimum 10 seconds
-        le=3600,  # Maximum 1 hour
+        ge=10,
+        le=3600,
+    )
+
+    log_max_size_mb: int = Field(
+        default=5,
+        description="Maximum log file size in MB before rotation",
+        ge=1,
+        le=100,
+    )
+    log_backup_count: int = Field(
+        default=5,
+        description="Number of backup log files to keep",
+        ge=1,
+        le=50,
+    )
+    log_retention_days: int = Field(
+        default=30,
+        description="Days to retain old log files",
+        ge=1,
+        le=365,
     )
 
     model_config = SettingsConfigDict(

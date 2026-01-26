@@ -116,6 +116,11 @@ Development Requirements:
     INTERVAL=check interval in seconds
     USER_OID=your user number
     AUTH_TOKEN=JWT authentication token
+
+    # Optional: Log rotation settings
+    LOG_MAX_SIZE_MB=5       # Max log file size (default: 5MB)
+    LOG_BACKUP_COUNT=5      # Number of backup files (default: 5)
+    LOG_RETENTION_DAYS=30   # Days to keep old logs (default: 30)
     ```
 
 2. Creator Configuration (`config.yaml`):

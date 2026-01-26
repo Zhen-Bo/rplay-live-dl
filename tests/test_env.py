@@ -151,3 +151,87 @@ class TestLoadEnv:
         config = load_env()
 
         assert config.interval == 3600
+
+
+class TestLogConfigEnvVars:
+    """Tests for log configuration environment variables."""
+
+    def test_log_config_defaults(self, monkeypatch):
+        """Test default values for log configuration."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+
+        config = load_env()
+
+        assert config.log_max_size_mb == 5
+        assert config.log_backup_count == 5
+        assert config.log_retention_days == 30
+
+    def test_log_max_size_mb_custom(self, monkeypatch):
+        """Test custom LOG_MAX_SIZE_MB value."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("LOG_MAX_SIZE_MB", "10")
+
+        config = load_env()
+
+        assert config.log_max_size_mb == 10
+
+    def test_log_backup_count_custom(self, monkeypatch):
+        """Test custom LOG_BACKUP_COUNT value."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("LOG_BACKUP_COUNT", "10")
+
+        config = load_env()
+
+        assert config.log_backup_count == 10
+
+    def test_log_retention_days_custom(self, monkeypatch):
+        """Test custom LOG_RETENTION_DAYS value."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("LOG_RETENTION_DAYS", "90")
+
+        config = load_env()
+
+        assert config.log_retention_days == 90
+
+    def test_log_max_size_mb_minimum(self, monkeypatch):
+        """Test LOG_MAX_SIZE_MB at minimum boundary (1)."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("LOG_MAX_SIZE_MB", "1")
+
+        config = load_env()
+
+        assert config.log_max_size_mb == 1
+
+    def test_log_max_size_mb_below_minimum_raises(self, monkeypatch):
+        """Test LOG_MAX_SIZE_MB below minimum raises error."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("LOG_MAX_SIZE_MB", "0")
+
+        with pytest.raises(ValueError):
+            load_env()
+
+    def test_log_backup_count_minimum(self, monkeypatch):
+        """Test LOG_BACKUP_COUNT at minimum boundary (1)."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("LOG_BACKUP_COUNT", "1")
+
+        config = load_env()
+
+        assert config.log_backup_count == 1
+
+    def test_log_retention_days_maximum(self, monkeypatch):
+        """Test LOG_RETENTION_DAYS at maximum boundary (365)."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("LOG_RETENTION_DAYS", "365")
+
+        config = load_env()
+
+        assert config.log_retention_days == 365
