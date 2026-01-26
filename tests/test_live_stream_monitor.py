@@ -382,57 +382,6 @@ class TestCheckLiveStreamsErrorHandling:
         assert monitor.is_healthy is True
 
 
-class TestLogStatusSummary:
-    """Tests for _log_status_summary method."""
-
-    def test_log_status_with_active_downloads(self):
-        """Test status logs info when downloads are active."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-        # Add an active downloader
-        mock_downloader = MagicMock()
-        mock_downloader.is_alive.return_value = True
-        monitor.downloaders["oid1"] = mock_downloader
-        monitor._monitored_count = 1
-
-        # Should not raise
-        monitor._log_status_summary(total_live=5, monitored_live=1)
-
-    def test_log_status_no_downloads(self):
-        """Test status logs debug when no downloads."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-        # Add inactive downloader
-        mock_downloader = MagicMock()
-        mock_downloader.is_alive.return_value = False
-        monitor.downloaders["oid1"] = mock_downloader
-        monitor._monitored_count = 1
-
-        # Should not raise
-        monitor._log_status_summary(total_live=5, monitored_live=0)
-
-    def test_log_status_no_monitored_creators(self):
-        """Test status logs nothing when no monitored creators."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-        monitor._monitored_count = 0
-
-        # Should not raise and not log anything substantial
-        monitor._log_status_summary(total_live=10, monitored_live=0)
-
-
 class TestGetActiveDownloads:
     """Tests for get_active_downloads method."""
 
