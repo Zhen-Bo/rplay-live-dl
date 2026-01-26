@@ -836,3 +836,101 @@ class TestM3u8ValidationIntegration:
         mock_warning.assert_called()
         warning_msg = mock_warning.call_args[0][0]
         assert "Creator1" in warning_msg or "creator1" in warning_msg
+
+
+class TestHeartbeatLogOptimization:
+    """Tests for heartbeat log optimization (state-change only logging)."""
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_no_status_log_when_state_unchanged(self, mock_read_config, mock_api):
+        """Test that status log is not emitted when state is unchanged."""
+        mock_api.get_livestream_status.return_value = []
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        with patch.object(monitor.logger, 'info') as mock_info:
+            monitor.check_live_streams_and_start_download()
+            first_call_count = mock_info.call_count
+
+            monitor.check_live_streams_and_start_download()
+            second_call_count = mock_info.call_count
+
+        # Second call should not add new status logs
+        assert second_call_count == first_call_count
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_status_log_when_download_starts(self, mock_read_config, mock_api):
+        """Test that status log is emitted when download count changes."""
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_state = StreamState.LIVE
+        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
+        mock_stream.title = "Test Stream"
+        mock_api.get_livestream_status.return_value = [mock_stream]
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.return_value = True
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        with patch.object(monitor.logger, 'info') as mock_info:
+            monitor.check_live_streams_and_start_download()
+
+        # Should log status when download starts
+        status_logs = [c for c in mock_info.call_args_list if "Status" in str(c)]
+        assert len(status_logs) >= 1
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_status_log_when_download_stops(self, mock_read_config, mock_api):
+        """Test that status log is emitted when download count changes to zero."""
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        # Simulate previous state with active downloads
+        monitor._last_status = {"active_downloads": 1, "monitored_live": 1}
+        mock_api.get_livestream_status.return_value = []
+
+        with patch.object(monitor.logger, 'info') as mock_info:
+            monitor.check_live_streams_and_start_download()
+
+        # Should log status when downloads stop
+        status_logs = [c for c in mock_info.call_args_list if "Status" in str(c)]
+        assert len(status_logs) >= 1
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_periodic_heartbeat_every_n_checks(self, mock_read_config, mock_api):
+        """Test that periodic heartbeat is logged every N checks even if state unchanged."""
+        mock_api.get_livestream_status.return_value = []
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        with patch.object(monitor.logger, 'debug') as mock_debug:
+            # Run multiple checks
+            for _ in range(10):
+                monitor.check_live_streams_and_start_download()
+
+        # Should have at least one periodic heartbeat (debug level)
+        heartbeat_logs = [c for c in mock_debug.call_args_list if "Checked" in str(c) or "heartbeat" in str(c).lower()]
+        assert len(heartbeat_logs) >= 1

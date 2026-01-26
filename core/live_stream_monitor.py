@@ -53,6 +53,8 @@ class LiveStreamMonitor:
         # Track monitoring state for better UX
         self._last_check_success = True
         self._monitored_count = 0
+        self._check_count = 0
+        self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
 
         # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
@@ -171,22 +173,27 @@ class LiveStreamMonitor:
         """
         Log a summary of the current monitoring status.
 
-        Args:
-            total_live: Total number of live streams on the platform
-            monitored_live: Number of monitored creators currently live
+        Only logs at INFO level when state changes. Periodic heartbeat at DEBUG level.
         """
+        self._check_count += 1
         active_downloads = sum(1 for d in self.downloaders.values() if d.is_alive())
 
-        if active_downloads > 0:
+        current_status = {"active_downloads": active_downloads, "monitored_live": monitored_live}
+        state_changed = current_status != self._last_status
+        periodic_heartbeat = self._check_count % 10 == 0
+
+        if state_changed and (active_downloads > 0 or self._last_status["active_downloads"] > 0):
             self.logger.info(
                 f"📊 Status: {active_downloads} active download(s), "
                 f"{monitored_live}/{self._monitored_count} monitored creator(s) live"
             )
-        elif self._monitored_count > 0:
+        elif periodic_heartbeat and self._monitored_count > 0:
             self.logger.debug(
                 f"📊 Checked {total_live} live stream(s), "
                 f"none of {self._monitored_count} monitored creator(s) are live"
             )
+
+        self._last_status = current_status
 
     def _update_downloaders(self) -> None:
         """
