@@ -63,7 +63,7 @@ rplay-live-dl is a easily deployable solution for recording Rplay live stream co
 
 ## ❗ Known Issues
 
--   [ ] Can't handle M3U8 404 Error (EX: useBonusCoinTicket, useSecretKey...) - paid content is not supported
+-   [x] ~~Can't handle M3U8 404 Error~~ - Now automatically detects and skips paid content (useBonusCoinTicket, useSecretKey, etc.)
 
 ---
 
@@ -178,9 +178,11 @@ rplay-live-dl/
     - Check `creatorOid` is correct
     - Ensure sufficient disk space
 
-2. **M3U8 404 Error**
+2. **M3U8 404 Error (Paid Content)**
 
-    - Check if stream uses bonus coins/secret keys...etc
+    - The system automatically detects and skips paid streams (bonus coins, secret keys, etc.)
+    - A warning log `🔒 CreatorName: Cannot access stream (likely paid content)` will appear
+    - The stream will be retried automatically when a new session starts
 
 3. **Container Crashes**
     - Check logs: `docker-compose logs`
