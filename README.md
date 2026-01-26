@@ -61,6 +61,11 @@ rplay-live-dl is a easily deployable solution for recording Rplay live stream co
 
 ---
 
+> [!WARNING]
+> **Vibe Coding Notice**: Versions with the `-vibe` suffix (e.g., `v1.3.0-vibe`) are products of [vibe coding](https://en.wikipedia.org/wiki/Vibe_coding) - AI-assisted development where code is generated through natural language prompts. These versions are also tagged as `latest` on Docker Hub. While all code passes automated tests, please use with appropriate caution and review the changes if you have concerns.
+
+---
+
 ## ❗ Known Issues
 
 -   [x] ~~Can't handle M3U8 404 Error~~ - Now automatically detects and skips paid content (useBonusCoinTicket, useSecretKey, etc.)
