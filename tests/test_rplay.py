@@ -1,5 +1,6 @@
 """Tests for RPlay API client module."""
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from core.rplay import (
     RPlayAuthError,
     RPlayConnectionError,
 )
+from models.rplay import CreatorStreamState
 
 
 class TestRPlayAPIInit:
@@ -238,3 +240,52 @@ class TestRetryMechanism:
 
         assert "GET" in retry.allowed_methods
         assert "POST" in retry.allowed_methods
+
+
+class TestCreatorStreamState:
+    """Tests for CreatorStreamState dataclass."""
+
+    def test_default_initialization(self):
+        """Test CreatorStreamState default values."""
+        state = CreatorStreamState()
+        assert state.last_stream_start_time is None
+        assert state.is_current_stream_blocked is False
+
+    def test_initialization_with_values(self):
+        """Test CreatorStreamState with explicit values."""
+        start_time = datetime(2026, 1, 26, 12, 0, 0)
+        state = CreatorStreamState(
+            last_stream_start_time=start_time,
+            is_current_stream_blocked=True,
+        )
+        assert state.last_stream_start_time == start_time
+        assert state.is_current_stream_blocked is True
+
+    def test_reset_method(self):
+        """Test CreatorStreamState reset method clears state."""
+        start_time = datetime(2026, 1, 26, 12, 0, 0)
+        state = CreatorStreamState(
+            last_stream_start_time=start_time,
+            is_current_stream_blocked=True,
+        )
+        state.reset()
+        assert state.last_stream_start_time is None
+        assert state.is_current_stream_blocked is False
+
+    def test_update_stream_start_time(self):
+        """Test updating stream start time clears blocked flag."""
+        old_time = datetime(2026, 1, 26, 12, 0, 0)
+        new_time = datetime(2026, 1, 26, 14, 0, 0)
+        state = CreatorStreamState(
+            last_stream_start_time=old_time,
+            is_current_stream_blocked=True,
+        )
+        state.update_stream_start_time(new_time)
+        assert state.last_stream_start_time == new_time
+        assert state.is_current_stream_blocked is False
+
+    def test_mark_blocked(self):
+        """Test mark_blocked sets the blocked flag."""
+        state = CreatorStreamState()
+        state.mark_blocked()
+        assert state.is_current_stream_blocked is True
