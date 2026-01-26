@@ -76,15 +76,18 @@ class LiveStreamMonitor:
             for stream in live_streams:
                 if stream.creator_oid not in self.downloaders:
                     continue
+                if stream.stream_state != StreamState.LIVE:
+                    continue
 
+                monitored_live += 1
                 downloader = self.downloaders[stream.creator_oid]
 
-                if stream.stream_state == StreamState.LIVE:
-                    monitored_live += 1
+                if downloader.is_alive():
+                    continue
+                if not self._should_attempt_download(stream):
+                    continue
 
-                    if not downloader.is_alive():
-                        if self._should_attempt_download(stream):
-                            self._start_download(stream, downloader)
+                self._start_download(stream, downloader)
 
             self._cleanup_offline_creator_states(live_creator_oids)
             self._log_status_summary(len(live_streams), monitored_live)
@@ -263,9 +266,7 @@ class LiveStreamMonitor:
         state = self._creator_states.get(stream.creator_oid)
         if state is None:
             return True
-        if state.last_stream_start_time != stream.stream_start_time:
-            return True
-        return False
+        return state.last_stream_start_time != stream.stream_start_time
 
     def _update_creator_state(self, stream: LiveStream) -> None:
         """Update or create creator state with new stream start time."""
