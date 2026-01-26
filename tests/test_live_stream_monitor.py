@@ -1,5 +1,6 @@
 """Tests for live stream monitor module."""
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,7 +9,7 @@ from core.config import ConfigError
 from core.live_stream_monitor import LiveStreamMonitor
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from models.config import CreatorProfile
-from models.rplay import StreamState
+from models.rplay import CreatorStreamState, StreamState
 
 
 @pytest.fixture
@@ -502,3 +503,169 @@ class TestGetActiveDownloads:
         assert "Creator0" in result
         assert "Creator1" in result
         assert "Creator2" in result
+
+
+class TestCreatorStateTracking:
+    """Tests for creator stream state tracking functionality."""
+
+    def test_init_has_empty_creator_states(self, mock_api):
+        """Test that creator states dict is empty on init."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        assert monitor._creator_states == {}
+
+    def test_is_new_stream_session_no_previous_state(self, mock_api):
+        """Test new session detection when no previous state exists."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
+
+        result = monitor._is_new_stream_session(mock_stream)
+
+        assert result is True
+
+    def test_is_new_stream_session_same_start_time(self, mock_api):
+        """Test returns False when stream start time unchanged."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        start_time = datetime(2026, 1, 26, 12, 0, 0)
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_start_time=start_time
+        )
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_start_time = start_time
+
+        result = monitor._is_new_stream_session(mock_stream)
+
+        assert result is False
+
+    def test_is_new_stream_session_different_start_time(self, mock_api):
+        """Test returns True when stream start time changed."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        old_time = datetime(2026, 1, 26, 12, 0, 0)
+        new_time = datetime(2026, 1, 26, 14, 0, 0)
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_start_time=old_time
+        )
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_start_time = new_time
+
+        result = monitor._is_new_stream_session(mock_stream)
+
+        assert result is True
+
+    def test_update_creator_state_creates_new_state(self, mock_api):
+        """Test that updating state creates new entry if none exists."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        start_time = datetime(2026, 1, 26, 12, 0, 0)
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_start_time = start_time
+
+        monitor._update_creator_state(mock_stream)
+
+        assert "creator1" in monitor._creator_states
+        assert monitor._creator_states["creator1"].last_stream_start_time == start_time
+        assert monitor._creator_states["creator1"].is_current_stream_blocked is False
+
+    def test_update_creator_state_updates_existing(self, mock_api):
+        """Test that updating state modifies existing entry."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        old_time = datetime(2026, 1, 26, 12, 0, 0)
+        new_time = datetime(2026, 1, 26, 14, 0, 0)
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_start_time=old_time,
+            is_current_stream_blocked=True,
+        )
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_start_time = new_time
+
+        monitor._update_creator_state(mock_stream)
+
+        assert monitor._creator_states["creator1"].last_stream_start_time == new_time
+        assert monitor._creator_states["creator1"].is_current_stream_blocked is False
+
+    def test_clear_creator_state(self, mock_api):
+        """Test clearing state for a creator."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            is_current_stream_blocked=True,
+        )
+
+        monitor._clear_creator_state("creator1")
+
+        assert "creator1" not in monitor._creator_states
+
+    def test_clear_creator_state_nonexistent(self, mock_api):
+        """Test clearing state for nonexistent creator does not raise."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        # Should not raise
+        monitor._clear_creator_state("nonexistent")
+
+    def test_get_or_create_creator_state_creates(self, mock_api):
+        """Test get_or_create creates state if not exists."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        state = monitor._get_or_create_creator_state("creator1")
+
+        assert state is not None
+        assert state.last_stream_start_time is None
+        assert state.is_current_stream_blocked is False
+        assert "creator1" in monitor._creator_states
+
+    def test_get_or_create_creator_state_returns_existing(self, mock_api):
+        """Test get_or_create returns existing state."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        existing_state = CreatorStreamState(
+            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            is_current_stream_blocked=True,
+        )
+        monitor._creator_states["creator1"] = existing_state
+
+        state = monitor._get_or_create_creator_state("creator1")
+
+        assert state is existing_state

@@ -7,7 +7,7 @@ and automatically initiate downloads when streams are detected.
 
 from typing import Dict, List, Optional
 
-from models.rplay import StreamState
+from models.rplay import CreatorStreamState, LiveStream, StreamState
 
 from .config import ConfigError, read_config
 from .downloader import StreamDownloader
@@ -53,6 +53,9 @@ class LiveStreamMonitor:
         # Track monitoring state for better UX
         self._last_check_success = True
         self._monitored_count = 0
+
+        # Track per-creator stream session state for M3U8 404 handling
+        self._creator_states: Dict[str, CreatorStreamState] = {}
 
     def check_live_streams_and_start_download(self) -> None:
         """
@@ -214,3 +217,31 @@ class LiveStreamMonitor:
     def is_healthy(self) -> bool:
         """Check if the last monitoring check was successful."""
         return self._last_check_success
+
+    def _is_new_stream_session(self, stream: LiveStream) -> bool:
+        """Check if this is a new stream session based on streamStartTime."""
+        state = self._creator_states.get(stream.creator_oid)
+        if state is None:
+            return True
+        if state.last_stream_start_time != stream.stream_start_time:
+            return True
+        return False
+
+    def _update_creator_state(self, stream: LiveStream) -> None:
+        """Update or create creator state with new stream start time."""
+        creator_oid = stream.creator_oid
+        if creator_oid not in self._creator_states:
+            self._creator_states[creator_oid] = CreatorStreamState()
+        self._creator_states[creator_oid].update_stream_start_time(
+            stream.stream_start_time
+        )
+
+    def _clear_creator_state(self, creator_oid: str) -> None:
+        """Remove creator state when they go offline."""
+        self._creator_states.pop(creator_oid, None)
+
+    def _get_or_create_creator_state(self, creator_oid: str) -> CreatorStreamState:
+        """Get existing state or create new one for a creator."""
+        if creator_oid not in self._creator_states:
+            self._creator_states[creator_oid] = CreatorStreamState()
+        return self._creator_states[creator_oid]
