@@ -5,11 +5,50 @@ Defines Pydantic models for data structures returned by the RPlay API,
 including live stream information and related entities.
 """
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
+
+
+@dataclass
+class CreatorStreamState:
+    """
+    Tracks the state of a creator's current streaming session.
+
+    Used to detect new stream sessions (via streamStartTime changes)
+    and to mark streams as blocked (likely paid content).
+
+    Attributes:
+        last_stream_start_time: The start time of the last observed stream session
+        is_current_stream_blocked: Whether the current session is marked as inaccessible
+    """
+
+    last_stream_start_time: Optional[datetime] = field(default=None)
+    is_current_stream_blocked: bool = field(default=False)
+
+    def reset(self) -> None:
+        """Reset state to defaults (used when creator goes offline)."""
+        self.last_stream_start_time = None
+        self.is_current_stream_blocked = False
+
+    def update_stream_start_time(self, start_time: datetime) -> None:
+        """
+        Update the stream start time (indicates a new session).
+
+        Also clears the blocked flag since a new session should be retried.
+
+        Args:
+            start_time: The new stream start time
+        """
+        self.last_stream_start_time = start_time
+        self.is_current_stream_blocked = False
+
+    def mark_blocked(self) -> None:
+        """Mark the current stream session as blocked (likely paid content)."""
+        self.is_current_stream_blocked = True
 
 
 class StreamState(str, Enum):

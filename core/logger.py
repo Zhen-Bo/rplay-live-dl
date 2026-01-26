@@ -14,7 +14,7 @@ import os
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import colorlog
 import wcwidth
@@ -25,14 +25,22 @@ __all__ = [
     "get_logs_dir",
     "get_all_loggers",
     "DEFAULT_LOG_LEVEL",
-    "DEFAULT_LOG_RETENTION_DAYS",
 ]
 
 # Default log configuration
 DEFAULT_LOG_LEVEL = logging.INFO
-DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 5MB per log file
-DEFAULT_BACKUP_COUNT = 5
-DEFAULT_LOG_RETENTION_DAYS = 30
+
+
+def _get_log_max_bytes() -> int:
+    return int(os.getenv("LOG_MAX_SIZE_MB", "5")) * 1024 * 1024
+
+
+def _get_log_backup_count() -> int:
+    return int(os.getenv("LOG_BACKUP_COUNT", "5"))
+
+
+def _get_log_retention_days() -> int:
+    return int(os.getenv("LOG_RETENTION_DAYS", "30"))
 
 # Logger name display width (for alignment)
 # Set to match the longest logger name: "Downloader" = 10 characters
@@ -200,7 +208,7 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
         self,
         fmt: str,
         datefmt: str,
-        log_colors: dict,
+        log_colors: Dict[str, str],
         name_width: int = LOGGER_NAME_WIDTH,
         level_width: int = LOG_LEVEL_WIDTH,
     ):
@@ -272,8 +280,7 @@ class LazyRotatingFileHandler(RotatingFileHandler):
         self.encoding = encoding
         self.maxBytes = maxBytes
         self.backupCount = backupCount
-        # Initialize stream to None to prevent AttributeError on shutdown
-        self.stream = None
+        self.stream: Any = None
         self.baseFilename = os.path.abspath(filename)
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -362,8 +369,8 @@ def setup_logger(
 
         file_handler = LazyRotatingFileHandler(
             filename=str(log_file),
-            maxBytes=DEFAULT_MAX_BYTES,
-            backupCount=DEFAULT_BACKUP_COUNT,
+            maxBytes=_get_log_max_bytes(),
+            backupCount=_get_log_backup_count(),
             encoding="utf-8",
         )
         file_handler.setLevel(level)
@@ -377,16 +384,18 @@ def setup_logger(
     return logger
 
 
-def cleanup_old_logs(retention_days: int = DEFAULT_LOG_RETENTION_DAYS) -> int:
+def cleanup_old_logs(retention_days: Optional[int] = None) -> int:
     """
     Remove log files older than the specified retention period.
 
     Args:
-        retention_days: Number of days to retain log files (default: 30)
+        retention_days: Number of days to retain log files (default from env or 30)
 
     Returns:
         int: Number of files removed
     """
+    if retention_days is None:
+        retention_days = _get_log_retention_days()
     logs_dir = get_logs_dir()
     cutoff_date = datetime.now() - timedelta(days=retention_days)
     removed_count = 0

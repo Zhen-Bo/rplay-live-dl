@@ -5,9 +5,9 @@ Provides functionality to monitor configured creators for active streams
 and automatically initiate downloads when streams are detected.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
-from models.rplay import StreamState
+from models.rplay import CreatorStreamState, LiveStream, StreamState
 
 from .config import ConfigError, read_config
 from .downloader import StreamDownloader
@@ -53,6 +53,11 @@ class LiveStreamMonitor:
         # Track monitoring state for better UX
         self._last_check_success = True
         self._monitored_count = 0
+        self._check_count = 0
+        self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
+
+        # Track per-creator stream session state for M3U8 404 handling
+        self._creator_states: Dict[str, CreatorStreamState] = {}
 
     def check_live_streams_and_start_download(self) -> None:
         """
@@ -65,23 +70,26 @@ class LiveStreamMonitor:
             self._update_downloaders()
             live_streams = self.api.get_livestream_status()
 
-            # Count monitored creators that are live
+            live_creator_oids = {s.creator_oid for s in live_streams}
             monitored_live = 0
 
             for stream in live_streams:
                 if stream.creator_oid not in self.downloaders:
                     continue
+                if stream.stream_state != StreamState.LIVE:
+                    continue
 
+                monitored_live += 1
                 downloader = self.downloaders[stream.creator_oid]
 
-                # Check if stream is live and not already downloading
-                if stream.stream_state == StreamState.LIVE:
-                    monitored_live += 1
+                if downloader.is_alive():
+                    continue
+                if not self._should_attempt_download(stream):
+                    continue
 
-                    if not downloader.is_alive():
-                        self._start_download(stream, downloader)
+                self._start_download(stream, downloader)
 
-            # Log status summary
+            self._cleanup_offline_creator_states(live_creator_oids)
             self._log_status_summary(len(live_streams), monitored_live)
             self._last_check_success = True
 
@@ -106,7 +114,29 @@ class LiveStreamMonitor:
             self.logger.error(f"Unexpected error during monitoring: {e}")
             self._last_check_success = False
 
-    def _start_download(self, stream, downloader: StreamDownloader) -> None:
+    def _should_attempt_download(self, stream: LiveStream) -> bool:
+        """Check if download should be attempted for this stream."""
+        creator_oid = stream.creator_oid
+        state = self._creator_states.get(creator_oid)
+
+        if state is None:
+            return True
+
+        if self._is_new_stream_session(stream):
+            return True
+
+        return not state.is_current_stream_blocked
+
+    def _cleanup_offline_creator_states(self, live_creator_oids: Set[str]) -> None:
+        """Clear state for creators no longer in the live list."""
+        offline_creators = [
+            oid for oid in self._creator_states
+            if oid not in live_creator_oids
+        ]
+        for oid in offline_creators:
+            self._clear_creator_state(oid)
+
+    def _start_download(self, stream: LiveStream, downloader: StreamDownloader) -> None:
         """
         Start downloading a live stream.
 
@@ -115,10 +145,21 @@ class LiveStreamMonitor:
             downloader: StreamDownloader instance for this creator
         """
         creator_name = downloader.creator_name
+        creator_oid = stream.creator_oid
+
+        self._update_creator_state(stream)
         self.logger.info(f"🔴 {creator_name} is live: \"{stream.title}\"")
 
         try:
-            stream_url = self.api.get_stream_url(stream.creator_oid)
+            stream_url = self.api.get_stream_url(creator_oid)
+
+            if not self.api.validate_m3u8_url(stream_url):
+                self._get_or_create_creator_state(creator_oid).mark_blocked()
+                self.logger.warning(
+                    f"🔒 {creator_name}: Cannot access stream (likely paid content)"
+                )
+                return
+
             downloader.download(stream_url, stream.title)
             self.logger.info(f"⬇️  Started downloading: {creator_name}")
 
@@ -135,22 +176,27 @@ class LiveStreamMonitor:
         """
         Log a summary of the current monitoring status.
 
-        Args:
-            total_live: Total number of live streams on the platform
-            monitored_live: Number of monitored creators currently live
+        Only logs at INFO level when state changes. Periodic heartbeat at DEBUG level.
         """
+        self._check_count += 1
         active_downloads = sum(1 for d in self.downloaders.values() if d.is_alive())
 
-        if active_downloads > 0:
+        current_status = {"active_downloads": active_downloads, "monitored_live": monitored_live}
+        state_changed = current_status != self._last_status
+        periodic_heartbeat = self._check_count % 10 == 0
+
+        if state_changed and (active_downloads > 0 or self._last_status["active_downloads"] > 0):
             self.logger.info(
                 f"📊 Status: {active_downloads} active download(s), "
                 f"{monitored_live}/{self._monitored_count} monitored creator(s) live"
             )
-        elif self._monitored_count > 0:
+        elif periodic_heartbeat and self._monitored_count > 0:
             self.logger.debug(
                 f"📊 Checked {total_live} live stream(s), "
                 f"none of {self._monitored_count} monitored creator(s) are live"
             )
+
+        self._last_status = current_status
 
     def _update_downloaders(self) -> None:
         """
@@ -214,3 +260,29 @@ class LiveStreamMonitor:
     def is_healthy(self) -> bool:
         """Check if the last monitoring check was successful."""
         return self._last_check_success
+
+    def _is_new_stream_session(self, stream: LiveStream) -> bool:
+        """Check if this is a new stream session based on streamStartTime."""
+        state = self._creator_states.get(stream.creator_oid)
+        if state is None:
+            return True
+        return state.last_stream_start_time != stream.stream_start_time
+
+    def _update_creator_state(self, stream: LiveStream) -> None:
+        """Update or create creator state with new stream start time."""
+        creator_oid = stream.creator_oid
+        if creator_oid not in self._creator_states:
+            self._creator_states[creator_oid] = CreatorStreamState()
+        self._creator_states[creator_oid].update_stream_start_time(
+            stream.stream_start_time
+        )
+
+    def _clear_creator_state(self, creator_oid: str) -> None:
+        """Remove creator state when they go offline."""
+        self._creator_states.pop(creator_oid, None)
+
+    def _get_or_create_creator_state(self, creator_oid: str) -> CreatorStreamState:
+        """Get existing state or create new one for a creator."""
+        if creator_oid not in self._creator_states:
+            self._creator_states[creator_oid] = CreatorStreamState()
+        return self._creator_states[creator_oid]

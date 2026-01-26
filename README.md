@@ -61,9 +61,14 @@ rplay-live-dl is a easily deployable solution for recording Rplay live stream co
 
 ---
 
+> [!WARNING]
+> **Vibe Coding Notice**: Versions with the `-vibe` suffix (e.g., `v1.3.0-vibe`) are products of [vibe coding](https://en.wikipedia.org/wiki/Vibe_coding) - AI-assisted development where code is generated through natural language prompts. These versions are also tagged as `latest` on Docker Hub. While all code passes automated tests, please use with appropriate caution and review the changes if you have concerns.
+
+---
+
 ## ❗ Known Issues
 
--   [ ] Can't handle M3U8 404 Error (EX: useBonusCoinTicket, useSecretKey...) - paid content is not supported
+-   [x] ~~Can't handle M3U8 404 Error~~ - Now automatically detects and skips paid content (useBonusCoinTicket, useSecretKey, etc.)
 
 ---
 
@@ -116,6 +121,11 @@ Development Requirements:
     INTERVAL=check interval in seconds
     USER_OID=your user number
     AUTH_TOKEN=JWT authentication token
+
+    # Optional: Log rotation settings
+    LOG_MAX_SIZE_MB=5       # Max log file size (default: 5MB)
+    LOG_BACKUP_COUNT=5      # Number of backup files (default: 5)
+    LOG_RETENTION_DAYS=30   # Days to keep old logs (default: 30)
     ```
 
 2. Creator Configuration (`config.yaml`):
@@ -178,9 +188,11 @@ rplay-live-dl/
     - Check `creatorOid` is correct
     - Ensure sufficient disk space
 
-2. **M3U8 404 Error**
+2. **M3U8 404 Error (Paid Content)**
 
-    - Check if stream uses bonus coins/secret keys...etc
+    - The system automatically detects and skips paid streams (bonus coins, secret keys, etc.)
+    - A warning log `🔒 CreatorName: Cannot access stream (likely paid content)` will appear
+    - The stream will be retried automatically when a new session starts
 
 3. **Container Crashes**
     - Check logs: `docker-compose logs`

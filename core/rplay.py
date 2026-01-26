@@ -5,6 +5,7 @@ Provides a client for interacting with the RPlay live streaming platform API,
 including methods for retrieving stream status and generating stream URLs.
 """
 
+import time
 from typing import List
 from urllib.parse import urlencode
 
@@ -161,6 +162,53 @@ class RPlayAPI:
         })
 
         return f"{RPLAY_API_BASE_URL}/live/stream/playlist.m3u8?{params}"
+
+    def validate_m3u8_url(
+        self,
+        url: str,
+        retries: int = 3,
+        retry_delay: float = 3.0,
+    ) -> bool:
+        """
+        Validate if M3U8 URL is accessible.
+
+        Uses HEAD request to check URL accessibility without downloading content.
+        Retries on failure to handle transient network issues.
+
+        Args:
+            url: M3U8 stream URL to validate
+            retries: Number of retry attempts (default: 3)
+            retry_delay: Delay between retries in seconds (default: 3.0)
+
+        Returns:
+            True if URL returns 200 OK, False otherwise
+        """
+        for attempt in range(retries):
+            try:
+                response = self._session.head(
+                    url,
+                    headers=self.headers,
+                    timeout=DEFAULT_REQUEST_TIMEOUT,
+                )
+                if response.status_code == 200:
+                    return True
+
+                self.logger.debug(
+                    f"M3U8 validation attempt {attempt + 1}/{retries} "
+                    f"failed with status {response.status_code}"
+                )
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                self.logger.debug(
+                    f"M3U8 validation attempt {attempt + 1}/{retries} "
+                    f"failed with error: {e}"
+                )
+
+            # Sleep between retries, but not after the last attempt
+            if attempt < retries - 1:
+                time.sleep(retry_delay)
+
+        return False
 
     def _get_stream_key(self) -> str:
         """
