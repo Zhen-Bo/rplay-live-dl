@@ -289,3 +289,124 @@ class TestCreatorStreamState:
         state = CreatorStreamState()
         state.mark_blocked()
         assert state.is_current_stream_blocked is True
+
+
+class TestValidateM3u8Url:
+    """Tests for validate_m3u8_url method."""
+
+    def test_returns_true_on_200(self):
+        """Test returns True when URL returns 200 OK."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        with patch.object(api._session, "head", return_value=mock_response):
+            result = api.validate_m3u8_url("http://example.com/stream.m3u8")
+
+        assert result is True
+
+    def test_returns_false_on_404(self):
+        """Test returns False when URL returns 404."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+
+        with patch.object(api._session, "head", return_value=mock_response):
+            result = api.validate_m3u8_url("http://example.com/stream.m3u8")
+
+        assert result is False
+
+    def test_returns_false_on_403(self):
+        """Test returns False when URL returns 403 Forbidden."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+
+        with patch.object(api._session, "head", return_value=mock_response):
+            result = api.validate_m3u8_url("http://example.com/stream.m3u8")
+
+        assert result is False
+
+    def test_retries_on_failure(self):
+        """Test retries specified number of times before returning False."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+
+        with patch.object(api._session, "head", return_value=mock_response) as mock_head:
+            with patch("time.sleep"):  # Speed up test
+                result = api.validate_m3u8_url(
+                    "http://example.com/stream.m3u8",
+                    retries=3,
+                    retry_delay=1.0,
+                )
+
+        assert result is False
+        assert mock_head.call_count == 3
+
+    def test_succeeds_after_retry(self):
+        """Test returns True if succeeds on retry."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_fail = MagicMock()
+        mock_fail.status_code = 404
+        mock_success = MagicMock()
+        mock_success.status_code = 200
+
+        with patch.object(
+            api._session, "head", side_effect=[mock_fail, mock_fail, mock_success]
+        ):
+            with patch("time.sleep"):
+                result = api.validate_m3u8_url(
+                    "http://example.com/stream.m3u8",
+                    retries=3,
+                    retry_delay=1.0,
+                )
+
+        assert result is True
+
+    def test_returns_false_on_timeout(self):
+        """Test returns False on connection timeout."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch.object(api._session, "head", side_effect=Timeout()):
+            with patch("time.sleep"):
+                result = api.validate_m3u8_url(
+                    "http://example.com/stream.m3u8",
+                    retries=1,
+                )
+
+        assert result is False
+
+    def test_returns_false_on_connection_error(self):
+        """Test returns False on connection error."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch.object(api._session, "head", side_effect=ConnectionError()):
+            with patch("time.sleep"):
+                result = api.validate_m3u8_url(
+                    "http://example.com/stream.m3u8",
+                    retries=1,
+                )
+
+        assert result is False
+
+    def test_uses_default_retry_values(self):
+        """Test uses default retry count and delay."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+
+        with patch.object(api._session, "head", return_value=mock_response) as mock_head:
+            with patch("time.sleep") as mock_sleep:
+                api.validate_m3u8_url("http://example.com/stream.m3u8")
+
+        # Default retries=3
+        assert mock_head.call_count == 3
+        # Default retry_delay=3.0, called between retries (2 times)
+        assert mock_sleep.call_count == 2
