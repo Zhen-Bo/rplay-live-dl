@@ -282,6 +282,90 @@ class TestDownloadWorker:
         assert downloader._current_output_path is None
 
 
+class TestDownloadErrorCallback:
+    """Tests for on_download_error callback functionality."""
+
+    def test_init_stores_callback(self):
+        """Test that callback is stored on initialization."""
+        callback = MagicMock()
+        downloader = StreamDownloader("TestCreator", on_download_error=callback)
+        assert downloader._on_download_error is callback
+
+    def test_init_default_callback_is_none(self):
+        """Test that callback defaults to None."""
+        downloader = StreamDownloader("TestCreator")
+        assert downloader._on_download_error is None
+
+    def test_is_m3u8_access_error_detects_404(self):
+        """Test detection of HTTP 404 errors in error messages."""
+        downloader = StreamDownloader("TestCreator")
+        assert downloader._is_m3u8_access_error("HTTP Error 404: Not Found") is True
+
+    def test_is_m3u8_access_error_detects_unable_to_download(self):
+        """Test detection of 'unable to download' in error messages."""
+        downloader = StreamDownloader("TestCreator")
+        assert downloader._is_m3u8_access_error("unable to download media") is True
+
+    def test_is_m3u8_access_error_case_insensitive(self):
+        """Test that error pattern matching is case-insensitive."""
+        downloader = StreamDownloader("TestCreator")
+        assert downloader._is_m3u8_access_error("http error 404") is True
+
+    def test_is_m3u8_access_error_rejects_unrelated(self):
+        """Test that unrelated errors are not matched."""
+        downloader = StreamDownloader("TestCreator")
+        assert downloader._is_m3u8_access_error("Network timeout") is False
+
+    def test_notify_calls_callback_on_m3u8_error(self):
+        """Test that callback is invoked for M3U8 access errors."""
+        callback = MagicMock()
+        downloader = StreamDownloader("TestCreator", on_download_error=callback)
+        downloader._notify_download_error("HTTP Error 404: Not Found")
+        callback.assert_called_once_with("HTTP Error 404: Not Found")
+
+    def test_notify_skips_callback_on_unrelated_error(self):
+        """Test that callback is not invoked for unrelated errors."""
+        callback = MagicMock()
+        downloader = StreamDownloader("TestCreator", on_download_error=callback)
+        downloader._notify_download_error("Network timeout")
+        callback.assert_not_called()
+
+    def test_notify_skips_when_no_callback(self):
+        """Test that no error is raised when callback is None."""
+        downloader = StreamDownloader("TestCreator")
+        downloader._notify_download_error("HTTP Error 404: Not Found")
+
+    def test_notify_handles_callback_exception(self):
+        """Test that exceptions in callback are caught."""
+        callback = MagicMock(side_effect=RuntimeError("callback error"))
+        downloader = StreamDownloader("TestCreator", on_download_error=callback)
+        downloader._notify_download_error("HTTP Error 404: Not Found")
+
+    def test_worker_invokes_callback_on_download_error(self, mock_yt_dlp, tmp_path):
+        """Test that _download_worker invokes callback on M3U8 DownloadError."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        callback = MagicMock()
+        downloader = StreamDownloader("TestCreator", on_download_error=callback)
+        output_path = tmp_path / "test.mp4"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
+            "HTTP Error 404: Not Found"
+        )
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        callback.assert_called_once()
+
+    def test_worker_no_callback_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
+        """Test that _download_worker does not invoke callback for non-M3U8 errors."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        callback = MagicMock()
+        downloader = StreamDownloader("TestCreator", on_download_error=callback)
+        output_path = tmp_path / "test.mp4"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        callback.assert_not_called()
+
+
 class TestProperties:
     """Tests for StreamDownloader properties."""
 

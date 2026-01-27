@@ -8,7 +8,7 @@ with support for concurrent downloads and automatic file management.
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import yt_dlp
 from pathvalidate import sanitize_filename
@@ -51,12 +51,27 @@ class StreamDownloader:
     # Maximum number of duplicate files before raising an error
     MAX_DUPLICATE_FILES = 1000
 
-    def __init__(self, creator_name: str) -> None:
+    # Error message patterns indicating M3U8 access failure (e.g., paid content)
+    M3U8_ERROR_PATTERNS = [
+        "HTTP Error 404",
+        "unable to download",
+        "ffmpeg exited with code",
+        "ffmpeg could not be found",
+    ]
+
+    def __init__(
+        self,
+        creator_name: str,
+        on_download_error: Optional[Callable[[str], None]] = None,
+    ) -> None:
         """
         Initialize a new stream downloader for a creator.
 
         Args:
             creator_name: Name of the content creator
+            on_download_error: Optional callback invoked with error message
+                when download fails due to M3U8 access issues (e.g., paid content).
+                Called from the download thread.
         """
         self.creator_name = creator_name
         self._log_prefix = f"[{creator_name}]"
@@ -64,6 +79,7 @@ class StreamDownloader:
         self.download_thread: Optional[threading.Thread] = None
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
+        self._on_download_error = on_download_error
 
     def _log(self, level: str, message: str) -> None:
         """Log a message with creator name prefix."""
@@ -234,6 +250,7 @@ class StreamDownloader:
 
         except yt_dlp.utils.DownloadError as e:
             self.logger.error(f"❌ Download error: {e}")
+            self._notify_download_error(str(e))
 
         except Exception as e:
             self.logger.error(f"❌ Unexpected download error: {e}")
@@ -241,6 +258,37 @@ class StreamDownloader:
         finally:
             self._current_output_path = None
             self._download_start_time = None
+
+    def _is_m3u8_access_error(self, error_message: str) -> bool:
+        """
+        Check if the error message indicates an M3U8 access failure.
+
+        Args:
+            error_message: Error message from yt-dlp
+
+        Returns:
+            True if error indicates M3U8 access issues (e.g., paid content)
+        """
+        return any(
+            pattern.lower() in error_message.lower()
+            for pattern in self.M3U8_ERROR_PATTERNS
+        )
+
+    def _notify_download_error(self, error_message: str) -> None:
+        """
+        Notify via callback if the download error indicates M3U8 access failure.
+
+        Only invokes the callback for M3U8-related errors (e.g., paid content
+        returning 404 on media playlists).
+
+        Args:
+            error_message: Error message from yt-dlp
+        """
+        if self._on_download_error and self._is_m3u8_access_error(error_message):
+            try:
+                self._on_download_error(error_message)
+            except Exception as e:
+                self.logger.error(f"Error in download error callback: {e}")
 
     @property
     def current_output_path(self) -> Optional[Path]:
