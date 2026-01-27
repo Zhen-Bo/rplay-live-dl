@@ -5,7 +5,7 @@ Provides functionality to monitor configured creators for active streams
 and automatically initiate downloads when streams are detected.
 """
 
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from models.rplay import CreatorStreamState, LiveStream, StreamState
 
@@ -216,7 +216,10 @@ class LiveStreamMonitor:
             for profile in creator_profiles:
                 if profile.creator_oid not in self.downloaders:
                     self.downloaders[profile.creator_oid] = StreamDownloader(
-                        profile.creator_name
+                        creator_name=profile.creator_name,
+                        on_download_error=self._make_download_error_callback(
+                            profile.creator_oid, profile.creator_name
+                        ),
                     )
                     new_creators.append(profile.creator_name)
 
@@ -286,3 +289,32 @@ class LiveStreamMonitor:
         if creator_oid not in self._creator_states:
             self._creator_states[creator_oid] = CreatorStreamState()
         return self._creator_states[creator_oid]
+
+    def _make_download_error_callback(
+        self, creator_oid: str, creator_name: str
+    ) -> Callable[[str], None]:
+        """
+        Create a callback for handling download errors from a specific creator.
+
+        The callback marks the creator's stream as blocked when yt-dlp encounters
+        M3U8 access errors (e.g., paid content where the master playlist returns
+        200 but media playlists return 404).
+
+        Args:
+            creator_oid: Unique identifier for the creator
+            creator_name: Display name of the creator
+
+        Returns:
+            Callback function that accepts an error message string
+        """
+
+        def _on_error(error_message: str) -> None:
+            state = self._get_or_create_creator_state(creator_oid)
+            if not state.is_current_stream_blocked:
+                state.mark_blocked()
+                self.logger.warning(
+                    f"🔒 {creator_name}: Stream marked as inaccessible "
+                    f"after download failure (likely paid content)"
+                )
+
+        return _on_error
