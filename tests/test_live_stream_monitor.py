@@ -787,6 +787,111 @@ class TestM3u8ValidationIntegration:
         assert "Creator1" in warning_msg or "creator1" in warning_msg
 
 
+class TestDownloadErrorCallback:
+    """Tests for download error callback integration."""
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_downloaders_created_with_error_callback(self, mock_read_config, mock_api):
+        """Test that downloaders are created with on_download_error callback."""
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor._update_downloaders()
+
+        downloader = monitor.downloaders["creator1"]
+        assert downloader._on_download_error is not None
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_callback_marks_stream_as_blocked(self, mock_read_config, mock_api):
+        """Test that error callback marks stream as blocked."""
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor._update_downloaders()
+
+        # Create state first (normally done in _start_download)
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+        )
+
+        # Invoke the callback
+        downloader = monitor.downloaders["creator1"]
+        downloader._on_download_error("HTTP Error 404")
+
+        assert monitor._creator_states["creator1"].is_current_stream_blocked is True
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_callback_only_marks_blocked_once(self, mock_read_config, mock_api):
+        """Test that callback logs warning only on first block."""
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor._update_downloaders()
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+        )
+
+        downloader = monitor.downloaders["creator1"]
+
+        with patch.object(monitor.logger, 'warning') as mock_warning:
+            downloader._on_download_error("HTTP Error 404")
+            downloader._on_download_error("HTTP Error 404")
+
+        # Warning logged only once (second call sees already blocked)
+        assert mock_warning.call_count == 1
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_blocked_by_callback_prevents_next_download(self, mock_read_config, mock_api):
+        """Test that stream blocked by callback is skipped on next check cycle."""
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_state = StreamState.LIVE
+        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
+        mock_stream.title = "Test Stream"
+        mock_api.get_livestream_status.return_value = [mock_stream]
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.return_value = True
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        # First check: starts download
+        monitor.check_live_streams_and_start_download()
+        mock_api.get_stream_url.assert_called_once()
+
+        # Simulate download thread finishing
+        monitor.downloaders["creator1"].download_thread = MagicMock()
+        monitor.downloaders["creator1"].download_thread.is_alive.return_value = False
+
+        # Simulate callback marking blocked (from download thread)
+        monitor._creator_states["creator1"].mark_blocked()
+
+        # Second check: should skip because blocked
+        mock_api.get_stream_url.reset_mock()
+        monitor.check_live_streams_and_start_download()
+        mock_api.get_stream_url.assert_not_called()
+
+
 class TestHeartbeatLogOptimization:
     """Tests for heartbeat log optimization (state-change only logging)."""
 
