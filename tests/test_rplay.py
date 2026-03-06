@@ -57,6 +57,23 @@ class TestRPlayAPIInit:
 class TestGetLivestreamStatus:
     """Tests for get_livestream_status method."""
 
+    def test_uses_custom_base_url(self):
+        """Test livestream status uses the instance-level API base URL."""
+        api = RPlayAPI(
+            auth_token="test",
+            user_oid="test",
+            base_url="https://api.example.com/",
+        )
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = []
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(api._session, "get", return_value=mock_response) as mock_get:
+            api.get_livestream_status()
+
+        assert mock_get.call_args.args[0] == "https://api.example.com/live/livestreams"
+
     def test_successful_request(self):
         """Test successful livestream status retrieval."""
         api = RPlayAPI(auth_token="test", user_oid="test")

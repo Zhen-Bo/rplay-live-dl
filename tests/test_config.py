@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -9,6 +10,7 @@ from core.config import (
     ConfigError,
     DEFAULT_CONFIG_PATH,
     LEGACY_CONFIG_PATH,
+    read_app_config,
     read_config,
     validate_config,
     validate_startup_config_path,
@@ -121,6 +123,72 @@ creators:
         is_valid, error = validate_config(str(tmp_path / "nonexistent.yaml"))
         assert is_valid is False
         assert error is not None
+
+
+class TestReadAppConfig:
+    """Tests for read_app_config function."""
+
+    def test_missing_api_base_url_defaults_and_persists(self, tmp_path):
+        """Test missing apiBaseUrl defaults to api.rplay.live and writes back."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+creators:
+  - name: "Creator One"
+    id: "abc123"
+""",
+            encoding="utf-8",
+        )
+
+        result = read_app_config(str(config_file))
+
+        assert result.api_base_url == "https://api.rplay.live"
+        assert len(result.creators) == 1
+        assert result.creators[0].creator_name == "Creator One"
+
+        updated_text = config_file.read_text(encoding="utf-8")
+        assert updated_text.startswith("apiBaseUrl: https://api.rplay.live")
+        assert "creators:" in updated_text
+
+    def test_explicit_api_base_url_is_respected(self, tmp_path):
+        """Test explicit apiBaseUrl is returned without being overwritten."""
+        config_file = tmp_path / "config.yaml"
+        original_text = """
+apiBaseUrl: https://api.example.com/
+creators:
+  - name: "Creator One"
+    id: "abc123"
+"""
+        config_file.write_text(original_text, encoding="utf-8")
+
+        result = read_app_config(str(config_file))
+
+        assert result.api_base_url == "https://api.example.com"
+        assert config_file.read_text(encoding="utf-8") == original_text
+
+    def test_invalid_api_base_url_raises_config_error(self, tmp_path):
+        """Test invalid apiBaseUrl is rejected as a config error."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+apiBaseUrl: not-a-url
+creators: []
+""",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ConfigError, match="Invalid apiBaseUrl"):
+            read_app_config(str(config_file))
+
+    def test_missing_api_base_url_uses_default_when_persist_fails(self, tmp_path):
+        """Test write-back failures do not block using the in-memory default URL."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("creators: []\n", encoding="utf-8")
+
+        with patch("pathlib.Path.write_text", side_effect=OSError("read only")):
+            result = read_app_config(str(config_file))
+
+        assert result.api_base_url == "https://api.rplay.live"
 
 
 class TestValidateStartupConfigPath:

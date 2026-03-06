@@ -8,7 +8,7 @@ import pytest
 from core.config import ConfigError
 from core.live_stream_monitor import LiveStreamMonitor
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
-from models.config import CreatorProfile
+from models.config import AppConfig, CreatorProfile
 from models.download import (
     DownloadSession,
     RawDownloadBlocked,
@@ -271,6 +271,34 @@ class TestSessionAwareMonitoring:
 
 class TestUpdateDownloaders:
     """Tests for _update_downloaders method."""
+
+    @patch('core.live_stream_monitor.read_config')
+    def test_updates_api_base_url_from_config(self, mock_read_config, monitor, mock_api):
+        """Test config reload pushes the latest apiBaseUrl into the API client."""
+        mock_read_config.side_effect = [
+            AppConfig(
+                api_base_url="https://api.rplay.live",
+                creators=[
+                    CreatorProfile(creator_name="Creator1", creator_oid="oid1"),
+                ],
+            ),
+            AppConfig(
+                api_base_url="https://api-alt.rplay.live",
+                creators=[
+                    CreatorProfile(creator_name="Creator1", creator_oid="oid1"),
+                ],
+            ),
+        ]
+
+        monitor._update_downloaders()
+        monitor._update_downloaders()
+
+        assert mock_api.set_base_url.call_args_list[0].args == (
+            "https://api.rplay.live",
+        )
+        assert mock_api.set_base_url.call_args_list[1].args == (
+            "https://api-alt.rplay.live",
+        )
 
     @patch('core.live_stream_monitor.read_config')
     def test_adds_new_creators(self, mock_read_config, monitor):
