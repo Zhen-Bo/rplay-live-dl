@@ -1,11 +1,18 @@
-"""Tests for configuration module."""
+﻿"""Tests for configuration module."""
 
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from core.config import ConfigError, read_config, validate_config
+from core.config import (
+    ConfigError,
+    DEFAULT_CONFIG_PATH,
+    LEGACY_CONFIG_PATH,
+    read_config,
+    validate_config,
+    validate_startup_config_path,
+)
 
 
 class TestReadConfig:
@@ -114,3 +121,38 @@ creators:
         is_valid, error = validate_config(str(tmp_path / "nonexistent.yaml"))
         assert is_valid is False
         assert error is not None
+
+
+class TestValidateStartupConfigPath:
+    """Tests for startup-time config path validation."""
+
+    def test_accepts_existing_new_default_config(self, tmp_path, monkeypatch):
+        """Test startup validation passes when the new config path exists."""
+        monkeypatch.chdir(tmp_path)
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("creators: []", encoding="utf-8")
+
+        validate_startup_config_path(DEFAULT_CONFIG_PATH)
+
+    def test_raises_migration_error_when_only_legacy_config_exists(self, tmp_path, monkeypatch):
+        """Test startup validation points users to the new config location."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config.yaml").write_text("creators: []", encoding="utf-8")
+
+        with pytest.raises(ConfigError) as exc_info:
+            validate_startup_config_path(DEFAULT_CONFIG_PATH)
+
+        message = str(exc_info.value)
+        assert LEGACY_CONFIG_PATH in message
+        assert DEFAULT_CONFIG_PATH in message
+        assert "./config:/app/config" in message
+
+    def test_missing_custom_config_keeps_normal_not_found_error(self, tmp_path):
+        """Test custom config paths do not trigger the legacy migration hint."""
+        custom_path = tmp_path / "custom.yaml"
+
+        with pytest.raises(ConfigError) as exc_info:
+            validate_startup_config_path(str(custom_path))
+
+        assert str(exc_info.value) == f"Configuration file not found: {custom_path}"

@@ -1,4 +1,4 @@
-"""Tests for scheduler module."""
+﻿"""Tests for scheduler module."""
 
 import logging
 import signal
@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from core.config import ConfigError
 from core.scheduler import LiveStreamScheduler, run_scheduler, _signal_handler
 from models.env import EnvConfig
 
@@ -283,10 +284,12 @@ class TestSignalHandler:
 
 @pytest.fixture
 def patched_run_scheduler_deps():
-    """Patch signal.signal and LiveStreamScheduler for run_scheduler tests."""
-    with patch('core.scheduler.signal.signal') as mock_signal, \
-         patch('core.scheduler.LiveStreamScheduler') as mock_scheduler_class:
-        yield mock_scheduler_class, mock_signal
+    """Patch startup validation, signal.signal, and LiveStreamScheduler for run_scheduler tests."""
+    with patch("core.scheduler.validate_startup_config_path") as mock_validate, \
+         patch("core.scheduler.signal.signal") as mock_signal, \
+         patch("core.scheduler.LiveStreamScheduler") as mock_scheduler_class:
+        yield mock_scheduler_class, mock_signal, mock_validate
+
 
 
 class TestRunScheduler:
@@ -294,7 +297,7 @@ class TestRunScheduler:
 
     def test_sets_signal_handlers(self, patched_run_scheduler_deps, mock_env, mock_logger):
         """Test that SIGINT and SIGTERM handlers are set."""
-        mock_scheduler_class, mock_signal = patched_run_scheduler_deps
+        mock_scheduler_class, mock_signal, mock_validate = patched_run_scheduler_deps
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
@@ -307,7 +310,7 @@ class TestRunScheduler:
 
     def test_creates_scheduler(self, patched_run_scheduler_deps, mock_env, mock_logger):
         """Test that LiveStreamScheduler is created with correct args."""
-        mock_scheduler_class, mock_signal = patched_run_scheduler_deps
+        mock_scheduler_class, mock_signal, mock_validate = patched_run_scheduler_deps
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
@@ -319,7 +322,7 @@ class TestRunScheduler:
 
     def test_starts_scheduler(self, patched_run_scheduler_deps, mock_env, mock_logger):
         """Test that scheduler.start() is called."""
-        mock_scheduler_class, mock_signal = patched_run_scheduler_deps
+        mock_scheduler_class, mock_signal, mock_validate = patched_run_scheduler_deps
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
@@ -327,11 +330,40 @@ class TestRunScheduler:
 
         mock_instance.start.assert_called_once()
 
+
+    def test_validates_startup_config_before_creating_scheduler(
+        self, patched_run_scheduler_deps, mock_env, mock_logger
+    ):
+        """Test startup config validation runs before scheduler construction."""
+        mock_scheduler_class, mock_signal, mock_validate = patched_run_scheduler_deps
+        mock_instance = MagicMock()
+        mock_scheduler_class.return_value = mock_instance
+
+        run_scheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+
+        mock_validate.assert_called_once()
+        mock_scheduler_class.assert_called_once()
+
+    def test_does_not_create_scheduler_when_startup_config_is_invalid(
+        self, patched_run_scheduler_deps, mock_env, mock_logger
+    ):
+        """Test run_scheduler fails fast on startup config migration errors."""
+        mock_scheduler_class, mock_signal, mock_validate = patched_run_scheduler_deps
+
+        with patch(
+            "core.scheduler.validate_startup_config_path",
+            side_effect=ConfigError("move config to ./config/config.yaml"),
+        ):
+            with pytest.raises(ConfigError, match="move config"):
+                run_scheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+
+        mock_scheduler_class.assert_not_called()
+
     def test_sets_global_reference(self, patched_run_scheduler_deps, mock_env, mock_logger):
         """Test that global _scheduler is set."""
         import core.scheduler as scheduler_module
 
-        mock_scheduler_class, mock_signal = patched_run_scheduler_deps
+        mock_scheduler_class, mock_signal, mock_validate = patched_run_scheduler_deps
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
