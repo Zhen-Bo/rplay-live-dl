@@ -18,6 +18,11 @@ from models.download import (
 from models.rplay import CreatorStreamState, StreamState
 
 
+def _runtime_config(creators):
+    """Build AppConfig test data with the default hot-reload API base URL."""
+    return AppConfig(api_base_url="https://api.rplay.live", creators=creators)
+
+
 @pytest.fixture
 def mock_api():
     """Create a mock RPlayAPI."""
@@ -99,9 +104,9 @@ class TestSessionAwareMonitoring:
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_api.validate_m3u8_url.return_value = True
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -216,9 +221,9 @@ class TestSessionAwareMonitoring:
         mock_stream.title = "Test Stream"
 
         mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -303,10 +308,10 @@ class TestUpdateDownloaders:
     @patch('core.live_stream_monitor.read_config')
     def test_adds_new_creators(self, mock_read_config, monitor):
         """Test that monitored creators are refreshed from config."""
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="oid1"),
             CreatorProfile(creator_name="Creator2", creator_oid="oid2"),
-        ]
+        ])
         monitor._update_downloaders()
         assert "oid1" in monitor.monitored_creators
         assert "oid2" in monitor.monitored_creators
@@ -318,9 +323,9 @@ class TestUpdateDownloaders:
         self, mock_read_config, mock_stream_downloader, monitor
     ):
         """Test creator refresh does not allocate unused template downloaders."""
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="oid1"),
-        ]
+        ])
 
         monitor._update_downloaders()
 
@@ -334,9 +339,9 @@ class TestUpdateDownloaders:
             creator_oid="old_oid",
         )
 
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="NewCreator", creator_oid="new_oid"),
-        ]
+        ])
         monitor._update_downloaders()
         assert "old_oid" not in monitor.monitored_creators
         assert "new_oid" in monitor.monitored_creators
@@ -356,7 +361,7 @@ class TestUpdateDownloaders:
             staging_dir=tmp_path,
         )
 
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         monitor._update_downloaders()
         assert monitor.monitored_creators == {}
         assert "active_oid:2026-03-06T12:00:00" in monitor.sessions
@@ -371,11 +376,11 @@ class TestUpdateDownloaders:
     @patch('core.live_stream_monitor.read_config')
     def test_updates_monitored_count(self, mock_read_config, monitor):
         """Test that monitored count is updated."""
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="C1", creator_oid="o1"),
             CreatorProfile(creator_name="C2", creator_oid="o2"),
             CreatorProfile(creator_name="C3", creator_oid="o3"),
-        ]
+        ])
         monitor._update_downloaders()
         assert monitor._monitored_count == 3
 
@@ -482,7 +487,7 @@ class TestCheckLiveStreams:
         """Test no download when no live streams."""
         mock_api = MagicMock(spec=RPlayAPI)
         mock_api.get_livestream_status.return_value = []
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -499,7 +504,7 @@ class TestCheckLiveStreams:
         mock_stream.creator_oid = "unknown_oid"
         mock_stream.stream_state = StreamState.LIVE
         mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -518,9 +523,9 @@ class TestCheckLiveStreams:
         mock_stream.title = "Live Stream"
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator", creator_oid="creator_oid"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -539,9 +544,9 @@ class TestCheckLiveStreams:
         mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
         mock_stream.title = "Test Stream"
         mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator", creator_oid="creator_oid"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -569,9 +574,9 @@ class TestCheckLiveStreams:
         mock_stream.creator_oid = "creator_oid"
         mock_stream.stream_state = StreamState.TWITCH
         mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator", creator_oid="creator_oid"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -601,7 +606,7 @@ class TestCheckLiveStreamsErrorHandling:
     def test_auth_error_sets_unhealthy(self, mock_read_config):
         """Test RPlayAuthError sets healthy=False."""
         mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RPlayAuthError("Unauthorized")
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -615,7 +620,7 @@ class TestCheckLiveStreamsErrorHandling:
     def test_connection_error_sets_unhealthy(self, mock_read_config):
         """Test RPlayConnectionError sets healthy=False."""
         mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RPlayConnectionError("Network error")
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -629,7 +634,7 @@ class TestCheckLiveStreamsErrorHandling:
     def test_api_error_sets_unhealthy(self, mock_read_config):
         """Test RPlayAPIError sets healthy=False."""
         mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RPlayAPIError("API error")
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -643,7 +648,7 @@ class TestCheckLiveStreamsErrorHandling:
     def test_unexpected_error_sets_unhealthy(self, mock_read_config):
         """Test unexpected exception sets healthy=False."""
         mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RuntimeError("Unexpected")
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -657,7 +662,7 @@ class TestCheckLiveStreamsErrorHandling:
     def test_success_restores_healthy(self, mock_read_config):
         """Test successful check restores healthy=True after failure."""
         mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = []
+        mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.return_value = []
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -968,9 +973,9 @@ class TestM3u8ValidationIntegration:
         mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
         mock_stream.title = "Test Stream"
         mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -998,9 +1003,9 @@ class TestM3u8ValidationIntegration:
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_api.validate_m3u8_url.return_value = True
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1028,9 +1033,9 @@ class TestM3u8ValidationIntegration:
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_api.validate_m3u8_url.return_value = False
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1053,9 +1058,9 @@ class TestM3u8ValidationIntegration:
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_api.validate_m3u8_url.return_value = True
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1075,9 +1080,9 @@ class TestM3u8ValidationIntegration:
     def test_clears_state_when_creator_not_in_list(self, mock_read_config, mock_api):
         """Test that creator state is cleared when not in live list."""
         mock_api.get_livestream_status.return_value = []  # No live streams
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1105,9 +1110,9 @@ class TestM3u8ValidationIntegration:
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_api.validate_m3u8_url.return_value = False
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1197,9 +1202,9 @@ class TestSessionDownloadBlockedHandling:
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_api.validate_m3u8_url.return_value = True
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1231,9 +1236,9 @@ class TestHeartbeatLogOptimization:
     def test_no_status_log_when_state_unchanged(self, mock_read_config, mock_api):
         """Test that status log is not emitted when state is unchanged."""
         mock_api.get_livestream_status.return_value = []
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1261,9 +1266,9 @@ class TestHeartbeatLogOptimization:
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_api.validate_m3u8_url.return_value = True
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1280,9 +1285,9 @@ class TestHeartbeatLogOptimization:
     @patch('core.live_stream_monitor.read_config')
     def test_status_log_when_download_stops(self, mock_read_config, mock_api):
         """Test that status log is emitted when download count changes to zero."""
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1303,9 +1308,9 @@ class TestHeartbeatLogOptimization:
     def test_periodic_heartbeat_every_n_checks(self, mock_read_config, mock_api):
         """Test that periodic heartbeat is logged every N checks even if state unchanged."""
         mock_api.get_livestream_status.return_value = []
-        mock_read_config.return_value = [
+        mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ]
+        ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",

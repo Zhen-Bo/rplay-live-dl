@@ -1,4 +1,4 @@
-﻿"""Live stream monitoring module."""
+"""Live stream monitoring module."""
 
 import shutil
 import subprocess
@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
 
-from models.config import AppConfig, CreatorProfile
+from models.config import CreatorProfile
 from models.download import (
     DownloadSession,
     MergeCompleted,
@@ -407,11 +407,8 @@ class LiveStreamMonitor:
     def _update_downloaders(self) -> None:
         """Refresh monitored creator metadata from the current config file."""
         runtime_config = read_config(self.config_path)
-        if isinstance(runtime_config, AppConfig):
-            self.api.set_base_url(runtime_config.api_base_url)
-            creator_profiles = runtime_config.creators
-        else:
-            creator_profiles = runtime_config
+        self.api.set_base_url(runtime_config.api_base_url)
+        creator_profiles = runtime_config.creators
         new_creators: List[str] = []
 
         with self._state_lock:
