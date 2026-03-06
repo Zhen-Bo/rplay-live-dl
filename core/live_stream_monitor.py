@@ -741,7 +741,7 @@ class LiveStreamMonitor:
         """Merge ts fragments into one mp4 file using ffmpeg concat."""
         list_path = ts_files[0].parent / "merge-inputs.txt"
         list_content = "\n".join(
-            f"file '{ts_file.resolve().as_posix()}'" for ts_file in ts_files
+            self._format_ffconcat_input_path(ts_file) for ts_file in ts_files
         )
         list_path.write_text(list_content, encoding="utf-8")
 
@@ -768,6 +768,11 @@ class LiveStreamMonitor:
             )
         finally:
             list_path.unlink(missing_ok=True)
+
+    def _format_ffconcat_input_path(self, ts_file: Path) -> str:
+        """Format one concat-demuxer input line with apostrophe-safe escaping."""
+        escaped_path = ts_file.resolve().as_posix().replace("'", "'\''")
+        return f"file '{escaped_path}'"
 
     def _move_failed_staging_dir(
         self,
