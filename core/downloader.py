@@ -20,6 +20,7 @@ from core.constants import (
 )
 from core.logger import setup_logger
 from core.utils import format_file_size
+from models.download import DownloadResult
 
 __all__ = [
     "StreamDownloader",
@@ -63,6 +64,10 @@ class StreamDownloader:
         self,
         creator_name: str,
         on_download_error: Optional[Callable[[str], None]] = None,
+        session_key: Optional[str] = None,
+        output_dir: Optional[Path] = None,
+        output_extension: str = ".mp4",
+        on_download_complete: Optional[Callable[[DownloadResult], None]] = None,
     ) -> None:
         """
         Initialize a new stream downloader for a creator.
@@ -80,6 +85,10 @@ class StreamDownloader:
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
         self._on_download_error = on_download_error
+        self.session_key = session_key
+        self.output_dir = output_dir
+        self.output_extension = output_extension
+        self._on_download_complete = on_download_complete
 
     def _log(self, level: str, message: str) -> None:
         """Log a message with creator name prefix."""
@@ -145,7 +154,10 @@ class StreamDownloader:
             Path object for the output file
         """
         date_str = datetime.today().strftime("%Y-%m-%d")
-        filename = f"#{self.creator_name} {date_str} {safe_title}.mp4"
+        filename = f"#{self.creator_name} {date_str} {safe_title}{self.output_extension}"
+
+        if self.output_dir is not None:
+            return self.output_dir / filename
 
         return Path.cwd() / self.ARCHIVE_DIR / self.creator_name / filename
 
@@ -159,10 +171,9 @@ class StreamDownloader:
         Returns:
             Dictionary of yt-dlp options
         """
-        return {
+        options = {
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
-            "merge_output_format": "mp4",
             "http_headers": DEFAULT_HTTP_HEADERS.copy(),
             "logger": self.logger,
             "quiet": True,
@@ -174,6 +185,11 @@ class StreamDownloader:
             # Continue partial downloads
             "continuedl": True,
         }
+
+        if self.output_extension == ".mp4":
+            options["merge_output_format"] = "mp4"
+
+        return options
 
     @classmethod
     def _get_unique_path(cls, base_path: Path) -> Path:
@@ -248,6 +264,8 @@ class StreamDownloader:
                     f"⚠️  Download finished but file not found: {output_path}",
                 )
 
+            self._notify_download_complete(output_path)
+
         except yt_dlp.utils.DownloadError as e:
             self.logger.error(f"❌ Download error: {e}")
             self._notify_download_error(str(e))
@@ -289,6 +307,30 @@ class StreamDownloader:
                 self._on_download_error(error_message)
             except Exception as e:
                 self.logger.error(f"Error in download error callback: {e}")
+
+    def _notify_download_complete(self, output_path: Path) -> None:
+        """Notify listeners that a raw download finished successfully."""
+        if not self._on_download_complete or not self.session_key:
+            return
+
+        title = output_path.stem
+        prefix = f"#{self.creator_name} "
+        if title.startswith(prefix):
+            title = title[len(prefix):]
+
+        try:
+            self._on_download_complete(
+                DownloadResult(
+                    session_key=self.session_key,
+                    staging_dir=output_path.parent,
+                    base_output_stem=output_path.stem,
+                    creator_name=self.creator_name,
+                    title=title,
+                    stream_start_time=datetime.now(),
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Error in download complete callback: {e}")
 
     @property
     def current_output_path(self) -> Optional[Path]:
