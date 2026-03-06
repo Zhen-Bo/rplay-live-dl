@@ -128,7 +128,10 @@ Development Requirements:
     LOG_RETENTION_DAYS=30   # Days to keep old logs (default: 30)
     ```
 
-2. Creator Configuration (`config.yaml`):
+2. Creator Configuration (`config/config.yaml`):
+
+    Copy `config.yaml.example` to `config/config.yaml` first.
+
     ```yaml
     creators:
         - name: "Creator Nickname 1"
@@ -161,11 +164,13 @@ Using Docker directly:
 ```bash
 docker run -d \
   -v $(pwd)/.env:/app/.env \
-  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/config:/app/config \
   -v $(pwd)/archive:/app/archive \
   -v $(pwd)/logs:/app/logs \
   rplay-live-dl
 ```
+
+Breaking change in `2.0.0-vibe`: the app now reads config from `./config/config.yaml` and Docker should mount the whole `config` directory instead of a single `config.yaml` file.
 
 ### Directory Structure
 
@@ -173,7 +178,8 @@ docker run -d \
 rplay-live-dl/
 ├── archive/              # Recorded streams
 │   └── [Creator Name]/   # Organized by creator
-├── config.yaml           # Creator configuration
+├── config/
+│   └── config.yaml       # Creator configuration
 ├── .env                  # Environment variables
 └── logs/                 # Application logs
 ```
