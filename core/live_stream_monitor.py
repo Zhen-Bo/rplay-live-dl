@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
+from time import monotonic
 from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
@@ -74,6 +75,7 @@ class LiveStreamMonitor:
     """
 
     DEFAULT_MERGE_TIMEOUT_SECONDS = 7200
+    POLL_WAIT_TIMEOUT_SECONDS = 30.0
 
     def __init__(
         self,
@@ -96,7 +98,6 @@ class LiveStreamMonitor:
         self.api = api if api is not None else RPlayAPI(auth_token, user_oid)
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
-        self.downloaders: Dict[str, StreamDownloader] = {}
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
         self.latest_session_by_creator: Dict[str, str] = {}
@@ -129,8 +130,18 @@ class LiveStreamMonitor:
             return
 
         done = Event()
-        self._queue_monitor_event(_PollRequested(done=done))
-        done.wait()
+        if not self._queue_monitor_event(_PollRequested(done=done)):
+            return
+
+        deadline = monotonic() + self.POLL_WAIT_TIMEOUT_SECONDS
+        while not done.wait(timeout=0.5):
+            if self._shutdown_requested:
+                return
+            if monotonic() >= deadline:
+                self.logger.warning(
+                    "Monitor poll did not finish before timeout; continuing"
+                )
+                return
 
     def _event_loop(self) -> None:
         """Run the monitor control loop as the single session-state writer."""
@@ -155,11 +166,12 @@ class LiveStreamMonitor:
             finally:
                 self._event_queue.task_done()
 
-    def _queue_monitor_event(self, event: MonitorRuntimeEvent) -> None:
+    def _queue_monitor_event(self, event: MonitorRuntimeEvent) -> bool:
         """Enqueue work for the monitor control loop."""
-        if self._shutdown_requested:
-            return
+        if self._shutdown_requested and isinstance(event, _PollRequested):
+            return False
         self._event_queue.put(event)
+        return True
 
     def _run_poll_cycle(self) -> None:
         """Check active streams and start new downloads on the control loop."""
@@ -236,10 +248,7 @@ class LiveStreamMonitor:
         if not self._should_attempt_download(stream):
             return
 
-        with self._state_lock:
-            downloader = self.downloaders[stream.creator_oid]
-
-        self._start_download(stream, downloader)
+        self._start_download(stream)
 
     def _should_attempt_download(self, stream: LiveStream) -> bool:
         """Check if download should be attempted for this stream."""
@@ -262,9 +271,14 @@ class LiveStreamMonitor:
         for creator_oid in offline_creators:
             self._clear_creator_state(creator_oid)
 
-    def _start_download(self, stream: LiveStream, downloader: StreamDownloader) -> None:
+    def _start_download(self, stream: LiveStream) -> None:
         """Start downloading a live stream on the control loop."""
-        creator_name = downloader.creator_name
+        with self._state_lock:
+            creator_profile = self.monitored_creators.get(stream.creator_oid)
+        if creator_profile is None:
+            return
+
+        creator_name = creator_profile.creator_name
         creator_oid = stream.creator_oid
         session_key = self._make_session_key(stream)
 
@@ -382,49 +396,23 @@ class LiveStreamMonitor:
             )
 
     def _update_downloaders(self) -> None:
-        """Update creator template downloaders from the current config file."""
-        try:
-            creator_profiles = read_config(self.config_path)
-            new_creators: List[str] = []
+        """Refresh monitored creator metadata from the current config file."""
+        creator_profiles = read_config(self.config_path)
+        new_creators: List[str] = []
 
-            with self._state_lock:
-                self.monitored_creators = {
-                    profile.creator_oid: profile for profile in creator_profiles
-                }
+        with self._state_lock:
+            existing_creator_ids = set(self.monitored_creators)
+            self.monitored_creators = {
+                profile.creator_oid: profile for profile in creator_profiles
+            }
+            self._monitored_count = len(self.monitored_creators)
 
-                for profile in creator_profiles:
-                    if profile.creator_oid not in self.downloaders:
-                        self.downloaders[profile.creator_oid] = StreamDownloader(
-                            creator_name=profile.creator_name,
-                            on_download_error=self._make_download_error_callback(
-                                profile.creator_oid, profile.creator_name
-                            ),
-                        )
-                        new_creators.append(profile.creator_name)
+        for profile in creator_profiles:
+            if profile.creator_oid not in existing_creator_ids:
+                new_creators.append(profile.creator_name)
 
-                config_creator_ids = {profile.creator_oid for profile in creator_profiles}
-                active_creator_ids = {
-                    session.creator_oid
-                    for session in self.sessions.values()
-                    if session.state == SessionState.RAW_RUNNING
-                }
-                self.downloaders = {
-                    creator_id: downloader
-                    for creator_id, downloader in self.downloaders.items()
-                    if creator_id in config_creator_ids or creator_id in active_creator_ids
-                }
-                self._monitored_count = len(config_creator_ids)
-
-            if new_creators:
-                self.logger.info(f"Added {len(new_creators)} new creator(s) to monitor")
-
-        except ConfigError as exc:
-            self.logger.warning(f"Error reading config file: {exc}")
-            raise
-
-        except Exception as exc:
-            self.logger.error(f"Error updating downloaders: {exc}")
-            raise
+        if new_creators:
+            self.logger.info(f"Added {len(new_creators)} new creator(s) to monitor")
 
     def get_active_downloads(self) -> List[str]:
         """Get list of creators with active raw download sessions."""
@@ -462,13 +450,6 @@ class LiveStreamMonitor:
         """Remove creator state when they go offline."""
         with self._state_lock:
             self._creator_states.pop(creator_oid, None)
-
-    def _get_or_create_creator_state(self, creator_oid: str) -> CreatorStreamState:
-        """Get existing state or create new one for a creator."""
-        with self._state_lock:
-            if creator_oid not in self._creator_states:
-                self._creator_states[creator_oid] = CreatorStreamState()
-            return self._creator_states[creator_oid]
 
     def _get_or_create_session(self, stream: LiveStream, creator_name: str) -> DownloadSession:
         """Get existing session or create a new session record."""
@@ -759,25 +740,11 @@ class LiveStreamMonitor:
             return
 
         self._shutdown_requested = True
-        self.merge_executor.shutdown(wait=False)
+        self._event_queue.join()
+        self.merge_executor.shutdown(wait=True)
+        self._event_queue.join()
         self._event_queue.put(_ShutdownRequested())
-        self._control_thread.join(timeout=1)
-
-    def _make_download_error_callback(
-        self, creator_oid: str, creator_name: str
-    ) -> Callable[[str], None]:
-        """Create a callback for handling template downloader errors."""
-
-        def _on_error(_error_message: str) -> None:
-            state = self._get_or_create_creator_state(creator_oid)
-            if not state.is_current_stream_blocked:
-                state.mark_blocked()
-                self.logger.warning(
-                    f"🔒 {creator_name}: Stream marked as inaccessible "
-                    f"after download failure (likely paid content)"
-                )
-
-        return _on_error
+        self._control_thread.join()
 
     def _make_session_download_error_callback(self, session_key: str) -> Callable[[str], None]:
         """Create a callback for a specific session download failure."""
