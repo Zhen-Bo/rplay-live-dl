@@ -16,6 +16,7 @@ from models.download import (
     DownloadSession,
     MergeCompleted,
     MergeFailed,
+    MergeJobSpec,
     MergeStarted,
     RawDownloadBlocked,
     RawDownloadCompleted,
@@ -46,12 +47,17 @@ class _ShutdownRequested:
     """Internal control-loop event requesting shutdown."""
 
 
-MonitorRuntimeEvent = Union[
+SessionEvent = Union[
     RawDownloadCompleted,
     RawDownloadBlocked,
     MergeStarted,
     MergeCompleted,
     MergeFailed,
+]
+
+
+MonitorRuntimeEvent = Union[
+    SessionEvent,
     _PollRequested,
     _ShutdownRequested,
 ]
@@ -91,7 +97,6 @@ class LiveStreamMonitor:
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
         self.downloaders: Dict[str, StreamDownloader] = {}
-        self.session_downloaders: Dict[str, StreamDownloader] = {}
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
         self.latest_session_by_creator: Dict[str, str] = {}
@@ -273,16 +278,12 @@ class LiveStreamMonitor:
 
             active_downloader = StreamDownloader(
                 creator_name=creator_name,
-                on_download_error=self._make_session_download_error_callback(
-                    session_key, creator_oid, creator_name
-                ),
+                on_download_error=self._make_session_download_error_callback(session_key),
                 session_key=session_key,
                 output_dir=session.staging_dir,
                 output_extension=".ts",
                 on_download_complete=self._on_raw_download_complete,
             )
-            with self._state_lock:
-                self.session_downloaders[session_key] = active_downloader
 
             active_downloader.download(stream_url, stream.title)
             self.logger.info(f"⬇️  Started downloading: {creator_name}")
@@ -438,7 +439,6 @@ class LiveStreamMonitor:
         """Remove a session that failed before raw download started."""
         with self._state_lock:
             self.sessions.pop(session_key, None)
-            self.session_downloaders.pop(session_key, None)
 
     def _make_session_key(self, stream: LiveStream) -> str:
         """Build a stable key for one live session."""
@@ -462,16 +462,7 @@ class LiveStreamMonitor:
         """Receive raw completion from a downloader thread and queue it."""
         self._queue_monitor_event(event)
 
-    def _handle_monitor_event(
-        self,
-        event: Union[
-            RawDownloadCompleted,
-            RawDownloadBlocked,
-            MergeStarted,
-            MergeCompleted,
-            MergeFailed,
-        ],
-    ) -> None:
+    def _handle_monitor_event(self, event: SessionEvent) -> None:
         """Apply one monitor event on the control loop."""
         if isinstance(event, RawDownloadCompleted):
             self._handle_raw_download_completed(event)
@@ -510,22 +501,15 @@ class LiveStreamMonitor:
 
             session.state = SessionState.MERGE_QUEUED
             session.staging_dir = event.staging_dir
-            self.session_downloaders.pop(event.session_key, None)
-            session_key = session.session_key
-            creator_name = session.creator_name
-            title = session.title
-            stream_start_time = session.stream_start_time
-            staging_dir = session.staging_dir
-
-        self.merge_executor.submit_merge(
-            lambda: self._run_merge_job(
-                session_key=session_key,
-                creator_name=creator_name,
-                title=title,
-                stream_start_time=stream_start_time,
-                staging_dir=staging_dir,
+            merge_job = MergeJobSpec(
+                session_key=session.session_key,
+                creator_name=session.creator_name,
+                title=session.title,
+                stream_start_time=session.stream_start_time,
+                staging_dir=session.staging_dir,
             )
-        )
+
+        self.merge_executor.submit_merge(lambda: self._run_merge_job(merge_job))
 
     def _handle_raw_download_blocked(self, event: RawDownloadBlocked) -> None:
         """Apply blocked-session state when downloader reports access failure."""
@@ -536,7 +520,6 @@ class LiveStreamMonitor:
 
             session.last_error = event.error_message
             session.state = SessionState.BLOCKED
-            self.session_downloaders.pop(event.session_key, None)
             creator_name = session.creator_name
             creator_oid = session.creator_oid
             state = self._creator_states.get(creator_oid)
@@ -579,75 +562,60 @@ class LiveStreamMonitor:
                 f"after download failure (likely paid content)"
             )
 
-    def _run_merge_job(
-        self,
-        session_key: str,
-        creator_name: str,
-        title: str,
-        stream_start_time: datetime,
-        staging_dir: Path,
-    ) -> None:
+    def _run_merge_job(self, merge_job: MergeJobSpec) -> None:
         """Run merge I/O work on the merge executor and emit events back to monitor."""
-        self._queue_monitor_event(MergeStarted(session_key=session_key))
-        result = self._merge_session_to_mp4(
-            session_key=session_key,
-            creator_name=creator_name,
-            title=title,
-            stream_start_time=stream_start_time,
-            staging_dir=staging_dir,
-        )
+        self._queue_monitor_event(MergeStarted(session_key=merge_job.session_key))
+        result = self._merge_session_to_mp4(merge_job)
         self._queue_monitor_event(result)
 
-    def _merge_session_to_mp4(
-        self,
-        session_key: str,
-        creator_name: str,
-        title: str,
-        stream_start_time: datetime,
-        staging_dir: Path,
-    ) -> Union[MergeCompleted, MergeFailed]:
+    def _merge_session_to_mp4(self, merge_job: MergeJobSpec) -> Union[MergeCompleted, MergeFailed]:
         """Merge one session's raw ts outputs into the final mp4 artifact."""
-        ts_files = sorted(staging_dir.glob("*.ts"))
+        ts_files = sorted(merge_job.staging_dir.glob("*.ts"))
 
         try:
             if not ts_files:
-                raise FileNotFoundError(f"No ts files found for session {session_key}")
+                raise FileNotFoundError(
+                    f"No ts files found for session {merge_job.session_key}"
+                )
 
             output_path = self._reserve_final_output_path(
-                creator_name=creator_name,
-                title=title,
-                stream_start_time=stream_start_time,
+                creator_name=merge_job.creator_name,
+                title=merge_job.title,
+                stream_start_time=merge_job.stream_start_time,
             )
             self._run_ffmpeg_merge(ts_files, output_path)
 
             for ts_file in ts_files:
                 ts_file.unlink(missing_ok=True)
 
-            if staging_dir.exists():
-                shutil.rmtree(staging_dir)
+            if merge_job.staging_dir.exists():
+                shutil.rmtree(merge_job.staging_dir)
 
-            return MergeCompleted(session_key=session_key, output_path=output_path)
+            return MergeCompleted(
+                session_key=merge_job.session_key,
+                output_path=output_path,
+            )
 
         except subprocess.TimeoutExpired as exc:
             failed_dir = self._move_failed_staging_dir(
-                creator_name=creator_name,
-                session_key=session_key,
-                staging_dir=staging_dir,
+                creator_name=merge_job.creator_name,
+                session_key=merge_job.session_key,
+                staging_dir=merge_job.staging_dir,
             )
             timeout_value = int(exc.timeout) if exc.timeout is not None else self.merge_timeout_seconds
             return MergeFailed(
-                session_key=session_key,
+                session_key=merge_job.session_key,
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
                 failed_staging_dir=failed_dir,
             )
         except Exception as exc:
             failed_dir = self._move_failed_staging_dir(
-                creator_name=creator_name,
-                session_key=session_key,
-                staging_dir=staging_dir,
+                creator_name=merge_job.creator_name,
+                session_key=merge_job.session_key,
+                staging_dir=merge_job.staging_dir,
             )
             return MergeFailed(
-                session_key=session_key,
+                session_key=merge_job.session_key,
                 error_message=str(exc),
                 failed_staging_dir=failed_dir,
             )
@@ -746,8 +714,7 @@ class LiveStreamMonitor:
     ) -> Callable[[str], None]:
         """Create a callback for handling template downloader errors."""
 
-        def _on_error(error_message: str) -> None:
-            del error_message
+        def _on_error(_error_message: str) -> None:
             state = self._get_or_create_creator_state(creator_oid)
             if not state.is_current_stream_blocked:
                 state.mark_blocked()
@@ -758,11 +725,8 @@ class LiveStreamMonitor:
 
         return _on_error
 
-    def _make_session_download_error_callback(
-        self, session_key: str, creator_oid: str, creator_name: str
-    ) -> Callable[[str], None]:
+    def _make_session_download_error_callback(self, session_key: str) -> Callable[[str], None]:
         """Create a callback for a specific session download failure."""
-        del creator_oid, creator_name
 
         def _on_error(error_message: str) -> None:
             self._queue_monitor_event(

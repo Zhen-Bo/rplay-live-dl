@@ -50,6 +50,17 @@ class RawDownloadBlocked:
 
 
 @dataclass(frozen=True)
+class MergeJobSpec:
+    """Immutable merge job inputs for one completed raw download session."""
+
+    session_key: str
+    creator_name: str
+    title: str
+    stream_start_time: datetime
+    staging_dir: Path
+
+
+@dataclass(frozen=True)
 class MergeStarted:
     """Event emitted when merge work begins for a session."""
 

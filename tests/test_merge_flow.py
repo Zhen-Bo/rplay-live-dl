@@ -4,7 +4,7 @@ import subprocess
 from datetime import datetime
 
 from core.live_stream_monitor import LiveStreamMonitor
-from models.download import DownloadSession, MergeCompleted, MergeFailed, SessionState
+from models.download import MergeCompleted, MergeFailed, MergeJobSpec
 
 
 class TestMergeFlow:
@@ -27,11 +27,13 @@ class TestMergeFlow:
         monitor._run_ffmpeg_merge = fake_merge
 
         event = monitor._merge_session_to_mp4(
-            session_key=session_key,
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            staging_dir=staging_dir,
+            MergeJobSpec(
+                session_key=session_key,
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                staging_dir=staging_dir,
+            )
         )
 
         assert isinstance(event, MergeCompleted)
@@ -59,11 +61,13 @@ class TestMergeFlow:
         monitor._run_ffmpeg_merge = fake_merge
 
         event = monitor._merge_session_to_mp4(
-            session_key=session_key,
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 30, 0),
-            staging_dir=staging_dir,
+            MergeJobSpec(
+                session_key=session_key,
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 30, 0),
+                staging_dir=staging_dir,
+            )
         )
 
         assert isinstance(event, MergeCompleted)
@@ -86,11 +90,13 @@ class TestMergeFlow:
         monitor._run_ffmpeg_merge = fake_merge
 
         event = monitor._merge_session_to_mp4(
-            session_key=session_key,
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            staging_dir=staging_dir,
+            MergeJobSpec(
+                session_key=session_key,
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                staging_dir=staging_dir,
+            )
         )
 
         assert isinstance(event, MergeFailed)
@@ -116,11 +122,13 @@ class TestMergeFlow:
         monitor._run_ffmpeg_merge = fake_merge
 
         event = monitor._merge_session_to_mp4(
-            session_key=session_key,
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            staging_dir=staging_dir,
+            MergeJobSpec(
+                session_key=session_key,
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                staging_dir=staging_dir,
+            )
         )
 
         assert isinstance(event, MergeFailed)
