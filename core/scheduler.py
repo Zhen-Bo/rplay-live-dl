@@ -106,6 +106,7 @@ class LiveStreamScheduler:
         """Stop the scheduler gracefully."""
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
+            self.monitor.shutdown()
             self.logger.info("Scheduler stopped")
 
 
