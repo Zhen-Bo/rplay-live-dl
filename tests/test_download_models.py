@@ -1,4 +1,4 @@
-﻿"""Tests for session-aware download models."""
+"""Tests for session-aware download models."""
 
 from datetime import datetime
 
@@ -6,6 +6,7 @@ from models.download import (
     DownloadSession,
     MergeCompleted,
     MergeFailed,
+    MergeJobSpec,
     RawDownloadBlocked,
     RawDownloadCompleted,
     SessionState,
@@ -80,3 +81,17 @@ class TestMonitorEvents:
 
         assert event.error_message == "ffmpeg timeout"
         assert event.failed_staging_dir.name == "session"
+
+    def test_merge_job_spec_groups_merge_inputs(self, tmp_path):
+        """Test merge job inputs are grouped into one immutable spec."""
+        spec = MergeJobSpec(
+            session_key="creator1:2026-03-06T12:00:00",
+            creator_name="Creator",
+            title="Test",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            staging_dir=tmp_path,
+        )
+
+        assert spec.creator_name == "Creator"
+        assert spec.staging_dir == tmp_path
+

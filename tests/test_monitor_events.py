@@ -1,5 +1,6 @@
-﻿"""Tests for event-driven monitor behavior."""
+"""Tests for event-driven monitor behavior."""
 
+import inspect
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -38,7 +39,10 @@ def test_get_active_downloads_uses_session_state_only(tmp_path):
     """Test active downloads are derived from session state, not downloader liveness fallback."""
     mock_api = MagicMock(spec=RPlayAPI)
     monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
-    monitor.downloaders["creator1"] = MagicMock(creator_name="Stale", is_alive=MagicMock(return_value=True))
+    monitor.downloaders["creator1"] = MagicMock(
+        creator_name="Stale",
+        is_alive=MagicMock(return_value=True),
+    )
     monitor.sessions["creator1:2026-03-06T12:00:00"] = DownloadSession(
         session_key="creator1:2026-03-06T12:00:00",
         creator_oid="creator1",
@@ -57,7 +61,19 @@ def test_no_session_means_no_active_downloads_even_if_template_downloader_alive(
     """Test template downloader thread liveness is not treated as authoritative state."""
     mock_api = MagicMock(spec=RPlayAPI)
     monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
-    monitor.downloaders["creator1"] = MagicMock(creator_name="Stale", is_alive=MagicMock(return_value=True))
+    monitor.downloaders["creator1"] = MagicMock(
+        creator_name="Stale",
+        is_alive=MagicMock(return_value=True),
+    )
 
     assert monitor.get_active_downloads() == []
     monitor.shutdown()
+
+
+def test_session_download_error_callback_accepts_only_session_key():
+    """Test the session-specific error callback factory takes only the session key."""
+    parameters = inspect.signature(
+        LiveStreamMonitor._make_session_download_error_callback
+    ).parameters
+
+    assert list(parameters) == ["self", "session_key"]

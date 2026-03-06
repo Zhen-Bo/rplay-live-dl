@@ -1123,8 +1123,3 @@ class TestHeartbeatLogOptimization:
         # Should have at least one periodic heartbeat (debug level)
         heartbeat_logs = [c for c in mock_debug.call_args_list if "Checked" in str(c) or "heartbeat" in str(c).lower()]
         assert len(heartbeat_logs) >= 1
-
-
-
-
-
