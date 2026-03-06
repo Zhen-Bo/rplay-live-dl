@@ -222,6 +222,12 @@ class StreamDownloader:
             if counter > cls.MAX_DUPLICATE_FILES:
                 raise RuntimeError(f"Too many duplicate files for {stem}")
 
+    @staticmethod
+    def _has_sibling_fragment_outputs(output_path: Path) -> bool:
+        """Return True when yt-dlp left numbered sibling fragments for this output."""
+        fragment_pattern = f"{output_path.stem}_*{output_path.suffix}"
+        return any(output_path.parent.glob(fragment_pattern))
+
     def _download_worker(
         self,
         stream_url: str,
@@ -263,6 +269,8 @@ class StreamDownloader:
                     "warning",
                     f"⚠️  Download finished but file not found: {output_path}",
                 )
+                if not self._has_sibling_fragment_outputs(output_path):
+                    return
 
             self._notify_download_complete(output_path)
 
