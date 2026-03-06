@@ -1,4 +1,4 @@
-"""
+﻿"""
 Stream downloader module.
 
 Provides functionality to download live streams using yt-dlp,
@@ -20,7 +20,7 @@ from core.constants import (
 )
 from core.logger import setup_logger
 from core.utils import format_file_size
-from models.download import DownloadResult
+from models.download import RawDownloadCompleted
 
 __all__ = [
     "StreamDownloader",
@@ -67,7 +67,7 @@ class StreamDownloader:
         session_key: Optional[str] = None,
         output_dir: Optional[Path] = None,
         output_extension: str = ".mp4",
-        on_download_complete: Optional[Callable[[DownloadResult], None]] = None,
+        on_download_complete: Optional[Callable[[RawDownloadCompleted], None]] = None,
     ) -> None:
         """
         Initialize a new stream downloader for a creator.
@@ -313,20 +313,11 @@ class StreamDownloader:
         if not self._on_download_complete or not self.session_key:
             return
 
-        title = output_path.stem
-        prefix = f"#{self.creator_name} "
-        if title.startswith(prefix):
-            title = title[len(prefix):]
-
         try:
             self._on_download_complete(
-                DownloadResult(
+                RawDownloadCompleted(
                     session_key=self.session_key,
                     staging_dir=output_path.parent,
-                    base_output_stem=output_path.stem,
-                    creator_name=self.creator_name,
-                    title=title,
-                    stream_start_time=datetime.now(),
                 )
             )
         except Exception as e:
@@ -343,3 +334,4 @@ class StreamDownloader:
         if self._download_start_time and self.is_alive():
             return (datetime.now() - self._download_start_time).total_seconds()
         return None
+

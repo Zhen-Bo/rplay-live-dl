@@ -1,8 +1,8 @@
-"""Dedicated executor for asynchronous merge jobs."""
+﻿"""Dedicated executor for asynchronous merge jobs."""
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
-from typing import Callable, Optional
+from typing import Callable
 
 
 class DownloadMergeExecutor:
@@ -13,10 +13,8 @@ class DownloadMergeExecutor:
         self._lock = Lock()
         self._shutdown = False
 
-    def submit_merge(self, session_key: str, task: Callable[[], object]) -> Future:
+    def submit_merge(self, task: Callable[[], object]) -> Future:
         """Submit a merge task for asynchronous execution."""
-        del session_key
-
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("merge executor is shut down")
@@ -29,4 +27,3 @@ class DownloadMergeExecutor:
                 return
             self._shutdown = True
         self._executor.shutdown(wait=wait)
-
