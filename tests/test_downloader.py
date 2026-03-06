@@ -1,4 +1,4 @@
-﻿"""Tests for stream downloader module."""
+"""Tests for stream downloader module."""
 
 import threading
 from datetime import datetime
@@ -317,6 +317,49 @@ class TestDownloadWorker:
         assert len(events) == 1
         assert isinstance(events[0], RawDownloadCompleted)
         assert events[0].session_key == "creator1:2026-03-06T12:00:00"
+
+    def test_worker_missing_ts_output_without_fragments_does_not_notify_completion(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test missing ts output without any fragments does not emit completion."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        events = []
+        downloader = StreamDownloader(
+            "Creator",
+            session_key="creator1:2026-03-06T12:00:00",
+            output_dir=tmp_path,
+            output_extension=".ts",
+            on_download_complete=lambda result: events.append(result),
+        )
+        output_path = tmp_path / "#Creator 2026-03-06 Missing.ts"
+        downloader._download_start_time = datetime.now()
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        mock_ydl.download.assert_called_once()
+        assert events == []
+
+    def test_worker_missing_primary_ts_output_with_fragments_still_notifies_completion(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test fragmented ts output still emits completion when sibling ts files exist."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        events = []
+        downloader = StreamDownloader(
+            "Creator",
+            session_key="creator1:2026-03-06T12:00:00",
+            output_dir=tmp_path,
+            output_extension=".ts",
+            on_download_complete=lambda result: events.append(result),
+        )
+        output_path = tmp_path / "#Creator 2026-03-06 Missing.ts"
+        (tmp_path / "#Creator 2026-03-06 Missing_1.ts").write_bytes(b"x")
+        downloader._download_start_time = datetime.now()
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        mock_ydl.download.assert_called_once()
+        assert len(events) == 1
 
 
 class TestDownloadErrorCallback:
