@@ -8,17 +8,21 @@ containing creator profiles for monitoring.
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import ValidationError
 
+from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.logger import setup_logger
-from models.config import CreatorProfile
+from models.config import AppConfig, CreatorProfile
 
 __all__ = [
     "ConfigError",
     "DEFAULT_CONFIG_PATH",
     "LEGACY_CONFIG_PATH",
+    "DEFAULT_RPLAY_API_BASE_URL",
+    "read_app_config",
     "read_config",
     "validate_config",
     "validate_startup_config_path",
@@ -70,26 +74,26 @@ def validate_startup_config_path(config_path: str) -> None:
 
 
 def read_config(config_path: str) -> List[CreatorProfile]:
-    """
-    Read and parse the YAML configuration file to extract creator profiles.
+    """Backward-compatible helper that returns only creator profiles."""
+    return read_app_config(config_path).creators
 
-    The configuration file must contain a 'creators' list where each item has:
-    - name: The display name of the creator
-    - id: The unique identifier (OID) of the creator
+
+def read_app_config(config_path: str) -> AppConfig:
+    """
+    Read and parse the YAML configuration file to extract application config.
+
+    The configuration file may include:
+    - apiBaseUrl: Base URL for the RPlay API
+    - creators: The monitored creators list
 
     Args:
         config_path: Path to the YAML configuration file
 
     Returns:
-        List[CreatorProfile]: List of validated creator profiles
+        AppConfig: Validated application configuration
 
     Raises:
         ConfigError: If the file cannot be read or parsed
-
-    Example YAML format:
-        creators:
-            - name: "Creator Name"
-              id: "creator_unique_id"
     """
     path = Path(config_path)
 
@@ -112,7 +116,7 @@ def read_config(config_path: str) -> List[CreatorProfile]:
             # Handle empty file
             if data is None:
                 _get_logger().warning("Configuration file is empty")
-                return []
+                data = {}
 
             # Validate structure
             if not isinstance(data, dict):
@@ -120,13 +124,14 @@ def read_config(config_path: str) -> List[CreatorProfile]:
                 _get_logger().error(error_msg)
                 raise ConfigError(error_msg)
 
+            api_base_url = _resolve_api_base_url(data, path)
+            creators = _parse_creators(data)
             if "creators" not in data:
                 _get_logger().warning("No 'creators' key found in configuration")
-                return []
 
-            creators = _parse_creators(data)
+            config = AppConfig(api_base_url=api_base_url, creators=creators)
             _get_logger().debug(f"Loaded {len(creators)} creator(s) from configuration")
-            return creators
+            return config
 
     except yaml.YAMLError as e:
         error_msg = f"YAML format error: {e}"
@@ -145,6 +150,53 @@ def read_config(config_path: str) -> List[CreatorProfile]:
         error_msg = f"Unexpected error while reading configuration: {e}"
         _get_logger().error(error_msg)
         raise ConfigError(error_msg) from e
+
+
+def _resolve_api_base_url(yaml_data: Dict[str, Any], config_path: Path) -> str:
+    """Return the configured API base URL, persisting the default when missing."""
+    raw_value = yaml_data.get("apiBaseUrl")
+    if raw_value is None:
+        _persist_default_api_base_url(config_path)
+        return DEFAULT_RPLAY_API_BASE_URL
+
+    api_base_url = str(raw_value).strip().rstrip("/")
+    parsed = urlparse(api_base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ConfigError(f"Invalid apiBaseUrl: {raw_value}")
+    return api_base_url
+
+
+def _persist_default_api_base_url(config_path: Path) -> None:
+    """Best-effort migration that writes the default apiBaseUrl into config.yaml."""
+    line = f"apiBaseUrl: {DEFAULT_RPLAY_API_BASE_URL}"
+
+    try:
+        original = config_path.read_text(encoding="utf-8")
+        updated = _prepend_top_level_yaml_key(original, line)
+        config_path.write_text(updated, encoding="utf-8")
+    except OSError as exc:
+        _get_logger().warning(
+            f"Failed to persist default apiBaseUrl to {config_path}: {exc}"
+        )
+
+
+def _prepend_top_level_yaml_key(original: str, line: str) -> str:
+    """Insert one YAML key near the top while preserving the rest of the file."""
+    bom = ""
+    if original.startswith("\ufeff"):
+        bom = "\ufeff"
+        original = original[1:]
+
+    if not original.strip():
+        return f"{bom}{line}\n"
+
+    lines = original.splitlines(keepends=True)
+    if lines and lines[0].strip() == "---":
+        remainder = "".join(lines[1:])
+        separator = "" if remainder.startswith("\n") else "\n"
+        return f"{bom}{lines[0]}{line}\n{separator}{remainder}"
+
+    return f"{bom}{line}\n\n{original}"
 
 
 def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:

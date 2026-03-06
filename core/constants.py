@@ -7,7 +7,7 @@ to ensure consistency and ease of maintenance.
 
 # RPlay platform URLs
 RPLAY_SITE_URL = "https://rplay.live"
-RPLAY_API_BASE_URL = "https://api.rplay-cdn.com"
+DEFAULT_RPLAY_API_BASE_URL = "https://api.rplay.live"
 
 # Default User-Agent for HTTP requests
 DEFAULT_USER_AGENT = (
@@ -34,7 +34,7 @@ DEFAULT_FRAGMENT_RETRIES = 10
 
 __all__ = [
     "RPLAY_SITE_URL",
-    "RPLAY_API_BASE_URL",
+    "DEFAULT_RPLAY_API_BASE_URL",
     "DEFAULT_USER_AGENT",
     "DEFAULT_HTTP_HEADERS",
     "DEFAULT_REQUEST_TIMEOUT",

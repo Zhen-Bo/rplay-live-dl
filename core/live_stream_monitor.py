@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
 
-from models.config import CreatorProfile
+from models.config import AppConfig, CreatorProfile
 from models.download import (
     DownloadSession,
     MergeCompleted,
@@ -26,7 +26,7 @@ from models.download import (
 )
 from models.rplay import CreatorStreamState, LiveStream, StreamState
 
-from .config import ConfigError, DEFAULT_CONFIG_PATH, read_config
+from .config import ConfigError, DEFAULT_CONFIG_PATH, read_app_config as read_config
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .logger import setup_logger
@@ -406,7 +406,12 @@ class LiveStreamMonitor:
 
     def _update_downloaders(self) -> None:
         """Refresh monitored creator metadata from the current config file."""
-        creator_profiles = read_config(self.config_path)
+        runtime_config = read_config(self.config_path)
+        if isinstance(runtime_config, AppConfig):
+            self.api.set_base_url(runtime_config.api_base_url)
+            creator_profiles = runtime_config.creators
+        else:
+            creator_profiles = runtime_config
         new_creators: List[str] = []
 
         with self._state_lock:

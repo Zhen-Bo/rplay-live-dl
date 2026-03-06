@@ -1,11 +1,30 @@
 """
 Creator profile configuration model.
 
-Defines the Pydantic model for creator profile data used in the
-configuration file for monitoring specific content creators.
+Defines the Pydantic models used by the YAML configuration file,
+including monitored creators and application-level settings.
 """
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class AppConfig(BaseModel):
+    """Application-level configuration loaded from config.yaml."""
+
+    api_base_url: str = Field(..., description="Base URL for the RPlay API")
+    creators: list["CreatorProfile"] = Field(
+        default_factory=list,
+        description="Configured creators to monitor",
+    )
+
+    @field_validator("api_base_url")
+    @classmethod
+    def validate_api_base_url(cls, value: str) -> str:
+        """Validate and normalize api_base_url."""
+        sanitized = value.strip().rstrip("/")
+        if not sanitized:
+            raise ValueError("api_base_url cannot be empty or whitespace")
+        return sanitized
 
 
 class CreatorProfile(BaseModel):
@@ -68,3 +87,6 @@ class CreatorProfile(BaseModel):
     def __repr__(self) -> str:
         """Return detailed representation of the creator profile."""
         return self.__str__()
+
+
+AppConfig.model_rebuild()

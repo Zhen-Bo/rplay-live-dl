@@ -14,12 +14,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from core.constants import (
+    DEFAULT_RPLAY_API_BASE_URL,
     DEFAULT_HTTP_HEADERS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_RETRY_BACKOFF_FACTOR,
     RETRY_STATUS_CODES,
-    RPLAY_API_BASE_URL,
 )
 from core.logger import setup_logger
 from models.rplay import LiveStream
@@ -59,7 +59,12 @@ class RPlayAPI:
     with automatic retry on transient failures.
     """
 
-    def __init__(self, auth_token: str, user_oid: str) -> None:
+    def __init__(
+        self,
+        auth_token: str,
+        user_oid: str,
+        base_url: str = DEFAULT_RPLAY_API_BASE_URL,
+    ) -> None:
         """
         Initialize the API client with authentication credentials.
 
@@ -72,11 +77,16 @@ class RPlayAPI:
         """
         self.auth_token = auth_token
         self.user_oid = user_oid
+        self.base_url = base_url.rstrip("/")
         self.headers = DEFAULT_HTTP_HEADERS.copy()
         self.logger = setup_logger("RPlayAPI")
 
         # Configure session with retry strategy
         self._session = self._create_session()
+
+    def set_base_url(self, base_url: str) -> None:
+        """Update the API base URL used for future requests."""
+        self.base_url = base_url.rstrip("/")
 
     def _create_session(self) -> requests.Session:
         """
@@ -112,7 +122,7 @@ class RPlayAPI:
         Raises:
             RPlayConnectionError: If the API request fails after retries
         """
-        url = f"{RPLAY_API_BASE_URL}/live/livestreams"
+        url = f"{self.base_url}/live/livestreams"
 
         try:
             response = self._session.get(
@@ -161,7 +171,7 @@ class RPlayAPI:
             "key2": stream_key,
         })
 
-        return f"{RPLAY_API_BASE_URL}/live/stream/playlist.m3u8?{params}"
+        return f"{self.base_url}/live/stream/playlist.m3u8?{params}"
 
     def validate_m3u8_url(
         self,
@@ -225,7 +235,7 @@ class RPlayAPI:
         auth_headers["Authorization"] = self.auth_token
 
         url = (
-            f"{RPLAY_API_BASE_URL}/live/key2?"
+            f"{self.base_url}/live/key2?"
             f"lang=en&requestorOid={self.user_oid}&loginType=plax"
         )
 
