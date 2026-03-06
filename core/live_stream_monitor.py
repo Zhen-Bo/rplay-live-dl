@@ -26,7 +26,7 @@ from models.download import (
 )
 from models.rplay import CreatorStreamState, LiveStream, StreamState
 
-from .config import ConfigError, read_config
+from .config import ConfigError, DEFAULT_CONFIG_PATH, read_config
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .logger import setup_logger
@@ -88,7 +88,7 @@ class LiveStreamMonitor:
         self,
         auth_token: str,
         user_oid: str,
-        config_path: str = "./config/config.yaml",
+        config_path: str = DEFAULT_CONFIG_PATH,
         api: Optional[RPlayAPI] = None,
         merge_timeout_seconds: int = DEFAULT_MERGE_TIMEOUT_SECONDS,
     ) -> None:

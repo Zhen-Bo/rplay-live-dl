@@ -1,4 +1,4 @@
-"""
+﻿"""
 Scheduler module for rplay-live-dl.
 
 Provides the scheduling infrastructure for periodic live stream
@@ -13,6 +13,7 @@ from typing import Optional
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from core.config import DEFAULT_CONFIG_PATH, validate_startup_config_path
 from core.env import EnvConfig
 from core.live_stream_monitor import LiveStreamMonitor
 
@@ -125,5 +126,6 @@ def run_scheduler(env: EnvConfig, logger: logging.Logger, version: str) -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    validate_startup_config_path(DEFAULT_CONFIG_PATH)
     _scheduler = LiveStreamScheduler(env=env, logger=logger, version=version)
     _scheduler.start()

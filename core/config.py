@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configuration module for rplay-live-dl.
 
 Provides functionality to read and parse YAML configuration files
@@ -17,12 +17,19 @@ from models.config import CreatorProfile
 
 __all__ = [
     "ConfigError",
+    "DEFAULT_CONFIG_PATH",
+    "LEGACY_CONFIG_PATH",
     "read_config",
     "validate_config",
+    "validate_startup_config_path",
 ]
 
 # Use lazy logger initialization to allow test patching
 _logger: Optional[logging.Logger] = None
+
+
+DEFAULT_CONFIG_PATH = "./config/config.yaml"
+LEGACY_CONFIG_PATH = "./config.yaml"
 
 
 def _get_logger() -> logging.Logger:
@@ -42,6 +49,24 @@ class ConfigError(Exception):
     """
 
     pass
+
+
+def validate_startup_config_path(config_path: str) -> None:
+    """Validate startup config path and surface legacy-path migration errors early."""
+    path = Path(config_path)
+    if path.exists():
+        return
+
+    default_path = Path(DEFAULT_CONFIG_PATH)
+    legacy_path = Path(LEGACY_CONFIG_PATH)
+    if path == default_path and legacy_path.exists():
+        raise ConfigError(
+            f"Detected legacy config at {LEGACY_CONFIG_PATH}. "
+            f"Since 2.0.0-vibe, move it to {DEFAULT_CONFIG_PATH}. "
+            "If using Docker, mount ./config:/app/config."
+        )
+
+    raise ConfigError(f"Configuration file not found: {config_path}")
 
 
 def read_config(config_path: str) -> List[CreatorProfile]:
