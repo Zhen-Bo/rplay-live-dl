@@ -61,6 +61,7 @@ Version `2.0.0-vibe` introduces a session-aware download pipeline:
 - a new live session can start even while the previous session is still merging
 - startup now fails fast when the app detects the legacy `./config.yaml` path
 - detailed runtime behavior is documented below in [Download and Merge Flow](#download-and-merge-flow)
+- `apiBaseUrl` now lives in `config/config.yaml`, is reloaded every poll, and is auto-written with `https://api.rplay.live` if missing
 
 ---
 
@@ -114,7 +115,7 @@ Startup protection:
    - Local / Poetry run: copy `.env.example` to `.env`
    - Included `docker-compose.yaml`: copy `.env.example` to `env`, or update the compose volume to mount `.env` instead
 2. Create `config/config.yaml` from `config.yaml.example`.
-3. Fill in your RPlay credentials and creator list.
+3. Fill in your RPlay credentials, creator list, and optionally `apiBaseUrl`.
 4. Start the service with Docker Compose.
 5. Watch logs until the first polling cycle succeeds.
 
@@ -217,6 +218,8 @@ Notes:
 Copy `config.yaml.example` to `config/config.yaml` and edit it like this:
 
 ```yaml
+apiBaseUrl: https://api.rplay.live
+
 creators:
     - name: "Creator Nickname 1"
       id: "Creator ID 1"
@@ -224,12 +227,20 @@ creators:
       id: "Creator ID 2"
 ```
 
+Notes:
+
+- `apiBaseUrl` defaults to `https://api.rplay.live`
+- if `apiBaseUrl` is missing, the app keeps using that default and writes the key back into `config/config.yaml`
+- the monitor re-reads `config/config.yaml` on every poll, so updating `apiBaseUrl` in a running Docker deployment does not require a container restart
+- an invalid `apiBaseUrl` is treated as a config error and the current poll is skipped until the file is fixed
+
 ### Download and Merge Flow
 
 The v2 runtime uses a two-step download pipeline.
 
 1. **Poll**
    - the monitor loads `config/config.yaml`
+   - it refreshes `apiBaseUrl` from config before calling the API
    - it checks live status for all configured creators
 
 2. **Create a session**

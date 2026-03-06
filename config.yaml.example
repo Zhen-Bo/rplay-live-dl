@@ -1,4 +1,6 @@
 # Copy this file to ./config/config.yaml before running the app.
+apiBaseUrl: https://api.rplay.live
+
 creators:
     - name: "Test Creator1"
       id: "2dljhytp0qxweigedhc0dt91"
