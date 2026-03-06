@@ -78,6 +78,11 @@ class LiveStreamMonitor:
 
     DEFAULT_MERGE_TIMEOUT_SECONDS = 7200
     POLL_WAIT_TIMEOUT_SECONDS = 30.0
+    TERMINAL_SESSION_STATES = {
+        SessionState.BLOCKED,
+        SessionState.DONE,
+        SessionState.MERGE_FAILED,
+    }
 
     def __init__(
         self,
@@ -235,6 +240,7 @@ class LiveStreamMonitor:
         session_key = self._make_session_key(stream)
         with self._state_lock:
             self.latest_session_by_creator[stream.creator_oid] = session_key
+            self._prune_superseded_terminal_sessions_locked(stream.creator_oid)
             existing_session = self.sessions.get(session_key)
 
         if existing_session is not None and existing_session.state in {
@@ -453,6 +459,35 @@ class LiveStreamMonitor:
         """Remove creator state when they go offline."""
         with self._state_lock:
             self._creator_states.pop(creator_oid, None)
+            self.latest_session_by_creator.pop(creator_oid, None)
+            self._prune_terminal_sessions_for_creator_locked(creator_oid)
+
+    def _prune_superseded_terminal_sessions_locked(self, creator_oid: str) -> None:
+        """Drop older terminal sessions once a newer session becomes current."""
+        keep_session_key = self.latest_session_by_creator.get(creator_oid)
+        if keep_session_key is None:
+            return
+
+        removable_keys = [
+            session_key
+            for session_key, session in self.sessions.items()
+            if session.creator_oid == creator_oid
+            and session.session_key != keep_session_key
+            and session.state in self.TERMINAL_SESSION_STATES
+        ]
+        for session_key in removable_keys:
+            self.sessions.pop(session_key, None)
+
+    def _prune_terminal_sessions_for_creator_locked(self, creator_oid: str) -> None:
+        """Drop terminal sessions for a creator that is no longer active."""
+        removable_keys = [
+            session_key
+            for session_key, session in self.sessions.items()
+            if session.creator_oid == creator_oid
+            and session.state in self.TERMINAL_SESSION_STATES
+        ]
+        for session_key in removable_keys:
+            self.sessions.pop(session_key, None)
 
     def _get_or_create_session(self, stream: LiveStream, creator_name: str) -> DownloadSession:
         """Get existing session or create a new session record."""
