@@ -1,4 +1,4 @@
-"""Tests for live stream monitor module."""
+﻿"""Tests for live stream monitor module."""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -123,6 +123,84 @@ class TestSessionAwareMonitoring:
         mock_download.assert_called_once_with(
             "http://example.com/stream.m3u8", "Test Stream"
         )
+
+    def test_process_live_stream_prunes_superseded_terminal_sessions(
+        self, mock_api, tmp_path
+    ):
+        """Test a newer session prunes older terminal sessions for the same creator."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        old_session_key = "creator1:2026-03-06T12:00:00"
+        new_session_key = "creator1:2026-03-06T12:05:00"
+        monitor.monitored_creators["creator1"] = CreatorProfile(
+            creator_name="Creator1",
+            creator_oid="creator1",
+        )
+        monitor.sessions[old_session_key] = DownloadSession(
+            session_key=old_session_key,
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Old Stream",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            state=SessionState.DONE,
+            staging_dir=tmp_path / "old",
+        )
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_state = StreamState.LIVE
+        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 5, 0)
+        mock_stream.title = "New Stream"
+
+        with patch.object(monitor, "_start_download") as mock_start_download:
+            monitor._process_live_stream(mock_stream)
+
+        assert old_session_key not in monitor.sessions
+        assert monitor.latest_session_by_creator["creator1"] == new_session_key
+        mock_start_download.assert_called_once_with(mock_stream)
+
+    def test_cleanup_offline_creator_states_prunes_terminal_sessions(
+        self, mock_api, tmp_path
+    ):
+        """Test offline creators drop terminal sessions during cleanup."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        offline_session_key = "creator1:2026-03-06T12:00:00"
+        active_session_key = "creator2:2026-03-06T12:05:00"
+        monitor.sessions[offline_session_key] = DownloadSession(
+            session_key=offline_session_key,
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Finished Stream",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            state=SessionState.DONE,
+            staging_dir=tmp_path / "creator1",
+        )
+        monitor.sessions[active_session_key] = DownloadSession(
+            session_key=active_session_key,
+            creator_oid="creator2",
+            creator_name="Creator2",
+            title="Active Stream",
+            stream_start_time=datetime(2026, 3, 6, 12, 5, 0),
+            state=SessionState.RAW_RUNNING,
+            staging_dir=tmp_path / "creator2",
+        )
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_start_time=datetime(2026, 3, 6, 12, 0, 0)
+        )
+        monitor._creator_states["creator2"] = CreatorStreamState(
+            last_stream_start_time=datetime(2026, 3, 6, 12, 5, 0)
+        )
+
+        monitor._cleanup_offline_creator_states({"creator2"})
+
+        assert offline_session_key not in monitor.sessions
+        assert active_session_key in monitor.sessions
 
     @patch('core.live_stream_monitor.read_config')
     @patch('core.live_stream_monitor.StreamDownloader.download')

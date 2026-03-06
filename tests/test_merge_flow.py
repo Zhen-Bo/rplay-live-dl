@@ -1,6 +1,8 @@
 ﻿"""Tests for session merge flow."""
 
 import subprocess
+from pathlib import Path
+from unittest.mock import patch
 from datetime import datetime
 
 from core.live_stream_monitor import LiveStreamMonitor
@@ -133,4 +135,26 @@ class TestMergeFlow:
 
         assert isinstance(event, MergeFailed)
         assert "timeout" in event.error_message.lower()
+        monitor.shutdown()
+
+
+    def test_run_ffmpeg_merge_escapes_single_quotes_in_concat_paths(self, tmp_path, monkeypatch):
+        """Test concat input escapes apostrophes in fragment paths."""
+        monkeypatch.chdir(tmp_path)
+        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        ts_file = staging_dir / "#Creator 2026-03-06 it's live.ts"
+        ts_file.write_bytes(b"ts")
+        output_path = tmp_path / "archive" / "Creator" / "final.mp4"
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["content"] = Path(cmd[7]).read_text(encoding="utf-8")
+
+        with patch("core.live_stream_monitor.subprocess.run", side_effect=fake_run):
+            monitor._run_ffmpeg_merge([ts_file], output_path)
+
+        escaped = ts_file.resolve().as_posix().replace("'", "'\''")
+        assert captured["content"] == f"file '{escaped}'"
         monitor.shutdown()

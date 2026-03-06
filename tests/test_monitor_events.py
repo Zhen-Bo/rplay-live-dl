@@ -1,4 +1,4 @@
-"""Tests for event-driven monitor behavior."""
+﻿"""Tests for event-driven monitor behavior."""
 
 import inspect
 
@@ -10,8 +10,14 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from core.live_stream_monitor import LiveStreamMonitor
+from models.config import CreatorProfile
 from core.rplay import RPlayAPI
-from models.download import DownloadSession, RawDownloadCompleted, SessionState
+from models.download import (
+    DownloadSession,
+    RawDownloadCompleted,
+    RawDownloadFailed,
+    SessionState,
+)
 
 
 def test_raw_completion_event_immediately_submits_merge(tmp_path):
@@ -37,6 +43,45 @@ def test_raw_completion_event_immediately_submits_merge(tmp_path):
 
     assert monitor.sessions[session_key].state == SessionState.MERGE_QUEUED
     mock_submit.assert_called_once()
+    monitor.shutdown()
+
+
+def test_raw_failure_event_allows_same_session_retry(tmp_path):
+    """Test a failed raw download clears the stuck session so the next poll can retry."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    session_key = "creator1:2026-03-06T12:00:00"
+    monitor.monitored_creators["creator1"] = CreatorProfile(
+        creator_name="Creator1",
+        creator_oid="creator1",
+    )
+    monitor.sessions[session_key] = DownloadSession(
+        session_key=session_key,
+        creator_oid="creator1",
+        creator_name="Creator1",
+        title="Test Stream",
+        stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+        state=SessionState.RAW_RUNNING,
+        staging_dir=tmp_path,
+    )
+    mock_stream = MagicMock()
+    mock_stream.creator_oid = "creator1"
+    mock_stream.stream_state = "live"
+    mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
+    mock_stream.title = "Test Stream"
+
+    with patch.object(monitor, "_start_download") as mock_start_download:
+        monitor._on_raw_download_failed(
+            RawDownloadFailed(
+                session_key=session_key,
+                error_message="Some other error",
+            )
+        )
+        monitor._event_queue.join()
+        monitor._process_live_stream(mock_stream)
+
+    assert session_key not in monitor.sessions
+    mock_start_download.assert_called_once_with(mock_stream)
     monitor.shutdown()
 
 

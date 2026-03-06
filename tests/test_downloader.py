@@ -1,4 +1,4 @@
-"""Tests for stream downloader module."""
+﻿"""Tests for stream downloader module."""
 
 import threading
 from datetime import datetime
@@ -10,7 +10,7 @@ import yt_dlp
 from freezegun import freeze_time
 
 from core.downloader import StreamDownloader
-from models.download import RawDownloadCompleted
+from models.download import RawDownloadCompleted, RawDownloadFailed
 
 
 @pytest.fixture
@@ -444,6 +444,46 @@ class TestDownloadErrorCallback:
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
         callback.assert_not_called()
+
+    def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
+        """Test non-blocked download errors emit a raw failure event."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:2026-03-06T12:00:00",
+            on_download_failure=lambda event: events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert len(events) == 1
+        assert isinstance(events[0], RawDownloadFailed)
+        assert events[0].session_key == "creator1:2026-03-06T12:00:00"
+        assert events[0].error_message == "Some other error"
+
+    def test_worker_emits_failure_event_on_unexpected_exception(self, mock_yt_dlp, tmp_path):
+        """Test unexpected download exceptions emit a raw failure event."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:2026-03-06T12:00:00",
+            on_download_failure=lambda event: events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = RuntimeError("Unexpected error")
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert len(events) == 1
+        assert isinstance(events[0], RawDownloadFailed)
+        assert events[0].session_key == "creator1:2026-03-06T12:00:00"
+        assert events[0].error_message == "Unexpected error"
 
 
 class TestProperties:
