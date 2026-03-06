@@ -50,6 +50,14 @@ class RawDownloadBlocked:
 
 
 @dataclass(frozen=True)
+class RawDownloadFailed:
+    """Event emitted when a raw download fails for a retryable non-blocked reason."""
+
+    session_key: str
+    error_message: str
+
+
+@dataclass(frozen=True)
 class MergeJobSpec:
     """Immutable merge job inputs for one completed raw download session."""
 

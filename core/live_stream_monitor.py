@@ -21,6 +21,7 @@ from models.download import (
     MergeStarted,
     RawDownloadBlocked,
     RawDownloadCompleted,
+    RawDownloadFailed,
     SessionState,
 )
 from models.rplay import CreatorStreamState, LiveStream, StreamState
@@ -51,6 +52,7 @@ class _ShutdownRequested:
 SessionEvent = Union[
     RawDownloadCompleted,
     RawDownloadBlocked,
+    RawDownloadFailed,
     MergeStarted,
     MergeCompleted,
     MergeFailed,
@@ -341,6 +343,7 @@ class LiveStreamMonitor:
             output_dir=session.staging_dir,
             output_extension=".ts",
             on_download_complete=self._on_raw_download_complete,
+            on_download_failure=self._on_raw_download_failed,
         )
 
         active_downloader.download(stream_url, title)
@@ -494,6 +497,10 @@ class LiveStreamMonitor:
         """Receive raw completion from a downloader thread and queue it."""
         self._queue_monitor_event(event)
 
+    def _on_raw_download_failed(self, event: RawDownloadFailed) -> None:
+        """Receive raw download failure from a downloader thread and queue it."""
+        self._queue_monitor_event(event)
+
     def _handle_monitor_event(self, event: SessionEvent) -> None:
         """Apply one monitor event on the control loop."""
         if isinstance(event, RawDownloadCompleted):
@@ -502,6 +509,10 @@ class LiveStreamMonitor:
 
         if isinstance(event, RawDownloadBlocked):
             self._handle_raw_download_blocked(event)
+            return
+
+        if isinstance(event, RawDownloadFailed):
+            self._handle_raw_download_failed(event)
             return
 
         with self._state_lock:
@@ -545,6 +556,19 @@ class LiveStreamMonitor:
             )
 
         self.merge_executor.submit_merge(lambda: self._run_merge_job(merge_job))
+
+    def _handle_raw_download_failed(self, event: RawDownloadFailed) -> None:
+        """Clear failed raw sessions so the next poll can retry them."""
+        with self._state_lock:
+            session = self.sessions.pop(event.session_key, None)
+
+        if session is None:
+            return
+
+        self.logger.warning(
+            f"⚠️ Raw download failed for {session.creator_name}; will retry on next poll: "
+            f"{event.error_message}"
+        )
 
     def _handle_raw_download_blocked(self, event: RawDownloadBlocked) -> None:
         """Apply blocked-session state when downloader reports access failure."""

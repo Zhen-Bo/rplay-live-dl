@@ -20,7 +20,7 @@ from core.constants import (
 )
 from core.logger import setup_logger
 from core.utils import format_file_size
-from models.download import RawDownloadCompleted
+from models.download import RawDownloadCompleted, RawDownloadFailed
 
 __all__ = [
     "StreamDownloader",
@@ -68,6 +68,7 @@ class StreamDownloader:
         output_dir: Optional[Path] = None,
         output_extension: str = ".mp4",
         on_download_complete: Optional[Callable[[RawDownloadCompleted], None]] = None,
+        on_download_failure: Optional[Callable[[RawDownloadFailed], None]] = None,
     ) -> None:
         """
         Initialize a new stream downloader for a creator.
@@ -89,6 +90,7 @@ class StreamDownloader:
         self.output_dir = output_dir
         self.output_extension = output_extension
         self._on_download_complete = on_download_complete
+        self._on_download_failure = on_download_failure
 
     def _log(self, level: str, message: str) -> None:
         """Log a message with creator name prefix."""
@@ -276,10 +278,15 @@ class StreamDownloader:
 
         except yt_dlp.utils.DownloadError as e:
             self.logger.error(f"❌ Download error: {e}")
-            self._notify_download_error(str(e))
+            error_message = str(e)
+            if self._is_m3u8_access_error(error_message):
+                self._notify_download_error(error_message)
+            else:
+                self._notify_download_failure(error_message)
 
         except Exception as e:
             self.logger.error(f"❌ Unexpected download error: {e}")
+            self._notify_download_failure(str(e))
 
         finally:
             self._current_output_path = None
@@ -330,6 +337,21 @@ class StreamDownloader:
             )
         except Exception as e:
             self.logger.error(f"Error in download complete callback: {e}")
+
+    def _notify_download_failure(self, error_message: str) -> None:
+        """Notify listeners that a raw download failed for a non-blocked reason."""
+        if not self._on_download_failure or not self.session_key:
+            return
+
+        try:
+            self._on_download_failure(
+                RawDownloadFailed(
+                    session_key=self.session_key,
+                    error_message=error_message,
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Error in download failure callback: {e}")
 
     @property
     def current_output_path(self) -> Optional[Path]:
