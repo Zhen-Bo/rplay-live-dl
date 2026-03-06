@@ -1,4 +1,4 @@
-"""Tests for the download merge executor."""
+﻿"""Tests for the download merge executor."""
 
 import pytest
 
@@ -13,7 +13,7 @@ class TestDownloadMergeExecutor:
         events = []
         executor = DownloadMergeExecutor(max_workers=1)
 
-        future = executor.submit_merge("session1", lambda: events.append("done"))
+        future = executor.submit_merge(lambda: events.append("done"))
         future.result(timeout=1)
         executor.shutdown(wait=True)
 
@@ -26,5 +26,4 @@ class TestDownloadMergeExecutor:
         executor.shutdown(wait=False)
 
         with pytest.raises(RuntimeError):
-            executor.submit_merge("session1", lambda: None)
-
+            executor.submit_merge(lambda: None)

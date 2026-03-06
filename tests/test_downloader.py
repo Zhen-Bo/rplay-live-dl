@@ -1,4 +1,4 @@
-"""Tests for stream downloader module."""
+﻿"""Tests for stream downloader module."""
 
 import threading
 from datetime import datetime
@@ -10,7 +10,7 @@ import yt_dlp
 from freezegun import freeze_time
 
 from core.downloader import StreamDownloader
-from models.download import DownloadResult
+from models.download import RawDownloadCompleted
 
 
 @pytest.fixture
@@ -315,7 +315,7 @@ class TestDownloadWorker:
 
         mock_ydl.download.assert_called_once()
         assert len(events) == 1
-        assert isinstance(events[0], DownloadResult)
+        assert isinstance(events[0], RawDownloadCompleted)
         assert events[0].session_key == "creator1:2026-03-06T12:00:00"
 
 
@@ -442,3 +442,4 @@ class TestProperties:
         mock_thread.is_alive.return_value = False
         downloader.download_thread = mock_thread
         assert downloader.download_duration is None
+

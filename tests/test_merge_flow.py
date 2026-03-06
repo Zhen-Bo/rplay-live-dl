@@ -1,9 +1,10 @@
-"""Tests for session merge flow."""
+﻿"""Tests for session merge flow."""
 
+import subprocess
 from datetime import datetime
 
 from core.live_stream_monitor import LiveStreamMonitor
-from models.download import DownloadResult, DownloadSession, SessionState
+from models.download import DownloadSession, MergeCompleted, MergeFailed, SessionState
 
 
 class TestMergeFlow:
@@ -18,23 +19,6 @@ class TestMergeFlow:
         staging_dir.mkdir(parents=True)
         ts_file = staging_dir / "#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
-        monitor.sessions[session_key] = DownloadSession(
-            session_key=session_key,
-            creator_oid="creator1",
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            state=SessionState.MERGE_QUEUED,
-            staging_dir=staging_dir,
-        )
-        result = DownloadResult(
-            session_key=session_key,
-            staging_dir=staging_dir,
-            base_output_stem="#Creator 2026-03-06 123",
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-        )
 
         def fake_merge(ts_files, output_path):
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,11 +26,18 @@ class TestMergeFlow:
 
         monitor._run_ffmpeg_merge = fake_merge
 
-        monitor._merge_session_to_mp4(session_key, result)
+        event = monitor._merge_session_to_mp4(
+            session_key=session_key,
+            creator_name="Creator",
+            title="123",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            staging_dir=staging_dir,
+        )
 
-        assert (tmp_path / "archive" / "Creator" / "#Creator 2026-03-06 123.mp4").exists()
+        assert isinstance(event, MergeCompleted)
+        assert event.output_path == tmp_path / "archive" / "Creator" / "#Creator 2026-03-06 123.mp4"
         assert not ts_file.exists()
-        assert monitor.sessions[session_key].state == SessionState.DONE
+        monitor.shutdown()
 
     def test_second_session_same_title_increments_mp4_suffix(self, tmp_path, monkeypatch):
         """Test a second session with the same title gets a suffixed mp4 name."""
@@ -60,23 +51,6 @@ class TestMergeFlow:
         staging_dir = monitor._build_staging_dir("Creator", session_key)
         staging_dir.mkdir(parents=True)
         (staging_dir / "#Creator 2026-03-06 123.ts").write_bytes(b"ts")
-        monitor.sessions[session_key] = DownloadSession(
-            session_key=session_key,
-            creator_oid="creator1",
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 30, 0),
-            state=SessionState.MERGE_QUEUED,
-            staging_dir=staging_dir,
-        )
-        result = DownloadResult(
-            session_key=session_key,
-            staging_dir=staging_dir,
-            base_output_stem="#Creator 2026-03-06 123",
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 30, 0),
-        )
 
         def fake_merge(ts_files, output_path):
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,9 +58,17 @@ class TestMergeFlow:
 
         monitor._run_ffmpeg_merge = fake_merge
 
-        monitor._merge_session_to_mp4(session_key, result)
+        event = monitor._merge_session_to_mp4(
+            session_key=session_key,
+            creator_name="Creator",
+            title="123",
+            stream_start_time=datetime(2026, 3, 6, 12, 30, 0),
+            staging_dir=staging_dir,
+        )
 
-        assert (final_dir / "#Creator 2026-03-06 123_1.mp4").exists()
+        assert isinstance(event, MergeCompleted)
+        assert event.output_path == final_dir / "#Creator 2026-03-06 123_1.mp4"
+        monitor.shutdown()
 
     def test_failed_merge_moves_ts_files_to_failed_directory(self, tmp_path, monkeypatch):
         """Test failed merges move raw files into the visible failed directory."""
@@ -97,38 +79,50 @@ class TestMergeFlow:
         staging_dir.mkdir(parents=True)
         ts_file = staging_dir / "#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
-        monitor.sessions[session_key] = DownloadSession(
-            session_key=session_key,
-            creator_oid="creator1",
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            state=SessionState.MERGE_QUEUED,
-            staging_dir=staging_dir,
-        )
-        result = DownloadResult(
-            session_key=session_key,
-            staging_dir=staging_dir,
-            base_output_stem="#Creator 2026-03-06 123",
-            creator_name="Creator",
-            title="123",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-        )
 
         def fake_merge(ts_files, output_path):
             raise RuntimeError("merge failed")
 
         monitor._run_ffmpeg_merge = fake_merge
 
-        monitor._merge_session_to_mp4(session_key, result)
-
-        failed_ts = (
-            tmp_path
-            / "archive"
-            / "Creator"
-            / "_failed"
-            / monitor._make_session_dir_name(session_key)
-            / "#Creator 2026-03-06 123.ts"
+        event = monitor._merge_session_to_mp4(
+            session_key=session_key,
+            creator_name="Creator",
+            title="123",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            staging_dir=staging_dir,
         )
-        assert failed_ts.exists()
-        assert monitor.sessions[session_key].state == SessionState.MERGE_FAILED
+
+        assert isinstance(event, MergeFailed)
+        assert event.failed_staging_dir == (
+            tmp_path / "archive" / "Creator" / "_failed" / monitor._make_session_dir_name(session_key)
+        )
+        assert (event.failed_staging_dir / "#Creator 2026-03-06 123.ts").exists()
+        assert not ts_file.exists()
+        monitor.shutdown()
+
+    def test_merge_timeout_returns_failure_event(self, tmp_path, monkeypatch):
+        """Test ffmpeg timeout becomes a merge failure event."""
+        monkeypatch.chdir(tmp_path)
+        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        session_key = "creator1:2026-03-06T12:00:00"
+        staging_dir = monitor._build_staging_dir("Creator", session_key)
+        staging_dir.mkdir(parents=True)
+        (staging_dir / "#Creator 2026-03-06 123.ts").write_bytes(b"ts")
+
+        def fake_merge(ts_files, output_path):
+            raise subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=1)
+
+        monitor._run_ffmpeg_merge = fake_merge
+
+        event = monitor._merge_session_to_mp4(
+            session_key=session_key,
+            creator_name="Creator",
+            title="123",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            staging_dir=staging_dir,
+        )
+
+        assert isinstance(event, MergeFailed)
+        assert "timeout" in event.error_message.lower()
+        monitor.shutdown()

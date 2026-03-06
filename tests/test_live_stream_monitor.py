@@ -1,4 +1,4 @@
-"""Tests for live stream monitor module."""
+﻿"""Tests for live stream monitor module."""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -9,7 +9,7 @@ from core.config import ConfigError
 from core.live_stream_monitor import LiveStreamMonitor
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from models.config import CreatorProfile
-from models.download import DownloadResult, DownloadSession, SessionState
+from models.download import DownloadSession, RawDownloadCompleted, SessionState
 from models.rplay import CreatorStreamState, StreamState
 
 
@@ -173,17 +173,14 @@ class TestSessionAwareMonitoring:
             state=SessionState.RAW_RUNNING,
             staging_dir=tmp_path,
         )
-        result = DownloadResult(
+        result = RawDownloadCompleted(
             session_key=session_key,
             staging_dir=tmp_path,
-            base_output_stem="#Creator1 2026-03-06 Test Stream",
-            creator_name="Creator1",
-            title="Test Stream",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
         )
 
         with patch.object(monitor.merge_executor, 'submit_merge') as mock_submit:
-            monitor._on_download_complete(session_key, result)
+            monitor._on_raw_download_complete(result)
+            monitor._event_queue.join()
 
         assert monitor.sessions[session_key].state == SessionState.MERGE_QUEUED
         mock_submit.assert_called_once()
@@ -219,11 +216,18 @@ class TestUpdateDownloaders:
         assert "new_oid" in monitor.downloaders
 
     @patch('core.live_stream_monitor.read_config')
-    def test_keeps_active_downloader_not_in_config(self, mock_read_config, monitor):
-        """Test that active downloaders are kept even if not in config."""
-        mock_downloader = MagicMock()
-        mock_downloader.is_alive.return_value = True
-        monitor.downloaders["active_oid"] = mock_downloader
+    def test_keeps_active_downloader_not_in_config(self, mock_read_config, monitor, tmp_path):
+        """Test creator templates are kept while that creator has a raw-running session."""
+        monitor.downloaders["active_oid"] = MagicMock()
+        monitor.sessions["active_oid:2026-03-06T12:00:00"] = DownloadSession(
+            session_key="active_oid:2026-03-06T12:00:00",
+            creator_oid="active_oid",
+            creator_name="ActiveCreator",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            state=SessionState.RAW_RUNNING,
+            staging_dir=tmp_path,
+        )
 
         mock_read_config.return_value = []
         monitor._update_downloaders()
@@ -254,16 +258,19 @@ class TestStartDownload:
     def test_start_download_success(self, mock_api, monitor):
         """Test successful download start."""
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.return_value = True
         mock_downloader = MagicMock()
         mock_downloader.creator_name = "TestCreator"
         mock_stream = MagicMock()
         mock_stream.creator_oid = "test_oid"
         mock_stream.title = "Test Stream"
+        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
 
-        monitor._start_download(mock_stream, mock_downloader)
+        with patch('core.live_stream_monitor.StreamDownloader.download') as mock_download:
+            monitor._start_download(mock_stream, mock_downloader)
 
         mock_api.get_stream_url.assert_called_once_with("test_oid")
-        mock_downloader.download.assert_called_once_with(
+        mock_download.assert_called_once_with(
             "http://example.com/stream.m3u8", "Test Stream"
         )
 
@@ -512,7 +519,7 @@ class TestGetActiveDownloads:
         assert monitor.get_active_downloads() == []
 
     def test_empty_list_when_all_inactive(self):
-        """Test returns empty list when all downloaders inactive."""
+        """Test returns empty list when no raw-running sessions exist."""
         mock_api = MagicMock(spec=RPlayAPI)
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -526,31 +533,38 @@ class TestGetActiveDownloads:
 
         assert monitor.get_active_downloads() == []
 
-    def test_returns_active_creator_names(self):
-        """Test returns list of creator names with active downloads."""
+    def test_returns_active_creator_names(self, tmp_path):
+        """Test returns list of creator names with active raw sessions."""
         mock_api = MagicMock(spec=RPlayAPI)
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
             api=mock_api,
         )
-        # Add active downloader
-        active_downloader = MagicMock()
-        active_downloader.is_alive.return_value = True
-        active_downloader.creator_name = "ActiveCreator"
-        monitor.downloaders["active"] = active_downloader
-
-        # Add inactive downloader
-        inactive_downloader = MagicMock()
-        inactive_downloader.is_alive.return_value = False
-        inactive_downloader.creator_name = "InactiveCreator"
-        monitor.downloaders["inactive"] = inactive_downloader
+        monitor.sessions["active:2026-03-06T12:00:00"] = DownloadSession(
+            session_key="active:2026-03-06T12:00:00",
+            creator_oid="active",
+            creator_name="ActiveCreator",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            state=SessionState.RAW_RUNNING,
+            staging_dir=tmp_path,
+        )
+        monitor.sessions["inactive:2026-03-06T11:00:00"] = DownloadSession(
+            session_key="inactive:2026-03-06T11:00:00",
+            creator_oid="inactive",
+            creator_name="InactiveCreator",
+            title="Old Stream",
+            stream_start_time=datetime(2026, 3, 6, 11, 0, 0),
+            state=SessionState.MERGING,
+            staging_dir=tmp_path,
+        )
 
         result = monitor.get_active_downloads()
         assert result == ["ActiveCreator"]
 
-    def test_returns_multiple_active(self):
-        """Test returns multiple active creator names."""
+    def test_returns_multiple_active(self, tmp_path):
+        """Test returns multiple active creator names from raw-running sessions."""
         mock_api = MagicMock(spec=RPlayAPI)
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -558,10 +572,15 @@ class TestGetActiveDownloads:
             api=mock_api,
         )
         for i in range(3):
-            downloader = MagicMock()
-            downloader.is_alive.return_value = True
-            downloader.creator_name = f"Creator{i}"
-            monitor.downloaders[f"oid{i}"] = downloader
+            monitor.sessions[f"oid{i}:2026-03-06T12:0{i}:00"] = DownloadSession(
+                session_key=f"oid{i}:2026-03-06T12:0{i}:00",
+                creator_oid=f"oid{i}",
+                creator_name=f"Creator{i}",
+                title="Test Stream",
+                stream_start_time=datetime(2026, 3, 6, 12, i, 0),
+                state=SessionState.RAW_RUNNING,
+                staging_dir=tmp_path,
+            )
 
         result = monitor.get_active_downloads()
         assert len(result) == 3
@@ -1104,3 +1123,8 @@ class TestHeartbeatLogOptimization:
         # Should have at least one periodic heartbeat (debug level)
         heartbeat_logs = [c for c in mock_debug.call_args_list if "Checked" in str(c) or "heartbeat" in str(c).lower()]
         assert len(heartbeat_logs) >= 1
+
+
+
+
+
