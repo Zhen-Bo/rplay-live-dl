@@ -274,6 +274,25 @@ class TestStartDownload:
             "http://example.com/stream.m3u8", "Test Stream"
         )
 
+    def test_start_download_logs_live_emoji(self, mock_api, monitor):
+        """Test the first live log preserves the visible red-circle marker."""
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.return_value = True
+        mock_downloader = MagicMock()
+        mock_downloader.creator_name = "TestCreator"
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "test_oid"
+        mock_stream.title = "Test Stream"
+        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
+
+        with (
+            patch('core.live_stream_monitor.StreamDownloader.download'),
+            patch.object(monitor.logger, 'info') as mock_info,
+        ):
+            monitor._start_download(mock_stream, mock_downloader)
+
+        assert mock_info.call_args_list[0].args[0] == "🔴 TestCreator is live: \"Test Stream\""
+
     def test_start_download_auth_error(self, mock_api, monitor):
         """Test auth error is logged."""
         mock_api.get_stream_url.side_effect = RPlayAuthError("Unauthorized")
