@@ -10,6 +10,7 @@ import yt_dlp
 from freezegun import freeze_time
 
 from core.downloader import StreamDownloader
+from models.download import DownloadResult
 
 
 @pytest.fixture
@@ -106,6 +107,20 @@ class TestBuildOutputPath:
         path = downloader._build_output_path("My_Stream")
         assert path.suffix == ".mp4"
         assert "My_Stream" in path.name
+
+    @freeze_time("2026-01-17")
+    def test_output_path_uses_ts_extension_for_session_output_dir(self, tmp_path):
+        """Test session-scoped downloads use ts files in the provided output dir."""
+        downloader = StreamDownloader(
+            "Creator",
+            session_key="creator1:2026-03-06T12:00:00",
+            output_dir=tmp_path,
+            output_extension=".ts",
+        )
+
+        path = downloader._build_output_path("Test")
+
+        assert path == tmp_path / "#Creator 2026-01-17 Test.ts"
 
 
 class TestGetUniquePath:
@@ -280,6 +295,28 @@ class TestDownloadWorker:
         mock_ydl.download.side_effect = RuntimeError("Unexpected error")
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
         assert downloader._current_output_path is None
+
+    def test_worker_notifies_on_download_complete(self, mock_yt_dlp, tmp_path):
+        """Test successful raw download emits a completion payload."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        events = []
+        downloader = StreamDownloader(
+            "Creator",
+            session_key="creator1:2026-03-06T12:00:00",
+            output_dir=tmp_path,
+            output_extension=".ts",
+            on_download_complete=lambda result: events.append(result),
+        )
+        output_path = tmp_path / "#Creator 2026-03-06 Test.ts"
+        output_path.write_bytes(b"x")
+        downloader._download_start_time = datetime.now()
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        mock_ydl.download.assert_called_once()
+        assert len(events) == 1
+        assert isinstance(events[0], DownloadResult)
+        assert events[0].session_key == "creator1:2026-03-06T12:00:00"
 
 
 class TestDownloadErrorCallback:

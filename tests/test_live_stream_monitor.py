@@ -9,6 +9,7 @@ from core.config import ConfigError
 from core.live_stream_monitor import LiveStreamMonitor
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from models.config import CreatorProfile
+from models.download import DownloadResult, DownloadSession, SessionState
 from models.rplay import CreatorStreamState, StreamState
 
 
@@ -66,11 +67,126 @@ class TestLiveStreamMonitorInit:
 
     def test_init_default_config_path(self, monitor):
         """Test default config path value."""
-        assert monitor.config_path == "./config.yaml"
+        assert monitor.config_path == "./config/config.yaml"
 
     def test_is_healthy_initial_state(self, monitor):
         """Test that initial state is healthy."""
         assert monitor.is_healthy is True
+
+
+class TestSessionAwareMonitoring:
+    """Tests for session-aware monitor behavior."""
+
+    @patch('core.live_stream_monitor.read_config')
+    @patch('core.live_stream_monitor.StreamDownloader.download')
+    def test_new_session_starts_while_old_session_is_merging(
+        self, mock_download, mock_read_config, mock_api, tmp_path
+    ):
+        """Test a new session can start while an older session is merging."""
+        old_time = datetime(2026, 3, 6, 12, 0, 0)
+        new_time = datetime(2026, 3, 6, 12, 5, 0)
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_state = StreamState.LIVE
+        mock_stream.stream_start_time = new_time
+        mock_stream.title = "Test Stream"
+
+        mock_api.get_livestream_status.return_value = [mock_stream]
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.return_value = True
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.sessions["creator1:2026-03-06T12:00:00"] = DownloadSession(
+            session_key="creator1:2026-03-06T12:00:00",
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Old Stream",
+            stream_start_time=old_time,
+            state=SessionState.MERGING,
+            staging_dir=tmp_path / "old",
+        )
+
+        monitor.check_live_streams_and_start_download()
+
+        mock_api.get_stream_url.assert_called_once_with("creator1")
+        mock_download.assert_called_once_with(
+            "http://example.com/stream.m3u8", "Test Stream"
+        )
+
+    @patch('core.live_stream_monitor.read_config')
+    @patch('core.live_stream_monitor.StreamDownloader.download')
+    def test_same_session_not_started_twice(
+        self, mock_download, mock_read_config, mock_api, tmp_path
+    ):
+        """Test the same session is skipped when already running."""
+        start_time = datetime(2026, 3, 6, 12, 0, 0)
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_state = StreamState.LIVE
+        mock_stream.stream_start_time = start_time
+        mock_stream.title = "Test Stream"
+
+        mock_api.get_livestream_status.return_value = [mock_stream]
+        mock_read_config.return_value = [
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ]
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.sessions["creator1:2026-03-06T12:00:00"] = DownloadSession(
+            session_key="creator1:2026-03-06T12:00:00",
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=start_time,
+            state=SessionState.RAW_RUNNING,
+            staging_dir=tmp_path / "running",
+        )
+
+        monitor.check_live_streams_and_start_download()
+
+        mock_api.get_stream_url.assert_not_called()
+        mock_download.assert_not_called()
+
+    def test_raw_completion_queues_merge(self, mock_api, tmp_path):
+        """Test raw completion marks the session queued and submits merge work."""
+        session_key = "creator1:2026-03-06T12:00:00"
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.sessions[session_key] = DownloadSession(
+            session_key=session_key,
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+            state=SessionState.RAW_RUNNING,
+            staging_dir=tmp_path,
+        )
+        result = DownloadResult(
+            session_key=session_key,
+            staging_dir=tmp_path,
+            base_output_stem="#Creator1 2026-03-06 Test Stream",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+        )
+
+        with patch.object(monitor.merge_executor, 'submit_merge') as mock_submit:
+            monitor._on_download_complete(session_key, result)
+
+        assert monitor.sessions[session_key].state == SessionState.MERGE_QUEUED
+        mock_submit.assert_called_once()
 
 
 class TestUpdateDownloaders:

@@ -212,6 +212,18 @@ class TestStopScheduler:
 
         mock_logger.info.assert_called_with("Scheduler stopped")
 
+    def test_stop_shuts_down_monitor(self, patched_scheduler_deps, mock_env, mock_logger):
+        """Test stop also shuts down monitor background work."""
+        mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
+        mock_scheduler = MagicMock()
+        mock_scheduler.running = True
+        mock_scheduler_class.return_value = mock_scheduler
+
+        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler.stop()
+
+        scheduler.monitor.shutdown.assert_called_once_with()
+
 
 class TestSignalHandler:
     """Tests for _signal_handler function."""
