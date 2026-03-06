@@ -269,7 +269,7 @@ class LiveStreamMonitor:
         session_key = self._make_session_key(stream)
 
         self._update_creator_state(stream)
-        self.logger.info(f'?? {creator_name} is live: "{stream.title}"')
+        self.logger.info(f"🔴 {creator_name} is live: \"{stream.title}\"")
 
         session = self._get_or_create_session(stream, creator_name)
 
