@@ -77,3 +77,30 @@ def test_session_download_error_callback_accepts_only_session_key():
     ).parameters
 
     assert list(parameters) == ["self", "session_key"]
+
+
+def test_unhandled_session_event_logs_error(tmp_path):
+    """Test unknown session events are logged instead of being silently ignored."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    session_key = "creator1:2026-03-06T12:00:00"
+    monitor.sessions[session_key] = DownloadSession(
+        session_key=session_key,
+        creator_oid="creator1",
+        creator_name="Creator1",
+        title="Test Stream",
+        stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+        state=SessionState.MERGE_QUEUED,
+        staging_dir=tmp_path,
+    )
+
+    class UnknownSessionEvent:
+        def __init__(self, session_key: str) -> None:
+            self.session_key = session_key
+
+    with patch.object(monitor.logger, "error") as mock_error:
+        monitor._handle_monitor_event(UnknownSessionEvent(session_key))
+
+    mock_error.assert_called_once()
+    assert "Unhandled session event type" in mock_error.call_args.args[0]
+    monitor.shutdown()
