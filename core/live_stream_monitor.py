@@ -111,7 +111,6 @@ class LiveStreamMonitor:
             name="monitor-control",
             daemon=True,
         )
-        self._control_thread.start()
 
         # Track monitoring state for better UX
         self._last_check_success = True
@@ -121,6 +120,8 @@ class LiveStreamMonitor:
 
         # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
+
+        self._control_thread.start()
 
     def check_live_streams_and_start_download(self) -> None:
         """Request one monitor poll and wait for it to finish."""
@@ -165,70 +166,80 @@ class LiveStreamMonitor:
         try:
             self._update_downloaders()
             live_streams = self.api.get_livestream_status()
-
+            monitored_live = self._process_live_streams(live_streams)
             live_creator_oids = {stream.creator_oid for stream in live_streams}
-            monitored_live = 0
-
-            for stream in live_streams:
-                with self._state_lock:
-                    if stream.creator_oid not in self.monitored_creators:
-                        continue
-                if stream.stream_state != StreamState.LIVE:
-                    continue
-
-                monitored_live += 1
-                session_key = self._make_session_key(stream)
-                with self._state_lock:
-                    self.latest_session_by_creator[stream.creator_oid] = session_key
-                    existing_session = self.sessions.get(session_key)
-
-                if existing_session is not None and existing_session.state in {
-                    SessionState.RAW_RUNNING,
-                    SessionState.MERGE_QUEUED,
-                    SessionState.MERGING,
-                    SessionState.DONE,
-                    SessionState.BLOCKED,
-                    SessionState.MERGE_FAILED,
-                }:
-                    continue
-
-                if not self._should_attempt_download(stream):
-                    continue
-
-                with self._state_lock:
-                    downloader = self.downloaders[stream.creator_oid]
-                self._start_download(stream, downloader)
-
             self._cleanup_offline_creator_states(live_creator_oids)
             self._log_status_summary(len(live_streams), monitored_live)
-            with self._state_lock:
-                self._last_check_success = True
-
+            self._mark_check_succeeded()
         except ConfigError:
             self.logger.warning("Skipping check due to config file error")
-            with self._state_lock:
-                self._last_check_success = False
-
+            self._mark_check_failed()
         except RPlayAuthError as exc:
             self.logger.error(f"Authentication error: {exc}")
             self.logger.error("Please update your AUTH_TOKEN in .env file")
-            with self._state_lock:
-                self._last_check_success = False
-
+            self._mark_check_failed()
         except RPlayConnectionError as exc:
             self.logger.warning(f"Connection error (will retry): {exc}")
-            with self._state_lock:
-                self._last_check_success = False
-
+            self._mark_check_failed()
         except RPlayAPIError as exc:
             self.logger.error(f"API error: {exc}")
-            with self._state_lock:
-                self._last_check_success = False
-
+            self._mark_check_failed()
         except Exception as exc:
             self.logger.error(f"Unexpected error during monitoring: {exc}")
+            self._mark_check_failed()
+
+    def _mark_check_succeeded(self) -> None:
+        """Record a successful monitor poll."""
+        with self._state_lock:
+            self._last_check_success = True
+
+    def _mark_check_failed(self) -> None:
+        """Record a failed monitor poll."""
+        with self._state_lock:
+            self._last_check_success = False
+
+    def _process_live_streams(self, live_streams: List[LiveStream]) -> int:
+        """Process monitored live streams and return their count."""
+        monitored_live = 0
+        for stream in live_streams:
+            if stream.stream_state != StreamState.LIVE:
+                continue
+
             with self._state_lock:
-                self._last_check_success = False
+                is_monitored = stream.creator_oid in self.monitored_creators
+
+            if not is_monitored:
+                continue
+
+            monitored_live += 1
+            self._process_live_stream(stream)
+
+        return monitored_live
+
+    def _process_live_stream(self, stream: LiveStream) -> None:
+        """Process one monitored live stream candidate."""
+        session_key = self._make_session_key(stream)
+        with self._state_lock:
+            self.latest_session_by_creator[stream.creator_oid] = session_key
+            existing_session = self.sessions.get(session_key)
+
+        if existing_session is not None and existing_session.state in {
+            SessionState.RAW_RUNNING,
+            SessionState.MERGE_QUEUED,
+            SessionState.MERGING,
+            SessionState.DONE,
+            SessionState.BLOCKED,
+            SessionState.MERGE_FAILED,
+        }:
+            return
+
+        if not self._should_attempt_download(stream):
+            return
+
+        with self._state_lock:
+            downloader = self.downloaders[stream.creator_oid]
+
+        self._start_download(stream, downloader)
 
     def _should_attempt_download(self, stream: LiveStream) -> bool:
         """Check if download should be attempted for this stream."""
@@ -258,47 +269,87 @@ class LiveStreamMonitor:
         session_key = self._make_session_key(stream)
 
         self._update_creator_state(stream)
-        self.logger.info(f"🔴 {creator_name} is live: \"{stream.title}\"")
+        self.logger.info(f'?? {creator_name} is live: "{stream.title}"')
 
         session = self._get_or_create_session(stream, creator_name)
 
         try:
-            stream_url = self.api.get_stream_url(creator_oid)
-
-            if not self.api.validate_m3u8_url(stream_url):
-                self._mark_session_blocked(
-                    session_key=session_key,
-                    error_message="Cannot access stream (likely paid content)",
-                    creator_name=creator_name,
-                )
-                self.logger.warning(
-                    f"🔒 {creator_name}: Cannot access stream (likely paid content)"
-                )
+            stream_url = self._get_accessible_stream_url(
+                creator_oid=creator_oid,
+                session_key=session_key,
+                creator_name=creator_name,
+            )
+            if stream_url is None:
                 return
 
-            active_downloader = StreamDownloader(
-                creator_name=creator_name,
-                on_download_error=self._make_session_download_error_callback(session_key),
-                session_key=session_key,
-                output_dir=session.staging_dir,
-                output_extension=".ts",
-                on_download_complete=self._on_raw_download_complete,
+            self._launch_session_downloader(
+                session=session,
+                stream_url=stream_url,
+                title=stream.title,
             )
-
-            active_downloader.download(stream_url, stream.title)
-            self.logger.info(f"⬇️  Started downloading: {creator_name}")
-
-        except RPlayAuthError as exc:
-            self._remove_session(session_key)
-            self.logger.error(f"Auth error for {creator_name}: {exc}")
-
-        except RPlayAPIError as exc:
-            self._remove_session(session_key)
-            self.logger.warning(f"Failed to get stream URL for {creator_name}: {exc}")
-
         except Exception as exc:
-            self._remove_session(session_key)
-            self.logger.error(f"Error starting download for {creator_name}: {exc}")
+            self._handle_start_download_error(session_key, creator_name, exc)
+
+    def _get_accessible_stream_url(
+        self,
+        creator_oid: str,
+        session_key: str,
+        creator_name: str,
+    ) -> Optional[str]:
+        """Get a stream URL and return it only when the m3u8 is accessible."""
+        stream_url = self.api.get_stream_url(creator_oid)
+        if self.api.validate_m3u8_url(stream_url):
+            return stream_url
+
+        self._mark_session_blocked(
+            session_key=session_key,
+            error_message="Cannot access stream (likely paid content)",
+            creator_name=creator_name,
+        )
+        self.logger.warning(
+            f"🔒 {creator_name}: Cannot access stream (likely paid content)"
+        )
+        return None
+
+    def _launch_session_downloader(
+        self,
+        session: DownloadSession,
+        stream_url: str,
+        title: str,
+    ) -> None:
+        """Create and start the session-scoped downloader thread."""
+        active_downloader = StreamDownloader(
+            creator_name=session.creator_name,
+            on_download_error=self._make_session_download_error_callback(
+                session.session_key
+            ),
+            session_key=session.session_key,
+            output_dir=session.staging_dir,
+            output_extension=".ts",
+            on_download_complete=self._on_raw_download_complete,
+        )
+
+        active_downloader.download(stream_url, title)
+        self.logger.info(f"⬇️  Started downloading: {session.creator_name}")
+
+    def _handle_start_download_error(
+        self,
+        session_key: str,
+        creator_name: str,
+        exc: Exception,
+    ) -> None:
+        """Remove the pending session and log the download-start failure."""
+        self._remove_session(session_key)
+
+        if isinstance(exc, RPlayAuthError):
+            self.logger.error(f"Auth error for {creator_name}: {exc}")
+            return
+
+        if isinstance(exc, RPlayAPIError):
+            self.logger.warning(f"Failed to get stream URL for {creator_name}: {exc}")
+            return
+
+        self.logger.error(f"Error starting download for {creator_name}: {exc}")
 
     def _log_status_summary(self, total_live: int, monitored_live: int) -> None:
         """Log a summary of the current monitoring status."""
@@ -491,6 +542,9 @@ class LiveStreamMonitor:
                 session.last_error = event.error_message
                 session.staging_dir = event.failed_staging_dir
                 session.state = SessionState.MERGE_FAILED
+                return
+
+        self.logger.error(f"Unhandled session event type: {type(event)}")
 
     def _handle_raw_download_completed(self, event: RawDownloadCompleted) -> None:
         """Queue merge work as soon as raw download completes."""
