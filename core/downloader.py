@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Optional
 
 import yt_dlp
 from pathvalidate import sanitize_filename
-from urllib3.util.retry import Retry
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from core.constants import (
     DEFAULT_DOWNLOAD_RETRIES,
@@ -24,11 +24,21 @@ from core.constants import (
 )
 from core.logger import setup_logger
 from core.utils import format_file_size
-from models.download import RawDownloadCompleted, RawDownloadFailed
+from models.download import (
+    RawDownloadAuthFailed,
+    RawDownloadCompleted,
+    RawDownloadFailed,
+)
 
 __all__ = [
     "StreamDownloader",
 ]
+
+
+class _RetryableDownloadTaskError(Exception):
+    """Internal exception used to retry a full yt-dlp task."""
+
+    pass
 
 
 class StreamDownloader:
@@ -58,16 +68,17 @@ class StreamDownloader:
 
     # Error message patterns indicating non-retriable access failure.
     ACCESS_ERROR_PATTERNS = [
-        "HTTP Error 401",
         "HTTP Error 403",
         "HTTP Error 404",
     ]
+    AUTH_ERROR_PATTERNS = ["HTTP Error 401"]
     DOWNLOAD_TASK_RETRY_ATTEMPTS = DEFAULT_MAX_RETRIES
 
     def __init__(
         self,
         creator_name: str,
         on_download_error: Optional[Callable[[str], None]] = None,
+        on_download_auth_error: Optional[Callable[[Any], None]] = None,
         session_key: Optional[str] = None,
         output_dir: Optional[Path] = None,
         output_extension: str = ".mp4",
@@ -90,6 +101,7 @@ class StreamDownloader:
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
         self._on_download_error = on_download_error
+        self._on_download_auth_error = on_download_auth_error
         self.session_key = session_key
         self.output_dir = output_dir
         self.output_extension = output_extension
@@ -282,7 +294,9 @@ class StreamDownloader:
         except yt_dlp.utils.DownloadError as e:
             self.logger.error(f"❌ Download error: {e}")
             error_message = str(e)
-            if self._is_m3u8_access_error(error_message):
+            if self._is_auth_error(error_message):
+                self._notify_auth_error(error_message)
+            elif self._is_m3u8_access_error(error_message):
                 self._notify_download_error(error_message)
             else:
                 self._notify_download_failure(error_message)
@@ -310,54 +324,68 @@ class StreamDownloader:
             for pattern in self.ACCESS_ERROR_PATTERNS
         )
 
+    def _is_auth_error(self, error_message: str) -> bool:
+        """Check if the error message indicates an authentication failure."""
+        return any(
+            pattern.lower() in error_message.lower()
+            for pattern in self.AUTH_ERROR_PATTERNS
+        )
+
+    def _build_download_retrying(self) -> Retrying:
+        """Build a tenacity retry controller for full-task yt-dlp retries."""
+        return Retrying(
+            reraise=True,
+            stop=stop_after_attempt(max(1, self.DOWNLOAD_TASK_RETRY_ATTEMPTS)),
+            wait=wait_exponential(multiplier=DEFAULT_RETRY_BACKOFF_FACTOR),
+            retry=retry_if_exception_type(_RetryableDownloadTaskError),
+            sleep=time.sleep,
+            before_sleep=self._log_before_retry,
+        )
+
+    def _log_before_retry(self, retry_state) -> None:
+        """Log one retry attempt before sleeping."""
+        exception = retry_state.outcome.exception()
+        wait_seconds = 0.0
+        if retry_state.next_action is not None:
+            wait_seconds = retry_state.next_action.sleep
+        self._log(
+            "warning",
+            f"⚠️ Download attempt {retry_state.attempt_number}/"
+            f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed; retrying in "
+            f"{wait_seconds:.1f}s: {exception}",
+        )
+
     def _download_stream_with_retries(
         self,
         stream_url: str,
         ydl_opts: Dict[str, Any],
     ) -> None:
         """Run yt-dlp and retry the full task for transient download failures."""
-        retry_state = Retry(
-            total=max(self.DOWNLOAD_TASK_RETRY_ATTEMPTS - 1, 0),
-            backoff_factor=DEFAULT_RETRY_BACKOFF_FACTOR,
-            allowed_methods=frozenset(["GET"]),
-        )
+        attempt_number = 0
 
-        for attempt in range(1, self.DOWNLOAD_TASK_RETRY_ATTEMPTS + 1):
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([stream_url])
+        try:
+            for attempt in self._build_download_retrying():
+                with attempt:
+                    attempt_number = attempt.retry_state.attempt_number
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([stream_url])
+                    except yt_dlp.utils.DownloadError as exc:
+                        error_message = str(exc)
+                        if self._is_auth_error(error_message) or self._is_m3u8_access_error(
+                            error_message
+                        ):
+                            raise
+                        raise _RetryableDownloadTaskError(error_message) from exc
+        except _RetryableDownloadTaskError as exc:
+            raise yt_dlp.utils.DownloadError(str(exc)) from exc
 
-                if attempt > 1:
-                    self._log(
-                        "info",
-                        f"✅ Download succeeded on retry attempt "
-                        f"{attempt}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
-                    )
-                return
-            except yt_dlp.utils.DownloadError as exc:
-                error_message = str(exc)
-                if self._is_m3u8_access_error(error_message):
-                    raise
-
-                if attempt >= self.DOWNLOAD_TASK_RETRY_ATTEMPTS:
-                    raise
-
-                retry_state = retry_state.increment(
-                    method="GET",
-                    url=stream_url,
-                    error=exc,
-                )
-                retry_delay = max(
-                    DEFAULT_RETRY_BACKOFF_FACTOR,
-                    retry_state.get_backoff_time(),
-                )
-                self._log(
-                    "warning",
-                    f"⚠️ Download attempt {attempt}/"
-                    f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed; "
-                    f"retrying in {retry_delay:.1f}s: {error_message}",
-                )
-                time.sleep(retry_delay)
+        if attempt_number > 1:
+            self._log(
+                "info",
+                f"✅ Download succeeded on retry attempt "
+                f"{attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
+            )
 
     def _notify_download_error(self, error_message: str) -> None:
         """
@@ -374,6 +402,25 @@ class StreamDownloader:
                 self._on_download_error(error_message)
             except Exception as e:
                 self.logger.error(f"Error in download error callback: {e}")
+
+    def _notify_auth_error(self, error_message: str) -> None:
+        """Notify listeners that credentials appear invalid for this download."""
+        if not self._on_download_auth_error or not self._is_auth_error(error_message):
+            return
+
+        try:
+            if self.session_key:
+                self._on_download_auth_error(
+                    RawDownloadAuthFailed(
+                        session_key=self.session_key,
+                        error_message=error_message,
+                    )
+                )
+                return
+
+            self._on_download_auth_error(error_message)
+        except Exception as e:
+            self.logger.error(f"Error in download auth callback: {e}")
 
     def _notify_download_complete(self, output_path: Path) -> None:
         """Notify listeners that a raw download finished successfully."""

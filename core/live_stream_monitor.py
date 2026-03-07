@@ -19,6 +19,7 @@ from models.download import (
     MergeFailed,
     MergeJobSpec,
     MergeStarted,
+    RawDownloadAuthFailed,
     RawDownloadBlocked,
     RawDownloadCompleted,
     RawDownloadFailed,
@@ -51,6 +52,7 @@ class _ShutdownRequested:
 
 SessionEvent = Union[
     RawDownloadCompleted,
+    RawDownloadAuthFailed,
     RawDownloadBlocked,
     RawDownloadFailed,
     MergeStarted,
@@ -360,6 +362,7 @@ class LiveStreamMonitor:
             on_download_error=self._make_session_download_error_callback(
                 session.session_key
             ),
+            on_download_auth_error=self._on_raw_download_auth_failed,
             session_key=session.session_key,
             output_dir=session.staging_dir,
             output_extension=".ts",
@@ -380,7 +383,10 @@ class LiveStreamMonitor:
         self._remove_session(session_key)
 
         if isinstance(exc, RPlayAuthError):
-            self.logger.error(f"Auth error for {creator_name}: {exc}")
+            self.logger.error(
+                f"Auth error for {creator_name}: {exc}. "
+                "Please verify AUTH_TOKEN and USER_OID credentials."
+            )
             return
 
         if isinstance(exc, RPlayAPIError):
@@ -547,6 +553,10 @@ class LiveStreamMonitor:
         """Receive raw completion from a downloader thread and queue it."""
         self._queue_monitor_event(event)
 
+    def _on_raw_download_auth_failed(self, event: RawDownloadAuthFailed) -> None:
+        """Receive raw download auth failure from a downloader thread and queue it."""
+        self._queue_monitor_event(event)
+
     def _on_raw_download_failed(self, event: RawDownloadFailed) -> None:
         """Receive raw download failure from a downloader thread and queue it."""
         self._queue_monitor_event(event)
@@ -559,6 +569,10 @@ class LiveStreamMonitor:
 
         if isinstance(event, RawDownloadBlocked):
             self._handle_raw_download_blocked(event)
+            return
+
+        if isinstance(event, RawDownloadAuthFailed):
+            self._handle_raw_download_auth_failed(event)
             return
 
         if isinstance(event, RawDownloadFailed):
@@ -623,6 +637,20 @@ class LiveStreamMonitor:
         self.logger.info(
             f"🧩 Queued merge for {merge_job.creator_name}: "
             f"session_key={merge_job.session_key}, staging_dir={merge_job.staging_dir}"
+        )
+
+    def _handle_raw_download_auth_failed(self, event: RawDownloadAuthFailed) -> None:
+        """Clear auth-failed raw sessions and surface credential guidance."""
+        with self._state_lock:
+            session = self.sessions.pop(event.session_key, None)
+
+        if session is None:
+            return
+
+        self._mark_check_failed()
+        self.logger.error(
+            f"🔐 Authentication error while downloading {session.creator_name}: "
+            f"{event.error_message}. Please verify AUTH_TOKEN and USER_OID credentials."
         )
 
     def _handle_raw_download_failed(self, event: RawDownloadFailed) -> None:

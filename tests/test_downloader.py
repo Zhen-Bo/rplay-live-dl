@@ -381,10 +381,10 @@ class TestDownloadErrorCallback:
         downloader = StreamDownloader("TestCreator")
         assert downloader._is_m3u8_access_error("HTTP Error 404: Not Found") is True
 
-    def test_is_m3u8_access_error_detects_401(self):
-        """Test detection of HTTP 401 errors in error messages."""
+    def test_is_m3u8_access_error_rejects_401(self):
+        """Test 401 is not treated as blocked stream access."""
         downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("HTTP Error 401: Unauthorized") is True
+        assert downloader._is_m3u8_access_error("HTTP Error 401: Unauthorized") is False
 
     def test_is_m3u8_access_error_detects_403(self):
         """Test detection of HTTP 403 errors in error messages."""
@@ -412,6 +412,13 @@ class TestDownloadErrorCallback:
         downloader = StreamDownloader("TestCreator", on_download_error=callback)
         downloader._notify_download_error("HTTP Error 404: Not Found")
         callback.assert_called_once_with("HTTP Error 404: Not Found")
+
+    def test_notify_auth_callback_on_401_error(self):
+        """Test that 401 is routed to the auth callback."""
+        callback = MagicMock()
+        downloader = StreamDownloader("TestCreator", on_download_auth_error=callback)
+        downloader._notify_auth_error("HTTP Error 401: Unauthorized")
+        callback.assert_called_once_with("HTTP Error 401: Unauthorized")
 
     def test_notify_skips_callback_on_unrelated_error(self):
         """Test that callback is not invoked for unrelated errors."""
@@ -485,8 +492,8 @@ class TestDownloadErrorCallback:
         assert len(completed_events) == 1
         assert failed_events == []
 
-    def test_worker_does_not_retry_access_denied_errors(self, mock_yt_dlp, tmp_path):
-        """Test 401/403/404 access errors skip same-task retry and mark blocked."""
+    def test_worker_does_not_retry_blocked_access_errors(self, mock_yt_dlp, tmp_path):
+        """Test 403/404 access errors skip same-task retry and mark blocked."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         blocked_callback = MagicMock()
         failed_events = []
@@ -509,6 +516,33 @@ class TestDownloadErrorCallback:
         mock_sleep.assert_not_called()
         blocked_callback.assert_called_once_with("HTTP Error 404: Not Found")
         assert failed_events == []
+
+    def test_worker_routes_401_to_auth_failure(self, mock_yt_dlp, tmp_path):
+        """Test 401 errors are surfaced as auth failures instead of blocked streams."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        auth_events = []
+        blocked_callback = MagicMock()
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_error=blocked_callback,
+            on_download_auth_error=lambda event: auth_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
+            "HTTP Error 401: Unauthorized"
+        )
+
+        with patch("core.downloader.time.sleep") as mock_sleep:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert mock_ydl.download.call_count == 1
+        mock_sleep.assert_not_called()
+        blocked_callback.assert_not_called()
+        assert len(auth_events) == 1
+        assert auth_events[0].session_key == "creator1:stream1"
+        assert auth_events[0].error_message == "HTTP Error 401: Unauthorized"
 
     def test_worker_retries_ffmpeg_exit_errors_before_emitting_failure(
         self, mock_yt_dlp, tmp_path

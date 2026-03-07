@@ -531,6 +531,30 @@ class TestStartDownload:
 
         mock_download.assert_not_called()
 
+    def test_start_download_validation_401_logs_auth_error(self, mock_api, monitor):
+        """Test playlist validation 401 is treated as a credential problem."""
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.side_effect = RPlayAuthError("Authentication failed")
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "test_oid"
+        mock_stream.title = "Test Stream"
+        monitor.monitored_creators["test_oid"] = CreatorProfile(
+            creator_name="TestCreator",
+            creator_oid="test_oid",
+        )
+
+        with (
+            patch('core.live_stream_monitor.StreamDownloader.download') as mock_download,
+            patch.object(monitor.logger, 'error') as mock_error,
+        ):
+            monitor._start_download(mock_stream)
+
+        mock_download.assert_not_called()
+        assert any(
+            "credential" in call.args[0].lower() or "auth" in call.args[0].lower()
+            for call in mock_error.call_args_list
+        )
+
     def test_start_download_api_error(self, mock_api, monitor):
         """Test API error is logged as warning."""
         mock_api.get_stream_url.side_effect = RPlayAPIError("API Error")
