@@ -193,6 +193,13 @@ class RPlayAPI:
         Returns:
             True if URL returns 200 OK, False otherwise
         """
+        retry_state = Retry(
+            total=max(retries - 1, 0),
+            backoff_factor=retry_delay,
+            allowed_methods=frozenset(["HEAD"]),
+            status_forcelist=RETRY_STATUS_CODES,
+        )
+
         for attempt in range(retries):
             try:
                 response = self._session.head(
@@ -202,6 +209,13 @@ class RPlayAPI:
                 )
                 if response.status_code == 200:
                     return True
+
+                if response.status_code in (401, 403, 404):
+                    self.logger.debug(
+                        f"M3U8 validation stopped on non-retriable status "
+                        f"{response.status_code}"
+                    )
+                    return False
 
                 self.logger.debug(
                     f"M3U8 validation attempt {attempt + 1}/{retries} "
@@ -214,9 +228,10 @@ class RPlayAPI:
                     f"failed with error: {e}"
                 )
 
-            # Sleep between retries, but not after the last attempt
+            # Sleep between retries, but not after the last attempt.
             if attempt < retries - 1:
-                time.sleep(retry_delay)
+                retry_state = retry_state.increment(method="HEAD", url=url)
+                time.sleep(max(retry_delay, retry_state.get_backoff_time()))
 
         return False
 

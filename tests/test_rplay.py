@@ -1,7 +1,7 @@
 """Tests for RPlay API client module."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
@@ -345,24 +345,23 @@ class TestValidateM3u8Url:
         assert result is False
 
     @responses.activate
-    def test_retries_on_failure(self):
-        """Test retries specified number of times before returning False."""
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
+    @pytest.mark.parametrize("status_code", [401, 403, 404])
+    def test_does_not_retry_non_retriable_statuses(self, status_code):
+        """Test access-denied statuses stop validation immediately."""
+        responses.add(responses.HEAD, self.TEST_URL, status=status_code)
         api = RPlayAPI(auth_token="test", user_oid="test")
 
         with patch("time.sleep"):
             result = api.validate_m3u8_url(self.TEST_URL, retries=3, retry_delay=0.1)
 
         assert result is False
-        assert len(responses.calls) == 3
+        assert len(responses.calls) == 1
 
     @responses.activate
     def test_succeeds_after_retry(self):
         """Test returns True if succeeds on retry."""
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
         responses.add(responses.HEAD, self.TEST_URL, status=200)
         api = RPlayAPI(auth_token="test", user_oid="test")
 
@@ -405,9 +404,9 @@ class TestValidateM3u8Url:
     @responses.activate
     def test_uses_default_retry_values(self):
         """Test uses default retry count (3) and delay (3.0s)."""
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
         api = RPlayAPI(auth_token="test", user_oid="test")
 
         with patch("time.sleep") as mock_sleep:
@@ -415,7 +414,21 @@ class TestValidateM3u8Url:
 
         assert len(responses.calls) == 3
         assert mock_sleep.call_count == 2
-        mock_sleep.assert_called_with(3.0)
+        assert mock_sleep.call_args_list == [call(3.0), call(6.0)]
+
+    @responses.activate
+    def test_retries_on_retriable_server_errors(self):
+        """Test retriable server errors continue until attempts are exhausted."""
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch("time.sleep"):
+            result = api.validate_m3u8_url(self.TEST_URL, retries=3, retry_delay=0.1)
+
+        assert result is False
+        assert len(responses.calls) == 3
 
     @responses.activate
     def test_stops_retrying_on_success(self):
