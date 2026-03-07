@@ -9,3 +9,4 @@ requests==2.32.3
 urllib3==2.6.3
 wcwidth==0.2.14
 yt-dlp==2024.12.23
+tenacity>=8,<10
