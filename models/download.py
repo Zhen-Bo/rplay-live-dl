@@ -50,6 +50,14 @@ class RawDownloadBlocked:
 
 
 @dataclass(frozen=True)
+class RawDownloadAuthFailed:
+    """Event emitted when raw download fails due to invalid credentials."""
+
+    session_key: str
+    error_message: str
+
+
+@dataclass(frozen=True)
 class RawDownloadFailed:
     """Event emitted when a raw download fails for a retryable non-blocked reason."""
 
