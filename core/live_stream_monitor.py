@@ -238,6 +238,11 @@ class LiveStreamMonitor:
     def _process_live_stream(self, stream: LiveStream) -> None:
         """Process one monitored live stream candidate."""
         session_key = self._make_session_key(stream)
+        self.logger.debug(
+            f"Inspecting live stream candidate: creator_oid={stream.creator_oid}, "
+            f"stream_oid={stream.oid}, session_key={session_key}, "
+            f"started_at={stream.stream_start_time.isoformat()}, title=\"{stream.title}\""
+        )
         with self._state_lock:
             self.latest_stream_oid_by_creator[stream.creator_oid] = stream.oid
             self._prune_superseded_terminal_sessions_locked(stream.creator_oid)
@@ -251,9 +256,19 @@ class LiveStreamMonitor:
             SessionState.BLOCKED,
             SessionState.MERGE_FAILED,
         }:
+            self.logger.debug(
+                f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
+                f"stream_oid={stream.oid}, session_key={session_key}, "
+                f"existing_state={existing_session.state.value}"
+            )
             return
 
         if not self._should_attempt_download(stream):
+            self.logger.debug(
+                f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
+                f"stream_oid={stream.oid}, session_key={session_key}, "
+                "current stream is already marked inaccessible"
+            )
             return
 
         self._start_download(stream)
@@ -550,6 +565,8 @@ class LiveStreamMonitor:
             self._handle_raw_download_failed(event)
             return
 
+        log_method: Optional[Callable[[str], None]] = None
+        log_message: Optional[str] = None
         with self._state_lock:
             session = self.sessions.get(event.session_key)
             if session is None:
@@ -557,21 +574,33 @@ class LiveStreamMonitor:
 
             if isinstance(event, MergeStarted):
                 session.state = SessionState.MERGING
-                return
-
-            if isinstance(event, MergeCompleted):
+                log_method = self.logger.info
+                log_message = (
+                    f"🎬 Merge started for {session.creator_name}: {session.session_key}"
+                )
+            elif isinstance(event, MergeCompleted):
                 session.final_output_path = event.output_path
                 session.last_error = None
                 session.state = SessionState.DONE
-                return
-
-            if isinstance(event, MergeFailed):
+                log_method = self.logger.info
+                log_message = (
+                    f"✅ Merge completed for {session.creator_name}: {event.output_path}"
+                )
+            elif isinstance(event, MergeFailed):
                 session.last_error = event.error_message
                 session.staging_dir = event.failed_staging_dir
                 session.state = SessionState.MERGE_FAILED
+                log_method = self.logger.warning
+                log_message = (
+                    f"⚠️ Merge failed for {session.creator_name}: {event.error_message}. "
+                    f"Raw files preserved at: {event.failed_staging_dir}"
+                )
+            else:
+                self.logger.error(f"Unhandled session event type: {type(event)}")
                 return
 
-        self.logger.error(f"Unhandled session event type: {type(event)}")
+        if log_method is not None and log_message is not None:
+            log_method(log_message)
 
     def _handle_raw_download_completed(self, event: RawDownloadCompleted) -> None:
         """Queue merge work as soon as raw download completes."""
@@ -591,6 +620,10 @@ class LiveStreamMonitor:
             )
 
         self.merge_executor.submit_merge(lambda: self._run_merge_job(merge_job))
+        self.logger.info(
+            f"🧩 Queued merge for {merge_job.creator_name}: "
+            f"session_key={merge_job.session_key}, staging_dir={merge_job.staging_dir}"
+        )
 
     def _handle_raw_download_failed(self, event: RawDownloadFailed) -> None:
         """Clear failed raw sessions so the next poll can retry them."""

@@ -11,6 +11,7 @@ from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionE
 from models.config import AppConfig, CreatorProfile
 from models.download import (
     DownloadSession,
+    MergeCompleted,
     RawDownloadBlocked,
     RawDownloadCompleted,
     SessionState,
@@ -1406,3 +1407,100 @@ class TestHeartbeatLogOptimization:
         # Should have at least one periodic heartbeat (debug level)
         heartbeat_logs = [c for c in mock_debug.call_args_list if "Checked" in str(c) or "heartbeat" in str(c).lower()]
         assert len(heartbeat_logs) >= 1
+
+
+class TestSessionLifecycleLogging:
+    """Tests for session lifecycle observability logs."""
+
+    def test_process_live_stream_logs_debug_when_same_stream_oid_running(self, mock_api, tmp_path):
+        """Test duplicate live polls emit a debug skip log instead of starting again."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.monitored_creators["creator1"] = CreatorProfile(
+            creator_name="Creator1",
+            creator_oid="creator1",
+        )
+        monitor.sessions["creator1:stream-1"] = DownloadSession(
+            session_key="creator1:stream-1",
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 3, 7, 5, 0, 0),
+            state=SessionState.RAW_RUNNING,
+            staging_dir=tmp_path / "running",
+        )
+
+        mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
+        mock_stream.creator_oid = "creator1"
+        mock_stream.stream_state = StreamState.LIVE
+        mock_stream.stream_start_time = datetime(2026, 3, 7, 5, 1, 0)
+        mock_stream.title = "Test Stream"
+
+        with patch.object(monitor.logger, "debug") as mock_debug:
+            monitor._process_live_stream(mock_stream)
+
+        assert any(
+            "Skipping live stream candidate" in str(call)
+            for call in mock_debug.call_args_list
+        )
+
+    def test_raw_download_completion_logs_merge_queue(self, mock_api, tmp_path):
+        """Test raw completion logs that merge work has been queued."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.sessions["creator1:stream-1"] = DownloadSession(
+            session_key="creator1:stream-1",
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 3, 7, 5, 0, 0),
+            state=SessionState.RAW_RUNNING,
+            staging_dir=tmp_path / "staging",
+        )
+
+        with patch.object(monitor.merge_executor, "submit_merge") as mock_submit_merge:
+            with patch.object(monitor.logger, "info") as mock_info:
+                monitor._handle_raw_download_completed(
+                    RawDownloadCompleted(
+                        session_key="creator1:stream-1",
+                        staging_dir=tmp_path / "staging",
+                    )
+                )
+
+        mock_submit_merge.assert_called_once()
+        assert any("Queued merge" in str(call) for call in mock_info.call_args_list)
+
+    def test_merge_completed_logs_final_output_path(self, mock_api, tmp_path):
+        """Test merge completion logs the final output path."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.sessions["creator1:stream-1"] = DownloadSession(
+            session_key="creator1:stream-1",
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 3, 7, 5, 0, 0),
+            state=SessionState.MERGING,
+            staging_dir=tmp_path / "staging",
+        )
+        output_path = tmp_path / "archive" / "Creator1" / "#Creator1 2026-03-07 Test Stream.mp4"
+
+        with patch.object(monitor.logger, "info") as mock_info:
+            monitor._handle_monitor_event(
+                MergeCompleted(
+                    session_key="creator1:stream-1",
+                    output_path=output_path,
+                )
+            )
+
+        assert any("Merge completed" in str(call) for call in mock_info.call_args_list)

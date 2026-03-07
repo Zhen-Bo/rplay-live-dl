@@ -52,6 +52,34 @@ class TestSetupLogger:
         # Should have at least one handler (console)
         assert len(logger.handlers) >= 1
 
+    def test_uses_log_level_from_environment(self, monkeypatch):
+        """Test LOG_LEVEL env var controls the default logger level."""
+        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+
+        logger = setup_logger("test_logger_env_debug", log_to_file=False)
+
+        assert logger.level == logging.DEBUG
+
+    def test_uses_log_level_from_dotenv_when_env_missing(self, monkeypatch, tmp_path):
+        """Test LOG_LEVEL is read from .env when the process env var is absent."""
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("LOG_LEVEL=WARNING\n", encoding="utf-8")
+
+        logger = setup_logger("test_logger_dotenv_warning", log_to_file=False)
+
+        assert logger.level == logging.WARNING
+
+    def test_invalid_log_level_falls_back_to_info(self, monkeypatch, tmp_path):
+        """Test invalid LOG_LEVEL values fall back to INFO."""
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("LOG_LEVEL=LOUD\n", encoding="utf-8")
+
+        logger = setup_logger("test_logger_invalid_level", log_to_file=False)
+
+        assert logger.level == logging.INFO
+
 
 class TestGetLogsDir:
     """Tests for get_logs_dir function."""
