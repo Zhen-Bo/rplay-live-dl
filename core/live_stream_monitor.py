@@ -107,7 +107,7 @@ class LiveStreamMonitor:
         self.merge_timeout_seconds = merge_timeout_seconds
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
-        self.latest_session_by_creator: Dict[str, str] = {}
+        self.latest_stream_oid_by_creator: Dict[str, str] = {}
         self.merge_executor = DownloadMergeExecutor(max_workers=1)
         self.logger = setup_logger("Monitor")
 
@@ -239,7 +239,7 @@ class LiveStreamMonitor:
         """Process one monitored live stream candidate."""
         session_key = self._make_session_key(stream)
         with self._state_lock:
-            self.latest_session_by_creator[stream.creator_oid] = session_key
+            self.latest_stream_oid_by_creator[stream.creator_oid] = stream.oid
             self._prune_superseded_terminal_sessions_locked(stream.creator_oid)
             existing_session = self.sessions.get(session_key)
 
@@ -267,7 +267,7 @@ class LiveStreamMonitor:
         if state is None:
             return True
 
-        if self._is_new_stream_session(stream):
+        if self._is_new_stream_for_creator(stream):
             return True
 
         return not state.is_current_stream_blocked
@@ -277,7 +277,7 @@ class LiveStreamMonitor:
         with self._state_lock:
             offline_creators = [oid for oid in self._creator_states if oid not in live_creator_oids]
         for creator_oid in offline_creators:
-            self._clear_creator_state(creator_oid)
+            self._clear_creator_stream_state(creator_oid)
 
     def _start_download(self, stream: LiveStream) -> None:
         """Start downloading a live stream on the control loop."""
@@ -290,7 +290,7 @@ class LiveStreamMonitor:
         creator_oid = stream.creator_oid
         session_key = self._make_session_key(stream)
 
-        self._update_creator_state(stream)
+        self._update_creator_stream_state(stream)
         self.logger.info(f"🔴 {creator_name} is live: \"{stream.title}\"")
 
         session = self._get_or_create_session(stream, creator_name)
@@ -440,41 +440,39 @@ class LiveStreamMonitor:
         with self._state_lock:
             return self._last_check_success
 
-    def _is_new_stream_session(self, stream: LiveStream) -> bool:
-        """Check if this is a new stream session based on streamStartTime."""
+    def _is_new_stream_for_creator(self, stream: LiveStream) -> bool:
+        """Check if the creator is now on a different live stream oid."""
         with self._state_lock:
             state = self._creator_states.get(stream.creator_oid)
         if state is None:
             return True
-        return state.last_stream_start_time != stream.stream_start_time
+        return state.last_stream_oid != stream.oid
 
-    def _update_creator_state(self, stream: LiveStream) -> None:
-        """Update or create creator state with new stream start time."""
+    def _update_creator_stream_state(self, stream: LiveStream) -> None:
+        """Update or create creator state with the current stream oid."""
         with self._state_lock:
             if stream.creator_oid not in self._creator_states:
                 self._creator_states[stream.creator_oid] = CreatorStreamState()
-            self._creator_states[stream.creator_oid].update_stream_start_time(
-                stream.stream_start_time
-            )
+            self._creator_states[stream.creator_oid].update_stream_oid(stream.oid)
 
-    def _clear_creator_state(self, creator_oid: str) -> None:
+    def _clear_creator_stream_state(self, creator_oid: str) -> None:
         """Remove creator state when they go offline."""
         with self._state_lock:
             self._creator_states.pop(creator_oid, None)
-            self.latest_session_by_creator.pop(creator_oid, None)
+            self.latest_stream_oid_by_creator.pop(creator_oid, None)
             self._prune_terminal_sessions_for_creator_locked(creator_oid)
 
     def _prune_superseded_terminal_sessions_locked(self, creator_oid: str) -> None:
         """Drop older terminal sessions once a newer session becomes current."""
-        keep_session_key = self.latest_session_by_creator.get(creator_oid)
-        if keep_session_key is None:
+        keep_stream_oid = self.latest_stream_oid_by_creator.get(creator_oid)
+        if keep_stream_oid is None:
             return
 
         removable_keys = [
             session_key
             for session_key, session in self.sessions.items()
             if session.creator_oid == creator_oid
-            and session.session_key != keep_session_key
+            and not session.session_key.endswith(f":{keep_stream_oid}")
             and session.state in self.TERMINAL_SESSION_STATES
         ]
         for session_key in removable_keys:
@@ -514,7 +512,7 @@ class LiveStreamMonitor:
 
     def _make_session_key(self, stream: LiveStream) -> str:
         """Build a stable key for one live session."""
-        return f"{stream.creator_oid}:{stream.stream_start_time.isoformat()}"
+        return f"{stream.creator_oid}:{stream.oid}"
 
     def _build_staging_dir(self, creator_name: str, session_key: str) -> Path:
         """Build the staging directory for one session."""

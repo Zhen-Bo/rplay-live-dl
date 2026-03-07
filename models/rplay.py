@@ -18,32 +18,32 @@ class CreatorStreamState:
     """
     Tracks the state of a creator's current streaming session.
 
-    Used to detect new stream sessions (via streamStartTime changes)
+    Used to detect new stream sessions (via stream oid changes)
     and to mark streams as blocked (likely paid content).
 
     Attributes:
-        last_stream_start_time: The start time of the last observed stream session
+        last_stream_oid: The oid of the last observed live stream session
         is_current_stream_blocked: Whether the current session is marked as inaccessible
     """
 
-    last_stream_start_time: Optional[datetime] = field(default=None)
+    last_stream_oid: Optional[str] = field(default=None)
     is_current_stream_blocked: bool = field(default=False)
 
     def reset(self) -> None:
         """Reset state to defaults (used when creator goes offline)."""
-        self.last_stream_start_time = None
+        self.last_stream_oid = None
         self.is_current_stream_blocked = False
 
-    def update_stream_start_time(self, start_time: datetime) -> None:
+    def update_stream_oid(self, stream_oid: str) -> None:
         """
-        Update the stream start time (indicates a new session).
+        Update the current stream oid (indicates a new session).
 
         Also clears the blocked flag since a new session should be retried.
 
         Args:
-            start_time: The new stream start time
+            stream_oid: The oid of the newly observed live stream
         """
-        self.last_stream_start_time = start_time
+        self.last_stream_oid = stream_oid
         self.is_current_stream_blocked = False
 
     def mark_blocked(self) -> None:

@@ -266,40 +266,36 @@ class TestCreatorStreamState:
     def test_default_initialization(self):
         """Test CreatorStreamState default values."""
         state = CreatorStreamState()
-        assert state.last_stream_start_time is None
+        assert state.last_stream_oid is None
         assert state.is_current_stream_blocked is False
 
     def test_initialization_with_values(self):
         """Test CreatorStreamState with explicit values."""
-        start_time = datetime(2026, 1, 26, 12, 0, 0)
         state = CreatorStreamState(
-            last_stream_start_time=start_time,
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
-        assert state.last_stream_start_time == start_time
+        assert state.last_stream_oid == "stream-1"
         assert state.is_current_stream_blocked is True
 
     def test_reset_method(self):
         """Test CreatorStreamState reset method clears state."""
-        start_time = datetime(2026, 1, 26, 12, 0, 0)
         state = CreatorStreamState(
-            last_stream_start_time=start_time,
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
         state.reset()
-        assert state.last_stream_start_time is None
+        assert state.last_stream_oid is None
         assert state.is_current_stream_blocked is False
 
-    def test_update_stream_start_time(self):
-        """Test updating stream start time clears blocked flag."""
-        old_time = datetime(2026, 1, 26, 12, 0, 0)
-        new_time = datetime(2026, 1, 26, 14, 0, 0)
+    def test_update_stream_oid(self):
+        """Test updating stream oid clears the blocked flag."""
         state = CreatorStreamState(
-            last_stream_start_time=old_time,
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
-        state.update_stream_start_time(new_time)
-        assert state.last_stream_start_time == new_time
+        state.update_stream_oid("stream-2")
+        assert state.last_stream_oid == "stream-2"
         assert state.is_current_stream_blocked is False
 
     def test_mark_blocked(self):

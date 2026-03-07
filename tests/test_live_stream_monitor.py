@@ -1,4 +1,4 @@
-﻿"""Tests for live stream monitor module."""
+"""Tests for live stream monitor module."""
 
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -89,6 +89,88 @@ class TestSessionAwareMonitoring:
 
     @patch('core.live_stream_monitor.read_config')
     @patch('core.live_stream_monitor.StreamDownloader.download')
+    def test_same_stream_oid_does_not_restart_download_when_start_time_changes(
+        self, mock_download, mock_read_config, mock_api
+    ):
+        """Test the same live stream oid is only downloaded once across polls."""
+        first_stream = MagicMock()
+        first_stream.oid = "stream-1"
+        first_stream.creator_oid = "creator1"
+        first_stream.stream_state = StreamState.LIVE
+        first_stream.stream_start_time = datetime(2026, 3, 7, 5, 3, 40)
+        first_stream.title = "Same Stream"
+
+        second_stream = MagicMock()
+        second_stream.oid = "stream-1"
+        second_stream.creator_oid = "creator1"
+        second_stream.stream_state = StreamState.LIVE
+        second_stream.stream_start_time = datetime(2026, 3, 7, 5, 4, 40)
+        second_stream.title = "Same Stream"
+
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.return_value = True
+        mock_api.get_livestream_status.side_effect = [[first_stream], [second_stream]]
+        mock_read_config.return_value = _runtime_config([
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ])
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        monitor.check_live_streams_and_start_download()
+        monitor.check_live_streams_and_start_download()
+
+        mock_download.assert_called_once_with(
+            "http://example.com/stream.m3u8", "Same Stream"
+        )
+
+    @patch('core.live_stream_monitor.read_config')
+    @patch('core.live_stream_monitor.StreamDownloader.download')
+    def test_new_stream_oid_starts_second_stream_same_day(
+        self, mock_download, mock_read_config, mock_api, tmp_path
+    ):
+        """Test a second same-day stream starts when the stream oid changes."""
+        first_stream = MagicMock()
+        first_stream.oid = "stream-1"
+        first_stream.creator_oid = "creator1"
+        first_stream.stream_state = StreamState.LIVE
+        first_stream.stream_start_time = datetime(2026, 3, 7, 5, 3, 40)
+        first_stream.title = "Repeated Title"
+
+        second_stream = MagicMock()
+        second_stream.oid = "stream-2"
+        second_stream.creator_oid = "creator1"
+        second_stream.stream_state = StreamState.LIVE
+        second_stream.stream_start_time = datetime(2026, 3, 7, 6, 3, 40)
+        second_stream.title = "Repeated Title"
+
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_api.validate_m3u8_url.return_value = True
+        mock_api.get_livestream_status.side_effect = [[first_stream], [second_stream]]
+        mock_read_config.return_value = _runtime_config([
+            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+        ])
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        monitor.check_live_streams_and_start_download()
+        monitor._handle_monitor_event(
+            RawDownloadCompleted(
+                session_key=monitor._make_session_key(first_stream),
+                staging_dir=tmp_path / "first-staging",
+            )
+        )
+        monitor.check_live_streams_and_start_download()
+
+        assert mock_download.call_count == 2
+
+    @patch('core.live_stream_monitor.read_config')
+    @patch('core.live_stream_monitor.StreamDownloader.download')
     def test_new_session_starts_while_old_session_is_merging(
         self, mock_download, mock_read_config, mock_api, tmp_path
     ):
@@ -138,8 +220,8 @@ class TestSessionAwareMonitoring:
             user_oid="test_oid",
             api=mock_api,
         )
-        old_session_key = "creator1:2026-03-06T12:00:00"
-        new_session_key = "creator1:2026-03-06T12:05:00"
+        old_session_key = "creator1:stream-1"
+        new_session_key = "creator1:stream-2"
         monitor.monitored_creators["creator1"] = CreatorProfile(
             creator_name="Creator1",
             creator_oid="creator1",
@@ -154,6 +236,7 @@ class TestSessionAwareMonitoring:
             staging_dir=tmp_path / "old",
         )
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-2"
         mock_stream.creator_oid = "creator1"
         mock_stream.stream_state = StreamState.LIVE
         mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 5, 0)
@@ -163,7 +246,7 @@ class TestSessionAwareMonitoring:
             monitor._process_live_stream(mock_stream)
 
         assert old_session_key not in monitor.sessions
-        assert monitor.latest_session_by_creator["creator1"] == new_session_key
+        assert monitor.latest_stream_oid_by_creator["creator1"] == "stream-2"
         mock_start_download.assert_called_once_with(mock_stream)
 
     def test_cleanup_offline_creator_states_prunes_terminal_sessions(
@@ -196,10 +279,10 @@ class TestSessionAwareMonitoring:
             staging_dir=tmp_path / "creator2",
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 3, 6, 12, 0, 0)
+            last_stream_oid="stream-1"
         )
         monitor._creator_states["creator2"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 3, 6, 12, 5, 0)
+            last_stream_oid="stream-2"
         )
 
         monitor._cleanup_offline_creator_states({"creator2"})
@@ -215,6 +298,7 @@ class TestSessionAwareMonitoring:
         """Test the same session is skipped when already running."""
         start_time = datetime(2026, 3, 6, 12, 0, 0)
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator1"
         mock_stream.stream_state = StreamState.LIVE
         mock_stream.stream_start_time = start_time
@@ -229,8 +313,8 @@ class TestSessionAwareMonitoring:
             user_oid="test_oid",
             api=mock_api,
         )
-        monitor.sessions["creator1:2026-03-06T12:00:00"] = DownloadSession(
-            session_key="creator1:2026-03-06T12:00:00",
+        monitor.sessions["creator1:stream-1"] = DownloadSession(
+            session_key="creator1:stream-1",
             creator_oid="creator1",
             creator_name="Creator1",
             title="Test Stream",
@@ -539,6 +623,7 @@ class TestCheckLiveStreams:
         """Test no restart if already downloading."""
         mock_api = MagicMock(spec=RPlayAPI)
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator_oid"
         mock_stream.stream_state = StreamState.LIVE
         mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
@@ -552,8 +637,8 @@ class TestCheckLiveStreams:
             user_oid="test_oid",
             api=mock_api,
         )
-        monitor.sessions["creator_oid:2026-03-06T12:00:00"] = DownloadSession(
-            session_key="creator_oid:2026-03-06T12:00:00",
+        monitor.sessions["creator_oid:stream-1"] = DownloadSession(
+            session_key="creator_oid:stream-1",
             creator_oid="creator_oid",
             creator_name="Creator",
             title="Test Stream",
@@ -813,7 +898,7 @@ class TestCreatorStateTracking:
         )
         assert monitor._creator_states == {}
 
-    def test_is_new_stream_session_no_previous_state(self, mock_api):
+    def test_is_new_stream_for_creator_no_previous_state(self, mock_api):
         """Test new session detection when no previous state exists."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -821,93 +906,87 @@ class TestCreatorStateTracking:
             api=mock_api,
         )
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator1"
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
 
-        result = monitor._is_new_stream_session(mock_stream)
+        result = monitor._is_new_stream_for_creator(mock_stream)
 
         assert result is True
 
-    def test_is_new_stream_session_same_start_time(self, mock_api):
-        """Test returns False when stream start time unchanged."""
+    def test_is_new_stream_for_creator_same_oid(self, mock_api):
+        """Test returns False when the creator is still on the same stream oid."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
             api=mock_api,
         )
-        start_time = datetime(2026, 1, 26, 12, 0, 0)
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=start_time
+            last_stream_oid="stream-1"
         )
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator1"
-        mock_stream.stream_start_time = start_time
 
-        result = monitor._is_new_stream_session(mock_stream)
+        result = monitor._is_new_stream_for_creator(mock_stream)
 
         assert result is False
 
-    def test_is_new_stream_session_different_start_time(self, mock_api):
-        """Test returns True when stream start time changed."""
+    def test_is_new_stream_for_creator_different_oid(self, mock_api):
+        """Test returns True when the creator switches to a new stream oid."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
             api=mock_api,
         )
-        old_time = datetime(2026, 1, 26, 12, 0, 0)
-        new_time = datetime(2026, 1, 26, 14, 0, 0)
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=old_time
+            last_stream_oid="stream-1"
         )
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-2"
         mock_stream.creator_oid = "creator1"
-        mock_stream.stream_start_time = new_time
 
-        result = monitor._is_new_stream_session(mock_stream)
+        result = monitor._is_new_stream_for_creator(mock_stream)
 
         assert result is True
 
-    def test_update_creator_state_creates_new_state(self, mock_api):
+    def test_update_creator_stream_state_creates_new_state(self, mock_api):
         """Test that updating state creates new entry if none exists."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
             api=mock_api,
         )
-        start_time = datetime(2026, 1, 26, 12, 0, 0)
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator1"
-        mock_stream.stream_start_time = start_time
 
-        monitor._update_creator_state(mock_stream)
+        monitor._update_creator_stream_state(mock_stream)
 
         assert "creator1" in monitor._creator_states
-        assert monitor._creator_states["creator1"].last_stream_start_time == start_time
+        assert monitor._creator_states["creator1"].last_stream_oid == "stream-1"
         assert monitor._creator_states["creator1"].is_current_stream_blocked is False
 
-    def test_update_creator_state_updates_existing(self, mock_api):
+    def test_update_creator_stream_state_updates_existing(self, mock_api):
         """Test that updating state modifies existing entry."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
             api=mock_api,
         )
-        old_time = datetime(2026, 1, 26, 12, 0, 0)
-        new_time = datetime(2026, 1, 26, 14, 0, 0)
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=old_time,
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-2"
         mock_stream.creator_oid = "creator1"
-        mock_stream.stream_start_time = new_time
 
-        monitor._update_creator_state(mock_stream)
+        monitor._update_creator_stream_state(mock_stream)
 
-        assert monitor._creator_states["creator1"].last_stream_start_time == new_time
+        assert monitor._creator_states["creator1"].last_stream_oid == "stream-2"
         assert monitor._creator_states["creator1"].is_current_stream_blocked is False
 
-    def test_clear_creator_state(self, mock_api):
+    def test_clear_creator_stream_state(self, mock_api):
         """Test clearing state for a creator."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -915,15 +994,15 @@ class TestCreatorStateTracking:
             api=mock_api,
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
-        monitor._clear_creator_state("creator1")
+        monitor._clear_creator_stream_state("creator1")
 
         assert "creator1" not in monitor._creator_states
 
-    def test_clear_creator_state_nonexistent(self, mock_api):
+    def test_clear_creator_stream_state_nonexistent(self, mock_api):
         """Test clearing state for nonexistent creator does not raise."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -932,7 +1011,7 @@ class TestCreatorStateTracking:
         )
 
         # Should not raise
-        monitor._clear_creator_state("nonexistent")
+        monitor._clear_creator_stream_state("nonexistent")
 
     def test_handle_raw_download_blocked_creates_state_if_missing(self, mock_api, tmp_path):
         """Test blocked raw downloads create creator state when absent."""
@@ -968,6 +1047,7 @@ class TestM3u8ValidationIntegration:
     def test_skips_blocked_stream_same_session(self, mock_read_config, mock_api):
         """Test that blocked streams are skipped in same session."""
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator1"
         mock_stream.stream_state = StreamState.LIVE
         mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
@@ -983,7 +1063,7 @@ class TestM3u8ValidationIntegration:
         )
         # Pre-populate state as blocked
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
@@ -1013,7 +1093,7 @@ class TestM3u8ValidationIntegration:
         )
         # Pre-populate state as blocked with OLD start time
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
@@ -1090,7 +1170,7 @@ class TestM3u8ValidationIntegration:
         )
         # Pre-populate state
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
@@ -1148,7 +1228,7 @@ class TestSessionDownloadBlockedHandling:
             staging_dir=tmp_path,
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            last_stream_oid="stream-1",
         )
 
         monitor._handle_raw_download_blocked(
@@ -1178,7 +1258,7 @@ class TestSessionDownloadBlockedHandling:
             staging_dir=tmp_path,
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            last_stream_oid="stream-1",
         )
 
         with patch.object(monitor.logger, 'warning') as mock_warning:
@@ -1195,6 +1275,7 @@ class TestSessionDownloadBlockedHandling:
     def test_blocked_session_prevents_next_download(self, mock_read_config, mock_api, tmp_path):
         """Test blocked session state prevents another download in the same session."""
         mock_stream = MagicMock()
+        mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator1"
         mock_stream.stream_state = StreamState.LIVE
         mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
@@ -1210,8 +1291,8 @@ class TestSessionDownloadBlockedHandling:
             user_oid="test_oid",
             api=mock_api,
         )
-        monitor.sessions["creator1:2026-01-26T12:00:00"] = DownloadSession(
-            session_key="creator1:2026-01-26T12:00:00",
+        monitor.sessions["creator1:stream-1"] = DownloadSession(
+            session_key="creator1:stream-1",
             creator_oid="creator1",
             creator_name="Creator1",
             title="Test Stream",
@@ -1220,7 +1301,7 @@ class TestSessionDownloadBlockedHandling:
             staging_dir=tmp_path,
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
