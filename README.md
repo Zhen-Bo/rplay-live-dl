@@ -54,7 +54,7 @@
 
 Version `2.0.0-vibe` introduces a session-aware download pipeline:
 
-- each live session is tracked by `creator_oid + stream_start_time`
+- each live session is tracked by `creator_oid + stream oid`
 - raw media is downloaded into a per-session staging directory as `.ts`
 - completed raw outputs are merged into a final `.mp4`
 - the visible final filename stays compatible with older releases
@@ -116,8 +116,9 @@ Startup protection:
    - Included `docker-compose.yaml`: copy `.env.example` to `env`, or update the compose volume to mount `.env` instead
 2. Create `config/config.yaml` from `config.yaml.example`.
 3. Fill in your RPlay credentials, creator list, and optionally `apiBaseUrl`.
-4. Start the service with Docker Compose.
-5. Watch logs until the first polling cycle succeeds.
+4. Optionally set `LOG_LEVEL=DEBUG` when you want verbose lifecycle logs.
+5. Start the service with Docker Compose.
+6. Watch logs until the first polling cycle succeeds.
 
 ```bash
 # 1) Prepare config files
@@ -201,6 +202,7 @@ AUTH_TOKEN=your_auth_token
 Optional log rotation values:
 
 ```dotenv
+LOG_LEVEL=INFO
 LOG_MAX_SIZE_MB=5
 LOG_BACKUP_COUNT=5
 LOG_RETENTION_DAYS=30
@@ -209,6 +211,7 @@ LOG_RETENTION_DAYS=30
 Notes:
 
 - `INTERVAL` is in seconds
+- `LOG_LEVEL` supports standard names such as `DEBUG`, `INFO`, `WARNING`, `ERROR`, and `CRITICAL`
 - the application validates required variables on startup
 - local runs load from `.env` or process environment variables
 - the bundled Docker Compose file maps a host file named `env` to `/app/.env`
@@ -244,7 +247,7 @@ The v2 runtime uses a two-step download pipeline.
    - it checks live status for all configured creators
 
 2. **Create a session**
-   - each live stream gets a session key based on `creator_oid` and `stream_start_time`
+   - each live stream gets a session key based on `creator_oid` and the API `oid`
    - the raw download is isolated in `archive/<creator>/.staging/<session_dir>/`
    - `session_dir` is the filesystem-safe form of the session key, not the raw key string
 
@@ -265,6 +268,10 @@ The v2 runtime uses a two-step download pipeline.
 6. **Clean up or preserve for recovery**
    - on success, the merged `.ts` files are deleted and the session staging directory is removed
    - on merge failure or timeout, the whole session staging directory is moved to `archive/<creator>/_failed/<session_dir>/`
+
+7. **Observe lifecycle logs**
+   - set `LOG_LEVEL=DEBUG` in `.env` to see stream-candidate evaluation and skip reasons
+   - the default `INFO` level keeps routine output readable for long-running Docker deployments
 
 #### Final filename rules
 
