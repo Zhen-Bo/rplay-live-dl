@@ -6,17 +6,21 @@ with support for concurrent downloads and automatic file management.
 """
 
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import yt_dlp
 from pathvalidate import sanitize_filename
+from urllib3.util.retry import Retry
 
 from core.constants import (
     DEFAULT_DOWNLOAD_RETRIES,
     DEFAULT_FRAGMENT_RETRIES,
     DEFAULT_HTTP_HEADERS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_RETRY_BACKOFF_FACTOR,
 )
 from core.logger import setup_logger
 from core.utils import format_file_size
@@ -52,13 +56,13 @@ class StreamDownloader:
     # Maximum number of duplicate files before raising an error
     MAX_DUPLICATE_FILES = 1000
 
-    # Error message patterns indicating M3U8 access failure (e.g., paid content)
-    M3U8_ERROR_PATTERNS = [
+    # Error message patterns indicating non-retriable access failure.
+    ACCESS_ERROR_PATTERNS = [
+        "HTTP Error 401",
+        "HTTP Error 403",
         "HTTP Error 404",
-        "unable to download",
-        "ffmpeg exited with code",
-        "ffmpeg could not be found",
     ]
+    DOWNLOAD_TASK_RETRY_ATTEMPTS = DEFAULT_MAX_RETRIES
 
     def __init__(
         self,
@@ -247,8 +251,7 @@ class StreamDownloader:
             output_path: Path where the stream will be saved
         """
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([stream_url])
+            self._download_stream_with_retries(stream_url, ydl_opts)
 
             # Calculate download duration
             if self._download_start_time:
@@ -304,8 +307,57 @@ class StreamDownloader:
         """
         return any(
             pattern.lower() in error_message.lower()
-            for pattern in self.M3U8_ERROR_PATTERNS
+            for pattern in self.ACCESS_ERROR_PATTERNS
         )
+
+    def _download_stream_with_retries(
+        self,
+        stream_url: str,
+        ydl_opts: Dict[str, Any],
+    ) -> None:
+        """Run yt-dlp and retry the full task for transient download failures."""
+        retry_state = Retry(
+            total=max(self.DOWNLOAD_TASK_RETRY_ATTEMPTS - 1, 0),
+            backoff_factor=DEFAULT_RETRY_BACKOFF_FACTOR,
+            allowed_methods=frozenset(["GET"]),
+        )
+
+        for attempt in range(1, self.DOWNLOAD_TASK_RETRY_ATTEMPTS + 1):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([stream_url])
+
+                if attempt > 1:
+                    self._log(
+                        "info",
+                        f"✅ Download succeeded on retry attempt "
+                        f"{attempt}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
+                    )
+                return
+            except yt_dlp.utils.DownloadError as exc:
+                error_message = str(exc)
+                if self._is_m3u8_access_error(error_message):
+                    raise
+
+                if attempt >= self.DOWNLOAD_TASK_RETRY_ATTEMPTS:
+                    raise
+
+                retry_state = retry_state.increment(
+                    method="GET",
+                    url=stream_url,
+                    error=exc,
+                )
+                retry_delay = max(
+                    DEFAULT_RETRY_BACKOFF_FACTOR,
+                    retry_state.get_backoff_time(),
+                )
+                self._log(
+                    "warning",
+                    f"⚠️ Download attempt {attempt}/"
+                    f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed; "
+                    f"retrying in {retry_delay:.1f}s: {error_message}",
+                )
+                time.sleep(retry_delay)
 
     def _notify_download_error(self, error_message: str) -> None:
         """

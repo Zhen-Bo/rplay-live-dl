@@ -381,10 +381,15 @@ class TestDownloadErrorCallback:
         downloader = StreamDownloader("TestCreator")
         assert downloader._is_m3u8_access_error("HTTP Error 404: Not Found") is True
 
-    def test_is_m3u8_access_error_detects_unable_to_download(self):
-        """Test detection of 'unable to download' in error messages."""
+    def test_is_m3u8_access_error_detects_401(self):
+        """Test detection of HTTP 401 errors in error messages."""
         downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("unable to download media") is True
+        assert downloader._is_m3u8_access_error("HTTP Error 401: Unauthorized") is True
+
+    def test_is_m3u8_access_error_detects_403(self):
+        """Test detection of HTTP 403 errors in error messages."""
+        downloader = StreamDownloader("TestCreator")
+        assert downloader._is_m3u8_access_error("HTTP Error 403: Forbidden") is True
 
     def test_is_m3u8_access_error_case_insensitive(self):
         """Test that error pattern matching is case-insensitive."""
@@ -395,6 +400,11 @@ class TestDownloadErrorCallback:
         """Test that unrelated errors are not matched."""
         downloader = StreamDownloader("TestCreator")
         assert downloader._is_m3u8_access_error("Network timeout") is False
+
+    def test_is_m3u8_access_error_rejects_ffmpeg_exit_errors(self):
+        """Test transient ffmpeg errors are not treated as blocked access."""
+        downloader = StreamDownloader("TestCreator")
+        assert downloader._is_m3u8_access_error("ERROR: ffmpeg exited with code 8") is False
 
     def test_notify_calls_callback_on_m3u8_error(self):
         """Test that callback is invoked for M3U8 access errors."""
@@ -444,6 +454,91 @@ class TestDownloadErrorCallback:
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
         callback.assert_not_called()
+
+    def test_worker_retries_transient_download_errors_within_same_task(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test transient download errors retry immediately within the same task."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        completed_events = []
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_complete=lambda event: completed_events.append(event),
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        output_path.write_bytes(b"x")
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = [
+            yt_dlp.utils.DownloadError("HTTP Error 500: Internal Server Error"),
+            yt_dlp.utils.DownloadError("HTTP Error 500: Internal Server Error"),
+            None,
+        ]
+
+        with patch("core.downloader.time.sleep") as mock_sleep:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert mock_ydl.download.call_count == 3
+        assert mock_sleep.call_count == 2
+        assert len(completed_events) == 1
+        assert failed_events == []
+
+    def test_worker_does_not_retry_access_denied_errors(self, mock_yt_dlp, tmp_path):
+        """Test 401/403/404 access errors skip same-task retry and mark blocked."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        blocked_callback = MagicMock()
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_error=blocked_callback,
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
+            "HTTP Error 404: Not Found"
+        )
+
+        with patch("core.downloader.time.sleep") as mock_sleep:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert mock_ydl.download.call_count == 1
+        mock_sleep.assert_not_called()
+        blocked_callback.assert_called_once_with("HTTP Error 404: Not Found")
+        assert failed_events == []
+
+    def test_worker_retries_ffmpeg_exit_errors_before_emitting_failure(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test ffmpeg exit errors are retried and eventually reported as failures."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        blocked_callback = MagicMock()
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_error=blocked_callback,
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = [
+            yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8"),
+            yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8"),
+            yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8"),
+        ]
+
+        with patch("core.downloader.time.sleep") as mock_sleep:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert mock_ydl.download.call_count == 3
+        assert mock_sleep.call_count == 2
+        blocked_callback.assert_not_called()
+        assert len(failed_events) == 1
+        assert failed_events[0].error_message == "ERROR: ffmpeg exited with code 8"
 
     def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
         """Test non-blocked download errors emit a raw failure event."""
