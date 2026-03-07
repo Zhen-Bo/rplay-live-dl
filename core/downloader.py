@@ -17,10 +17,10 @@ from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait
 
 from core.constants import (
     DEFAULT_DOWNLOAD_RETRIES,
+    DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR,
     DEFAULT_FRAGMENT_RETRIES,
     DEFAULT_HTTP_HEADERS,
     DEFAULT_MAX_RETRIES,
-    DEFAULT_RETRY_BACKOFF_FACTOR,
 )
 from core.logger import setup_logger
 from core.utils import format_file_size
@@ -73,6 +73,7 @@ class StreamDownloader:
     ]
     AUTH_ERROR_PATTERNS = ["HTTP Error 401"]
     DOWNLOAD_TASK_RETRY_ATTEMPTS = DEFAULT_MAX_RETRIES
+    DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR = DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR
 
     def __init__(
         self,
@@ -142,6 +143,10 @@ class StreamDownloader:
 
         self._log("info", f"📥 Starting download: \"{safe_title}\"")
         self._log("info", f"   Output: {output_path.name}")
+        self._log(
+            "debug",
+            f"   Context: session_key={self.session_key or 'none'}, output_path={output_path}",
+        )
 
         # Start download in a separate thread
         self.download_thread = threading.Thread(
@@ -246,6 +251,23 @@ class StreamDownloader:
         fragment_pattern = f"{output_path.stem}_*{output_path.suffix}"
         return any(output_path.parent.glob(fragment_pattern))
 
+    def _build_output_state_details(self, output_path: Path) -> str:
+        """Build a compact output-state summary for downloader logs."""
+        part_path = Path(f"{output_path}.part")
+        output_exists = output_path.exists()
+        part_exists = part_path.exists()
+        sibling_fragments = self._has_sibling_fragment_outputs(output_path)
+        output_size = (
+            format_file_size(output_path.stat().st_size) if output_exists else "0 B"
+        )
+        part_size = format_file_size(part_path.stat().st_size) if part_exists else "0 B"
+        return (
+            f"output_path={output_path}, "
+            f"output_exists={output_exists}, output_size={output_size}, "
+            f"part_path={part_path}, part_exists={part_exists}, part_size={part_size}, "
+            f"sibling_fragments={sibling_fragments}"
+        )
+
     def _download_worker(
         self,
         stream_url: str,
@@ -263,7 +285,7 @@ class StreamDownloader:
             output_path: Path where the stream will be saved
         """
         try:
-            self._download_stream_with_retries(stream_url, ydl_opts)
+            self._download_stream_with_retries(stream_url, ydl_opts, output_path)
 
             # Calculate download duration
             if self._download_start_time:
@@ -284,7 +306,8 @@ class StreamDownloader:
             else:
                 self._log(
                     "warning",
-                    f"⚠️  Download finished but file not found: {output_path}",
+                    "⚠️  Download finished but file not found: "
+                    f"{output_path}; {self._build_output_state_details(output_path)}",
                 )
                 if not self._has_sibling_fragment_outputs(output_path):
                     return
@@ -292,8 +315,13 @@ class StreamDownloader:
             self._notify_download_complete(output_path)
 
         except yt_dlp.utils.DownloadError as e:
-            self.logger.error(f"❌ Download error: {e}")
             error_message = str(e)
+            self._log(
+                "error",
+                "❌ Download error: "
+                f"{error_message}; session_key={self.session_key or 'none'}, "
+                f"{self._build_output_state_details(output_path)}",
+            )
             if self._is_auth_error(error_message):
                 self._notify_auth_error(error_message)
             elif self._is_m3u8_access_error(error_message):
@@ -302,7 +330,12 @@ class StreamDownloader:
                 self._notify_download_failure(error_message)
 
         except Exception as e:
-            self.logger.error(f"❌ Unexpected download error: {e}")
+            self._log(
+                "error",
+                "❌ Unexpected download error: "
+                f"{e}; session_key={self.session_key or 'none'}, "
+                f"{self._build_output_state_details(output_path)}",
+            )
             self._notify_download_failure(str(e))
 
         finally:
@@ -336,7 +369,7 @@ class StreamDownloader:
         return Retrying(
             reraise=True,
             stop=stop_after_attempt(max(1, self.DOWNLOAD_TASK_RETRY_ATTEMPTS)),
-            wait=wait_exponential(multiplier=DEFAULT_RETRY_BACKOFF_FACTOR),
+            wait=wait_exponential(multiplier=self.DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR),
             retry=retry_if_exception_type(_RetryableDownloadTaskError),
             sleep=time.sleep,
             before_sleep=self._log_before_retry,
@@ -348,17 +381,22 @@ class StreamDownloader:
         wait_seconds = 0.0
         if retry_state.next_action is not None:
             wait_seconds = retry_state.next_action.sleep
+        output_state = "output_path=unknown"
+        if self._current_output_path is not None:
+            output_state = self._build_output_state_details(self._current_output_path)
         self._log(
             "warning",
             f"⚠️ Download attempt {retry_state.attempt_number}/"
             f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed; retrying in "
-            f"{wait_seconds:.1f}s: {exception}",
+            f"{wait_seconds:.1f}s: {exception}; "
+            f"session_key={self.session_key or 'none'}, {output_state}",
         )
 
     def _download_stream_with_retries(
         self,
         stream_url: str,
         ydl_opts: Dict[str, Any],
+        output_path: Path,
     ) -> None:
         """Run yt-dlp and retry the full task for transient download failures."""
         attempt_number = 0
@@ -367,6 +405,12 @@ class StreamDownloader:
             for attempt in self._build_download_retrying():
                 with attempt:
                     attempt_number = attempt.retry_state.attempt_number
+                    self._log(
+                        "debug",
+                        f"🔁 Download attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} starting; "
+                        f"session_key={self.session_key or 'none'}, "
+                        f"{self._build_output_state_details(output_path)}",
+                    )
                     try:
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                             ydl.download([stream_url])

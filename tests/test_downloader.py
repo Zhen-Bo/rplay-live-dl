@@ -251,6 +251,27 @@ class TestDownloadMethod:
         assert downloader._download_start_time is not None
         assert before <= downloader._download_start_time <= after
 
+    @patch.object(StreamDownloader, '_download_worker')
+    def test_download_logs_context(self, mock_worker, tmp_path, monkeypatch):
+        """Test download logs session and output context before starting."""
+        monkeypatch.chdir(tmp_path)
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:1772880472",
+        )
+
+        with patch.object(downloader, '_log') as mock_log:
+            downloader.download("http://example.com/stream.m3u8", "Test Stream")
+            assert downloader.download_thread is not None
+            downloader.download_thread.join(timeout=1)
+
+        assert any(
+            call.args[0] == "debug"
+            and "session_key=creator1:1772880472" in call.args[1]
+            and "output_path=" in call.args[1]
+            for call in mock_log.call_args_list
+        )
+
 
 class TestDownloadWorker:
     """Tests for _download_worker method."""
@@ -569,10 +590,32 @@ class TestDownloadErrorCallback:
             downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
 
         assert mock_ydl.download.call_count == 3
-        assert mock_sleep.call_count == 2
+        assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 4.0]
         blocked_callback.assert_not_called()
         assert len(failed_events) == 1
         assert failed_events[0].error_message == "ERROR: ffmpeg exited with code 8"
+
+    def test_worker_logs_partial_output_details_on_failure(self, mock_yt_dlp, tmp_path):
+        """Test final download error logs include .part output details."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+        )
+        output_path = tmp_path / "test.ts"
+        Path(f"{output_path}.part").write_bytes(b"abcdef")
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
+
+        with patch.object(downloader.logger, "error") as mock_error:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert any(
+            "output_path=" in str(call)
+            and "part_exists=True" in str(call)
+            and "part_size=6.0 B" in str(call)
+            for call in mock_error.call_args_list
+        )
 
     def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
         """Test non-blocked download errors emit a raw failure event."""
