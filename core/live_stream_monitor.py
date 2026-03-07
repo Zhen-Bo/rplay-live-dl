@@ -3,7 +3,7 @@
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
@@ -110,6 +110,7 @@ class LiveStreamMonitor:
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
         self.latest_stream_oid_by_creator: Dict[str, str] = {}
+        self._active_raw_session_by_creator: Dict[str, str] = {}
         self.merge_executor = DownloadMergeExecutor(max_workers=1)
         self.logger = setup_logger("Monitor")
 
@@ -240,15 +241,45 @@ class LiveStreamMonitor:
     def _process_live_stream(self, stream: LiveStream) -> None:
         """Process one monitored live stream candidate."""
         session_key = self._make_session_key(stream)
+        with self._state_lock:
+            self.latest_stream_oid_by_creator[stream.creator_oid] = stream.oid
+            self._prune_superseded_terminal_sessions_locked(
+                stream.creator_oid,
+                stream.stream_start_time,
+            )
+            creator_state = self._creator_states.get(stream.creator_oid)
+            tracked_started_at = (
+                creator_state.last_stream_start_time.isoformat()
+                if creator_state is not None
+                and creator_state.last_stream_start_time is not None
+                else "None"
+            )
+            active_session_key = self._active_raw_session_by_creator.get(stream.creator_oid)
+            active_session = (
+                self.sessions.get(active_session_key)
+                if active_session_key is not None
+                else None
+            )
+            existing_session = self.sessions.get(session_key)
+
         self.logger.debug(
             f"Inspecting live stream candidate: creator_oid={stream.creator_oid}, "
             f"stream_oid={stream.oid}, session_key={session_key}, "
-            f"started_at={stream.stream_start_time.isoformat()}, title=\"{stream.title}\""
+            f"started_at={stream.stream_start_time.isoformat()}, "
+            f"tracked_started_at={tracked_started_at}, "
+            f"active_raw_session_key={active_session_key}, "
+            f"active_raw_state={active_session.state.value if active_session else 'none'}, "
+            f"title=\"{stream.title}\""
         )
-        with self._state_lock:
-            self.latest_stream_oid_by_creator[stream.creator_oid] = stream.oid
-            self._prune_superseded_terminal_sessions_locked(stream.creator_oid)
-            existing_session = self.sessions.get(session_key)
+
+        if active_session is not None and active_session.state == SessionState.RAW_RUNNING:
+            self.logger.debug(
+                f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
+                f"stream_oid={stream.oid}, session_key={session_key}, "
+                f"reason=active_raw_running, active_session_key={active_session.session_key}, "
+                f"active_started_at={active_session.stream_start_time.isoformat()}"
+            )
+            return
 
         if existing_session is not None and existing_session.state in {
             SessionState.RAW_RUNNING,
@@ -261,7 +292,7 @@ class LiveStreamMonitor:
             self.logger.debug(
                 f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
                 f"stream_oid={stream.oid}, session_key={session_key}, "
-                f"existing_state={existing_session.state.value}"
+                f"reason=existing_session_state, existing_state={existing_session.state.value}"
             )
             return
 
@@ -269,7 +300,7 @@ class LiveStreamMonitor:
             self.logger.debug(
                 f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
                 f"stream_oid={stream.oid}, session_key={session_key}, "
-                "current stream is already marked inaccessible"
+                f"reason=current_stream_blocked, tracked_started_at={tracked_started_at}"
             )
             return
 
@@ -462,38 +493,49 @@ class LiveStreamMonitor:
             return self._last_check_success
 
     def _is_new_stream_for_creator(self, stream: LiveStream) -> bool:
-        """Check if the creator is now on a different live stream oid."""
+        """Check if the creator is now on a different handled stream start time."""
         with self._state_lock:
             state = self._creator_states.get(stream.creator_oid)
         if state is None:
             return True
-        return state.last_stream_oid != stream.oid
+        return state.last_stream_start_time != stream.stream_start_time
 
     def _update_creator_stream_state(self, stream: LiveStream) -> None:
-        """Update or create creator state with the current stream oid."""
+        """Update or create creator state with the current handled stream metadata."""
         with self._state_lock:
             if stream.creator_oid not in self._creator_states:
                 self._creator_states[stream.creator_oid] = CreatorStreamState()
-            self._creator_states[stream.creator_oid].update_stream_oid(stream.oid)
+            self._creator_states[stream.creator_oid].update_stream_start_time(
+                stream.stream_start_time,
+                stream.oid,
+            )
 
     def _clear_creator_stream_state(self, creator_oid: str) -> None:
         """Remove creator state when they go offline."""
         with self._state_lock:
             self._creator_states.pop(creator_oid, None)
             self.latest_stream_oid_by_creator.pop(creator_oid, None)
+            self._active_raw_session_by_creator.pop(creator_oid, None)
             self._prune_terminal_sessions_for_creator_locked(creator_oid)
 
-    def _prune_superseded_terminal_sessions_locked(self, creator_oid: str) -> None:
+    def _prune_superseded_terminal_sessions_locked(
+        self,
+        creator_oid: str,
+        current_stream_start_time: datetime | None = None,
+    ) -> None:
         """Drop older terminal sessions once a newer session becomes current."""
-        keep_stream_oid = self.latest_stream_oid_by_creator.get(creator_oid)
-        if keep_stream_oid is None:
-            return
+        target_start_time = current_stream_start_time
+        if target_start_time is None:
+            state = self._creator_states.get(creator_oid)
+            if state is None or state.last_stream_start_time is None:
+                return
+            target_start_time = state.last_stream_start_time
 
         removable_keys = [
             session_key
             for session_key, session in self.sessions.items()
             if session.creator_oid == creator_oid
-            and not session.session_key.endswith(f":{keep_stream_oid}")
+            and session.stream_start_time != target_start_time
             and session.state in self.TERMINAL_SESSION_STATES
         ]
         for session_key in removable_keys:
@@ -524,16 +566,26 @@ class LiveStreamMonitor:
                     state=SessionState.RAW_RUNNING,
                     staging_dir=self._build_staging_dir(creator_name, session_key),
                 )
+            self._active_raw_session_by_creator[stream.creator_oid] = session_key
             return self.sessions[session_key]
 
     def _remove_session(self, session_key: str) -> None:
         """Remove a session that failed before raw download started."""
         with self._state_lock:
-            self.sessions.pop(session_key, None)
+            session = self.sessions.pop(session_key, None)
+            if session is not None:
+                active_session_key = self._active_raw_session_by_creator.get(
+                    session.creator_oid
+                )
+                if active_session_key == session_key:
+                    self._active_raw_session_by_creator.pop(session.creator_oid, None)
 
     def _make_session_key(self, stream: LiveStream) -> str:
-        """Build a stable key for one live session."""
-        return f"{stream.creator_oid}:{stream.oid}"
+        """Build a stable key for one handled live session."""
+        start_time = stream.stream_start_time
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        return f"{stream.creator_oid}:{int(start_time.timestamp())}"
 
     def _build_staging_dir(self, creator_name: str, session_key: str) -> Path:
         """Build the staging directory for one session."""
@@ -547,6 +599,8 @@ class LiveStreamMonitor:
 
     def _make_session_dir_name(self, session_key: str) -> str:
         """Convert a session key into a filesystem-safe directory name."""
+        if ":" in session_key:
+            return session_key.rsplit(":", 1)[1]
         return sanitize_filename(session_key, replacement_text="_")
 
     def _on_raw_download_complete(self, event: RawDownloadCompleted) -> None:
@@ -625,6 +679,9 @@ class LiveStreamMonitor:
 
             session.state = SessionState.MERGE_QUEUED
             session.staging_dir = event.staging_dir
+            active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
+            if active_session_key == session.session_key:
+                self._active_raw_session_by_creator.pop(session.creator_oid, None)
             merge_job = MergeJobSpec(
                 session_key=session.session_key,
                 creator_name=session.creator_name,
@@ -643,6 +700,12 @@ class LiveStreamMonitor:
         """Clear auth-failed raw sessions and surface credential guidance."""
         with self._state_lock:
             session = self.sessions.pop(event.session_key, None)
+            if session is not None:
+                active_session_key = self._active_raw_session_by_creator.get(
+                    session.creator_oid
+                )
+                if active_session_key == session.session_key:
+                    self._active_raw_session_by_creator.pop(session.creator_oid, None)
 
         if session is None:
             return
@@ -657,6 +720,12 @@ class LiveStreamMonitor:
         """Clear failed raw sessions so the next poll can retry them."""
         with self._state_lock:
             session = self.sessions.pop(event.session_key, None)
+            if session is not None:
+                active_session_key = self._active_raw_session_by_creator.get(
+                    session.creator_oid
+                )
+                if active_session_key == session.session_key:
+                    self._active_raw_session_by_creator.pop(session.creator_oid, None)
 
         if session is None:
             return
@@ -675,6 +744,9 @@ class LiveStreamMonitor:
 
             session.last_error = event.error_message
             session.state = SessionState.BLOCKED
+            active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
+            if active_session_key == session.session_key:
+                self._active_raw_session_by_creator.pop(session.creator_oid, None)
             creator_name = session.creator_name
             creator_oid = session.creator_oid
             state = self._creator_states.get(creator_oid)
@@ -704,6 +776,9 @@ class LiveStreamMonitor:
 
             session.last_error = error_message
             session.state = SessionState.BLOCKED
+            active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
+            if active_session_key == session.session_key:
+                self._active_raw_session_by_creator.pop(session.creator_oid, None)
             state = self._creator_states.get(session.creator_oid)
             if state is None:
                 state = CreatorStreamState()
