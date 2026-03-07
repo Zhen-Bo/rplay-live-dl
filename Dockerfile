@@ -23,6 +23,8 @@ RUN poetry config virtualenvs.create false && \
 # Runtime stage
 FROM python:3.11-alpine AS runtime
 
+ARG APP_GIT_SHA=""
+
 # Install runtime dependencies
 RUN apk add --no-cache \
     ffmpeg \
@@ -41,6 +43,7 @@ COPY . .
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV APP_GIT_SHA=${APP_GIT_SHA}
 
 # Run the application
 CMD ["python", "main.py"]

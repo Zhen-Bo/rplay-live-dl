@@ -6,6 +6,7 @@ monitoring and downloading operations.
 """
 
 import logging
+import os
 import signal
 import sys
 from typing import Optional
@@ -60,6 +61,7 @@ class LiveStreamScheduler:
         self.logger = logger
         self.env = env
         self.version = version
+        self.git_sha = os.getenv("APP_GIT_SHA", "").strip()
         self.monitor = LiveStreamMonitor(self.env.auth_token, self.env.user_oid)
         self.scheduler = BlockingScheduler()
 
@@ -80,6 +82,8 @@ class LiveStreamScheduler:
         try:
             self.logger.info("=" * 50)
             self.logger.info(f"rplay-live-dl v{self.version}")
+            if self.git_sha:
+                self.logger.info(f"Git SHA: {self.git_sha[:7]}")
             self.logger.info("=" * 50)
             self.logger.info("Starting live stream monitoring system")
 

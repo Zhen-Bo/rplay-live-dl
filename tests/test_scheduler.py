@@ -1,6 +1,7 @@
 ﻿"""Tests for scheduler module."""
 
 import logging
+import os
 import signal
 from unittest.mock import MagicMock, patch
 
@@ -107,6 +108,20 @@ class TestStartScheduler:
         # Check version is logged
         log_calls = [str(call) for call in mock_logger.info.call_args_list]
         assert any("1.2.3" in call for call in log_calls)
+
+    def test_start_logs_git_sha_when_present(self, patched_scheduler_deps, mock_env, mock_logger):
+        """Test that start logs a short git SHA when APP_GIT_SHA is set."""
+        mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
+        mock_scheduler = MagicMock()
+        mock_scheduler_class.return_value = mock_scheduler
+        mock_scheduler.start.side_effect = KeyboardInterrupt()
+
+        with patch.dict(os.environ, {"APP_GIT_SHA": "5bae5e3abcdef1234567890"}, clear=False):
+            scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.2.3")
+            scheduler.start()
+
+        log_calls = [str(call) for call in mock_logger.info.call_args_list]
+        assert any("Git SHA" in call and "5bae5e3" in call for call in log_calls)
 
     def test_start_adds_job(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that start adds scheduled job."""

@@ -26,6 +26,8 @@ jobs:
               with:
                   context: .
                   push: true
+                  build-args: |
+                      APP_GIT_SHA=${{ github.sha }}
                   tags: |
                       ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}:latest
                       ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}:${{ github.ref_name }}
