@@ -19,6 +19,7 @@ from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait
 
 from core.constants import (
     DEFAULT_DOWNLOAD_RETRIES,
+    DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
     DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR,
     DEFAULT_FRAGMENT_RETRIES,
     DEFAULT_HTTP_HEADERS,
@@ -247,6 +248,7 @@ class StreamDownloader:
             # Retry settings for reliability
             "retries": DEFAULT_DOWNLOAD_RETRIES,
             "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
+            "socket_timeout": DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
             # Continue partial downloads
             "continuedl": True,
         }

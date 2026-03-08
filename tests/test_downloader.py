@@ -218,13 +218,14 @@ class TestBuildYdlOptions:
         assert options["no_warnings"] is True
 
     def test_options_retry_settings(self, tmp_path):
-        """Test ydl options has retry settings."""
+        """Test ydl options has retry settings and a short socket timeout."""
         downloader = StreamDownloader("TestCreator")
         path = tmp_path / "test.mp4"
         options = downloader._build_ydl_options(path)
         assert "retries" in options
         assert "fragment_retries" in options
         assert options["continuedl"] is True
+        assert options["socket_timeout"] == 10
 
 
 class TestDownloadMethod:
