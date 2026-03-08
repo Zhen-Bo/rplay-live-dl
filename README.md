@@ -191,55 +191,88 @@ Development:
 
 #### Environment file
 
-Required values:
+Copy `.env.example` to `.env` for local runs. If you use the bundled `docker-compose.yaml`, the host file named `env` is mounted to `/app/.env`.
+
+Full example:
 
 ```dotenv
-INTERVAL=60
-USER_OID=your_user_oid
+# Required: RPlay account credentials
 AUTH_TOKEN=your_auth_token
-```
+USER_OID=your_user_oid
 
-Optional log rotation values:
+# Optional: monitor poll interval in seconds (10-3600)
+INTERVAL=60
 
-```dotenv
+# Optional: application log level
 LOG_LEVEL=INFO
+
+# Optional: surface yt-dlp internal debug chatter (`1`, `true`, `yes`, `on`)
+LOG_YTDLP_INTERNAL=false
+
+# Optional: log rotation settings
 LOG_MAX_SIZE_MB=5
 LOG_BACKUP_COUNT=5
 LOG_RETENTION_DAYS=30
+
+# Optional: startup metadata shown as Git SHA in logs
+# Usually injected automatically during Docker image builds
+APP_GIT_SHA=
 ```
+
+Environment variables:
+
+| Variable | Required | Default | Validation / accepted values | Purpose |
+| --- | --- | --- | --- | --- |
+| `AUTH_TOKEN` | yes | none | non-empty | RPlay auth token used for API and stream access |
+| `USER_OID` | yes | none | non-empty | Your RPlay user identifier |
+| `INTERVAL` | no | `60` | integer `10`-`3600` | Poll interval in seconds |
+| `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; invalid values fall back to `INFO` | Console and file log verbosity |
+| `LOG_YTDLP_INTERNAL` | no | `false` | truthy values: `1`, `true`, `yes`, `on` | Enables noisy yt-dlp internal debug lines |
+| `LOG_MAX_SIZE_MB` | no | `5` | integer `1`-`100` | Maximum size of each log file before rotation |
+| `LOG_BACKUP_COUNT` | no | `5` | integer `1`-`50` | Number of rotated log files to keep |
+| `LOG_RETENTION_DAYS` | no | `30` | integer `1`-`365` | Age-based cleanup window for old logs |
+| `APP_GIT_SHA` | no | empty | free-form string | Startup version metadata shown in logs; usually injected by Docker/image builds |
 
 Notes:
 
-- `INTERVAL` is in seconds
-- `LOG_LEVEL` supports standard names such as `DEBUG`, `INFO`, `WARNING`, `ERROR`, and `CRITICAL`
-- the application validates required variables on startup
 - local runs load from `.env` or process environment variables
 - the bundled Docker Compose file maps a host file named `env` to `/app/.env`
+- `LOG_YTDLP_INTERNAL=true` is only for deep diagnosis; it is intentionally noisy
 
 #### Creator configuration
 
 Copy `config.yaml.example` to `config/config.yaml` and edit it like this:
 
 ```yaml
+# Optional. If missing, the app keeps using the default and writes it back.
 apiBaseUrl: https://api.rplay.live
 
 creators:
     - name: "Creator Nickname 1"
-      id: "Creator ID 1"
+      id: "Creator OID 1"
     - name: "Creator Nickname 2"
-      id: "Creator ID 2"
+      id: "Creator OID 2"
 ```
+
+Configuration keys:
+
+| Key | Required | Default | Validation | Purpose |
+| --- | --- | --- | --- | --- |
+| `apiBaseUrl` | no | `https://api.rplay.live` | absolute URL; surrounding whitespace is trimmed and trailing `/` is removed | Base URL for the RPlay API |
+| `creators` | no | empty list | YAML list | Creators to monitor |
+| `creators[].name` | yes | none | non-empty, max `100` characters | Display name used in logs, folder names, and final filenames |
+| `creators[].id` | yes | none | non-empty | Creator OID from the RPlay profile/network requests |
 
 Notes:
 
-- `apiBaseUrl` defaults to `https://api.rplay.live`
-- if `apiBaseUrl` is missing, the app keeps using that default and writes the key back into `config/config.yaml`
+- if `apiBaseUrl` is missing, the app keeps using the default and writes the key back into `config/config.yaml`
 - the monitor re-reads `config/config.yaml` on every poll, so updating `apiBaseUrl` in a running Docker deployment does not require a container restart
 - an invalid `apiBaseUrl` is treated as a config error and the current poll is skipped until the file is fixed
+- you can temporarily leave `creators: []` while validating a deployment
 
 ### Download and Merge Flow
 
-The v2 runtime uses a two-step download pipeline.
+The v2 runtime uses a session-aware download pipeline.
 
 1. **Poll**
    - the monitor loads `config/config.yaml`
@@ -253,6 +286,11 @@ The v2 runtime uses a two-step download pipeline.
 
 3. **Download raw transport stream files**
    - yt-dlp writes raw outputs as `.ts`
+   - each download task uses a `10`-second socket timeout
+   - transient task failures automatically retry up to `3` attempts total with exponential backoff
+   - `HTTP 404` on a fresh stream is retried before the current session is marked blocked
+   - `HTTP 403` is still treated as immediate blocked/private access
+   - `HTTP 401` is treated as an authentication failure instead of a blocked session
    - raw staging names keep the familiar visible format, for example:
      - `#Creator 2026-03-06 Title.ts`
      - `#Creator 2026-03-06 Title_1.ts`
@@ -271,6 +309,7 @@ The v2 runtime uses a two-step download pipeline.
 
 7. **Observe lifecycle logs**
    - set `LOG_LEVEL=DEBUG` in `.env` to see stream-candidate evaluation and skip reasons
+   - set `LOG_YTDLP_INTERNAL=true` only when you need raw yt-dlp internal chatter in addition to app logs
    - the default `INFO` level keeps routine output readable for long-running Docker deployments
 
 #### Final filename rules
@@ -383,14 +422,22 @@ Check:
 - there is enough free disk space
 - logs do not show API or connection failures
 
-#### 3. Paid/private stream cannot be accessed
+#### 3. Stream access fails (`401` / `403` / `404`)
 
 Behavior:
 
-- the app logs `🔒 CreatorName: Cannot access stream (likely paid content)`
-- the current session is marked blocked
-- the same blocked session is not retried repeatedly
+- `401` usually means `AUTH_TOKEN` is missing, expired, or invalid
+- `403` is treated as immediate blocked/private/paid access
+- `404` can appear for a few seconds right after stream start; the downloader retries automatically before marking the current session blocked
+- timeout-like transport errors also retry automatically within the same download task
+- after retries are exhausted, the current session is marked blocked or failed according to the final error
 - a later new session from that creator can still be retried normally
+
+Check:
+
+- refresh `AUTH_TOKEN` if logs show `401`
+- if repeated `403` persists, confirm the stream is not paid/private for your account
+- if repeated `404` persists after the automatic retries, wait a few seconds and confirm the stream actually remained live
 
 #### 4. Merge failed
 
