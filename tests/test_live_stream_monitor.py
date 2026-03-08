@@ -129,10 +129,10 @@ class TestSessionAwareMonitoring:
 
     @patch('core.live_stream_monitor.read_config')
     @patch('core.live_stream_monitor.StreamDownloader.download')
-    def test_new_stream_oid_starts_second_stream_same_day(
+    def test_same_live_creator_starts_second_segment_after_raw_completion(
         self, mock_download, mock_read_config, mock_api, tmp_path
     ):
-        """Test a second same-day stream starts when the stream oid changes."""
+        """Test raw completion immediately allows the same live creator to start a new segment."""
         first_stream = MagicMock()
         first_stream.oid = "stream-1"
         first_stream.creator_oid = "creator1"
@@ -141,10 +141,10 @@ class TestSessionAwareMonitoring:
         first_stream.title = "Repeated Title"
 
         second_stream = MagicMock()
-        second_stream.oid = "stream-2"
+        second_stream.oid = "stream-1"
         second_stream.creator_oid = "creator1"
         second_stream.stream_state = StreamState.LIVE
-        second_stream.stream_start_time = datetime(2026, 3, 7, 6, 3, 40)
+        second_stream.stream_start_time = datetime(2026, 3, 7, 5, 3, 40)
         second_stream.title = "Repeated Title"
 
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
@@ -160,9 +160,10 @@ class TestSessionAwareMonitoring:
         )
 
         monitor.check_live_streams_and_start_download()
+        first_session_key = next(iter(monitor.sessions))
         monitor._handle_monitor_event(
             RawDownloadCompleted(
-                session_key=monitor._make_session_key(first_stream),
+                session_key=first_session_key,
                 staging_dir=tmp_path / "first-staging",
             )
         )
@@ -172,10 +173,10 @@ class TestSessionAwareMonitoring:
 
     @patch('core.live_stream_monitor.read_config')
     @patch('core.live_stream_monitor.StreamDownloader.download')
-    def test_same_stream_oid_starts_second_stream_when_started_at_changes_after_done(
+    def test_done_session_does_not_block_new_segment_for_same_live_creator(
         self, mock_download, mock_read_config, mock_api, tmp_path
     ):
-        """Test a reused stream oid still starts a new download when started_at changes."""
+        """Test a finished session never blocks a fresh segment for the same creator."""
         first_stream = MagicMock()
         first_stream.oid = "stream-1"
         first_stream.creator_oid = "creator1"
@@ -187,7 +188,7 @@ class TestSessionAwareMonitoring:
         second_stream.oid = "stream-1"
         second_stream.creator_oid = "creator1"
         second_stream.stream_state = StreamState.LIVE
-        second_stream.stream_start_time = datetime(2026, 3, 7, 10, 47, 52)
+        second_stream.stream_start_time = datetime(2026, 3, 5, 10, 47, 43)
         second_stream.title = "Repeated Title"
 
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
@@ -237,17 +238,18 @@ class TestSessionAwareMonitoring:
         def assert_eager_state(creator_oid: str) -> str:
             active_session_key = monitor._active_raw_session_by_creator[creator_oid]
             assert active_session_key in monitor.sessions
-            assert monitor.sessions[active_session_key].state == SessionState.RAW_RUNNING
-            assert (
-                monitor._creator_states[creator_oid].last_stream_start_time
-                == mock_stream.stream_start_time
-            )
+            active_session = monitor.sessions[active_session_key]
+            assert active_session.state == SessionState.RAW_RUNNING
+            assert active_session.recording_started_at == fixed_now
             return "http://example.com/stream.m3u8"
 
+        fixed_now = datetime(2026, 3, 7, 5, 3, 41)
         mock_api.get_stream_url.side_effect = assert_eager_state
         mock_api.validate_m3u8_url.return_value = True
 
-        monitor.check_live_streams_and_start_download()
+        with patch('core.live_stream_monitor.datetime') as mock_datetime:
+            mock_datetime.now.return_value = fixed_now
+            monitor.check_live_streams_and_start_download()
 
         mock_download.assert_called_once_with(
             "http://example.com/stream.m3u8", "Same Stream"
@@ -405,6 +407,7 @@ class TestSessionAwareMonitoring:
             state=SessionState.RAW_RUNNING,
             staging_dir=tmp_path / "running",
         )
+        monitor._active_raw_session_by_creator["creator1"] = "creator1:1772798400"
 
         monitor.check_live_streams_and_start_download()
 
@@ -753,6 +756,7 @@ class TestCheckLiveStreams:
             state=SessionState.RAW_RUNNING,
             staging_dir=tmp_path,
         )
+        monitor._active_raw_session_by_creator["creator_oid"] = "creator_oid:1772798400"
 
         mock_api.get_stream_url.reset_mock()
         monitor.check_live_streams_and_start_download()
@@ -1185,12 +1189,14 @@ class TestM3u8ValidationIntegration:
         mock_api.get_stream_url.assert_not_called()
 
     @patch('core.live_stream_monitor.read_config')
-    def test_retries_blocked_stream_new_session(self, mock_read_config, mock_api):
-        """Test that blocked streams are retried when new session starts."""
+    def test_blocked_stream_stays_suppressed_while_creator_remains_live(
+        self, mock_read_config, mock_api
+    ):
+        """Test blocked creators are not retried mid-live even if stream metadata changes."""
         mock_stream = MagicMock()
         mock_stream.creator_oid = "creator1"
         mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 14, 0, 0)  # New time
+        mock_stream.stream_start_time = datetime(2026, 1, 26, 14, 0, 0)
         mock_stream.title = "New Stream"
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
@@ -1203,7 +1209,6 @@ class TestM3u8ValidationIntegration:
             user_oid="test_oid",
             api=mock_api,
         )
-        # Pre-populate state as blocked with OLD start time
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
             last_stream_oid="stream-1",
@@ -1212,8 +1217,7 @@ class TestM3u8ValidationIntegration:
 
         monitor.check_live_streams_and_start_download()
 
-        # Should attempt to get stream URL (new session)
-        mock_api.get_stream_url.assert_called_once()
+        mock_api.get_stream_url.assert_not_called()
 
     @patch('core.live_stream_monitor.read_config')
     def test_marks_blocked_on_m3u8_validation_failure(self, mock_read_config, mock_api):
@@ -1525,8 +1529,10 @@ class TestHeartbeatLogOptimization:
 class TestSessionLifecycleLogging:
     """Tests for session lifecycle observability logs."""
 
-    def test_process_live_stream_logs_debug_when_same_session_exists(self, mock_api, tmp_path):
-        """Test same-session polls log an explicit existing-session skip reason."""
+    def test_process_live_stream_logs_local_recording_start_when_creator_lock_exists(
+        self, mock_api, tmp_path
+    ):
+        """Test creator-lock skip logs include the local recording start timestamp."""
         monitor = LiveStreamMonitor(
             auth_token="test_token",
             user_oid="test_oid",
@@ -1536,6 +1542,7 @@ class TestSessionLifecycleLogging:
             creator_name="Creator1",
             creator_oid="creator1",
         )
+        recording_started_at = datetime(2026, 3, 7, 5, 0, 5)
         monitor.sessions["creator1:1772859660"] = DownloadSession(
             session_key="creator1:1772859660",
             creator_oid="creator1",
@@ -1544,7 +1551,9 @@ class TestSessionLifecycleLogging:
             stream_start_time=datetime(2026, 3, 7, 5, 1, 0),
             state=SessionState.RAW_RUNNING,
             staging_dir=tmp_path / "running",
+            recording_started_at=recording_started_at,
         )
+        monitor._active_raw_session_by_creator["creator1"] = "creator1:1772859660"
 
         mock_stream = MagicMock()
         mock_stream.oid = "stream-1"
@@ -1557,7 +1566,7 @@ class TestSessionLifecycleLogging:
             monitor._process_live_stream(mock_stream)
 
         assert any(
-            "reason=existing_session_state" in str(call)
+            f"active_recording_started_at={recording_started_at.isoformat()}" in str(call)
             for call in mock_debug.call_args_list
         )
 
