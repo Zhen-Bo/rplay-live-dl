@@ -240,7 +240,6 @@ class LiveStreamMonitor:
 
     def _process_live_stream(self, stream: LiveStream) -> None:
         """Process one monitored live stream candidate."""
-        session_key = self._make_session_key(stream)
         with self._state_lock:
             self.latest_stream_oid_by_creator[stream.creator_oid] = stream.oid
             self._prune_superseded_terminal_sessions_locked(
@@ -260,46 +259,36 @@ class LiveStreamMonitor:
                 if active_session_key is not None
                 else None
             )
-            existing_session = self.sessions.get(session_key)
 
+        candidate_session_key = active_session_key or "pending_local_session"
         self.logger.debug(
             f"Inspecting live stream candidate: creator_oid={stream.creator_oid}, "
-            f"stream_oid={stream.oid}, session_key={session_key}, "
+            f"stream_oid={stream.oid}, session_key={candidate_session_key}, "
             f"started_at={stream.stream_start_time.isoformat()}, "
             f"tracked_started_at={tracked_started_at}, "
             f"active_raw_session_key={active_session_key}, "
             f"active_raw_state={active_session.state.value if active_session else 'none'}, "
-            f"title=\"{stream.title}\""
+            f'title="{stream.title}"'
         )
 
         if active_session is not None and active_session.state == SessionState.RAW_RUNNING:
-            self.logger.debug(
-                f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
-                f"stream_oid={stream.oid}, session_key={session_key}, "
-                f"reason=active_raw_running, active_session_key={active_session.session_key}, "
-                f"active_started_at={active_session.stream_start_time.isoformat()}"
+            active_recording_started_at = (
+                active_session.recording_started_at.isoformat()
+                if active_session.recording_started_at is not None
+                else "None"
             )
-            return
-
-        if existing_session is not None and existing_session.state in {
-            SessionState.RAW_RUNNING,
-            SessionState.MERGE_QUEUED,
-            SessionState.MERGING,
-            SessionState.DONE,
-            SessionState.BLOCKED,
-            SessionState.MERGE_FAILED,
-        }:
             self.logger.debug(
                 f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
-                f"stream_oid={stream.oid}, session_key={session_key}, "
-                f"reason=existing_session_state, existing_state={existing_session.state.value}"
+                f"stream_oid={stream.oid}, session_key={candidate_session_key}, "
+                f"reason=active_raw_running, active_session_key={active_session.session_key}, "
+                f"active_recording_started_at={active_recording_started_at}"
             )
             return
 
         if not self._should_attempt_download(stream):
             self.logger.debug(
                 f"Skipping live stream candidate: creator_oid={stream.creator_oid}, "
-                f"stream_oid={stream.oid}, session_key={session_key}, "
+                f"stream_oid={stream.oid}, session_key={candidate_session_key}, "
                 f"reason=current_stream_blocked, tracked_started_at={tracked_started_at}"
             )
             return
@@ -313,9 +302,6 @@ class LiveStreamMonitor:
             state = self._creator_states.get(creator_oid)
 
         if state is None:
-            return True
-
-        if self._is_new_stream_for_creator(stream):
             return True
 
         return not state.is_current_stream_blocked
@@ -336,17 +322,20 @@ class LiveStreamMonitor:
 
         creator_name = creator_profile.creator_name
         creator_oid = stream.creator_oid
-        session_key = self._make_session_key(stream)
+        recording_started_at = datetime.now(timezone.utc)
 
         self._update_creator_stream_state(stream)
-        self.logger.info(f"🔴 {creator_name} is live: \"{stream.title}\"")
-
-        session = self._get_or_create_session(stream, creator_name)
+        session = self._get_or_create_session(
+            stream=stream,
+            creator_name=creator_name,
+            recording_started_at=recording_started_at,
+        )
+        self.logger.info(f'🔴 {creator_name} is live: "{stream.title}"')
 
         try:
             stream_url = self._get_accessible_stream_url(
                 creator_oid=creator_oid,
-                session_key=session_key,
+                session_key=session.session_key,
                 creator_name=creator_name,
             )
             if stream_url is None:
@@ -358,7 +347,7 @@ class LiveStreamMonitor:
                 title=stream.title,
             )
         except Exception as exc:
-            self._handle_start_download_error(session_key, creator_name, exc)
+            self._handle_start_download_error(session.session_key, creator_name, exc)
 
     def _get_accessible_stream_url(
         self,
@@ -552,20 +541,32 @@ class LiveStreamMonitor:
         for session_key in removable_keys:
             self.sessions.pop(session_key, None)
 
-    def _get_or_create_session(self, stream: LiveStream, creator_name: str) -> DownloadSession:
-        """Get existing session or create a new session record."""
-        session_key = self._make_session_key(stream)
+    def _get_or_create_session(
+        self,
+        stream: LiveStream,
+        creator_name: str,
+        recording_started_at: datetime,
+    ) -> DownloadSession:
+        """Create a new local recording session and acquire the creator raw lock."""
         with self._state_lock:
-            if session_key not in self.sessions:
-                self.sessions[session_key] = DownloadSession(
-                    session_key=session_key,
-                    creator_oid=stream.creator_oid,
-                    creator_name=creator_name,
-                    title=stream.title,
-                    stream_start_time=stream.stream_start_time,
-                    state=SessionState.RAW_RUNNING,
-                    staging_dir=self._build_staging_dir(creator_name, session_key),
-                )
+            session_key = self._make_session_key(stream.creator_oid, recording_started_at)
+            if session_key in self.sessions:
+                suffix = 1
+                base_session_key = session_key
+                while session_key in self.sessions:
+                    session_key = f"{base_session_key}-{suffix}"
+                    suffix += 1
+
+            self.sessions[session_key] = DownloadSession(
+                session_key=session_key,
+                creator_oid=stream.creator_oid,
+                creator_name=creator_name,
+                title=stream.title,
+                stream_start_time=stream.stream_start_time,
+                state=SessionState.RAW_RUNNING,
+                staging_dir=self._build_staging_dir(creator_name, session_key),
+                recording_started_at=recording_started_at,
+            )
             self._active_raw_session_by_creator[stream.creator_oid] = session_key
             return self.sessions[session_key]
 
@@ -580,12 +581,17 @@ class LiveStreamMonitor:
                 if active_session_key == session_key:
                     self._active_raw_session_by_creator.pop(session.creator_oid, None)
 
-    def _make_session_key(self, stream: LiveStream) -> str:
-        """Build a stable key for one handled live session."""
-        start_time = stream.stream_start_time
-        if start_time.tzinfo is None:
-            start_time = start_time.replace(tzinfo=timezone.utc)
-        return f"{stream.creator_oid}:{int(start_time.timestamp())}"
+    def _make_session_key(
+        self,
+        creator_oid: str,
+        recording_started_at: datetime,
+    ) -> str:
+        """Build a session key from the local recording task start time."""
+        if recording_started_at.tzinfo is None:
+            recording_started_at = recording_started_at.replace(tzinfo=timezone.utc)
+        else:
+            recording_started_at = recording_started_at.astimezone(timezone.utc)
+        return f"{creator_oid}:{int(recording_started_at.timestamp() * 1000)}"
 
     def _build_staging_dir(self, creator_name: str, session_key: str) -> Path:
         """Build the staging directory for one session."""

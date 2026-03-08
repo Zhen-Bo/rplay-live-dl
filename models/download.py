@@ -29,6 +29,7 @@ class DownloadSession:
     stream_start_time: datetime
     state: SessionState
     staging_dir: Path
+    recording_started_at: Optional[datetime] = None
     final_output_path: Optional[Path] = None
     last_error: Optional[str] = None
 
