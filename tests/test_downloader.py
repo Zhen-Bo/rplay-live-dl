@@ -563,8 +563,35 @@ class TestDownloadErrorCallback:
         assert len(completed_events) == 1
         assert failed_events == []
 
-    def test_worker_does_not_retry_blocked_access_errors(self, mock_yt_dlp, tmp_path):
-        """Test 403/404 access errors skip same-task retry and mark blocked."""
+    def test_worker_retries_404_access_errors_before_blocking(self, mock_yt_dlp, tmp_path):
+        """Test 404 access errors retry before the stream is marked blocked."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        blocked_callback = MagicMock()
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_error=blocked_callback,
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = [
+            yt_dlp.utils.DownloadError("HTTP Error 404: Not Found"),
+            yt_dlp.utils.DownloadError("HTTP Error 404: Not Found"),
+            yt_dlp.utils.DownloadError("HTTP Error 404: Not Found"),
+        ]
+
+        with patch("core.downloader.time.sleep") as mock_sleep:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert mock_ydl.download.call_count == 3
+        assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 4.0]
+        blocked_callback.assert_called_once_with("HTTP Error 404: Not Found")
+        assert failed_events == []
+
+    def test_worker_keeps_403_as_immediate_block(self, mock_yt_dlp, tmp_path):
+        """Test 403 access errors still skip retries and mark the stream blocked."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         blocked_callback = MagicMock()
         failed_events = []
@@ -577,7 +604,7 @@ class TestDownloadErrorCallback:
         output_path = tmp_path / "test.ts"
         downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
-            "HTTP Error 404: Not Found"
+            "HTTP Error 403: Forbidden"
         )
 
         with patch("core.downloader.time.sleep") as mock_sleep:
@@ -585,7 +612,34 @@ class TestDownloadErrorCallback:
 
         assert mock_ydl.download.call_count == 1
         mock_sleep.assert_not_called()
-        blocked_callback.assert_called_once_with("HTTP Error 404: Not Found")
+        blocked_callback.assert_called_once_with("HTTP Error 403: Forbidden")
+        assert failed_events == []
+
+    def test_worker_retries_timeout_errors_before_completing(self, mock_yt_dlp, tmp_path):
+        """Test timeout-like download errors still use same-task retries."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        completed_events = []
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_complete=lambda event: completed_events.append(event),
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        output_path.write_bytes(b"x")
+        downloader._download_start_time = datetime.now()
+        mock_ydl.download.side_effect = [
+            yt_dlp.utils.DownloadError("HTTPSConnectionPool(host='api.rplay.live', port=443): Read timed out. (read timeout=10.0)"),
+            None,
+        ]
+
+        with patch("core.downloader.time.sleep") as mock_sleep:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert mock_ydl.download.call_count == 2
+        assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0]
+        assert len(completed_events) == 1
         assert failed_events == []
 
     def test_worker_routes_401_to_auth_failure(self, mock_yt_dlp, tmp_path):

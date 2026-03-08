@@ -110,6 +110,7 @@ class StreamDownloader:
         "HTTP Error 403",
         "HTTP Error 404",
     ]
+    RETRYABLE_ACCESS_ERROR_PATTERNS = ["HTTP Error 404"]
     AUTH_ERROR_PATTERNS = ["HTTP Error 401"]
     DOWNLOAD_TASK_RETRY_ATTEMPTS = DEFAULT_MAX_RETRIES
     DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR = DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR
@@ -408,6 +409,13 @@ class StreamDownloader:
             for pattern in self.AUTH_ERROR_PATTERNS
         )
 
+    def _is_retryable_access_error(self, error_message: str) -> bool:
+        """Check if an access error should retry before the stream is blocked."""
+        return any(
+            pattern.lower() in error_message.lower()
+            for pattern in self.RETRYABLE_ACCESS_ERROR_PATTERNS
+        )
+
     def _build_download_retrying(self) -> Retrying:
         """Build a tenacity retry controller for full-task yt-dlp retries."""
         return Retrying(
@@ -464,9 +472,11 @@ class StreamDownloader:
                             ydl.download([stream_url])
                     except yt_dlp.utils.DownloadError as exc:
                         error_message = str(exc)
-                        if self._is_auth_error(error_message) or self._is_m3u8_access_error(
-                            error_message
-                        ):
+                        if self._is_auth_error(error_message):
+                            raise
+                        if self._is_retryable_access_error(error_message):
+                            raise _RetryableDownloadTaskError(error_message) from exc
+                        if self._is_m3u8_access_error(error_message):
                             raise
                         raise _RetryableDownloadTaskError(error_message) from exc
         except _RetryableDownloadTaskError as exc:
