@@ -517,6 +517,30 @@ class TestUpdateDownloaders:
         assert "new_oid" in monitor.monitored_creators
 
     @patch('core.live_stream_monitor.read_config')
+    def test_logs_added_and_removed_creator_names(self, mock_read_config, monitor):
+        """Test config refresh logs concise added/removed creator summaries."""
+        monitor.monitored_creators["old_oid"] = CreatorProfile(
+            creator_name="OldCreator",
+            creator_oid="old_oid",
+        )
+        mock_read_config.return_value = _runtime_config([
+            CreatorProfile(creator_name="NewCreator1", creator_oid="new_oid_1"),
+            CreatorProfile(creator_name="NewCreator2", creator_oid="new_oid_2"),
+        ])
+
+        with patch.object(monitor.logger, 'info') as mock_info:
+            monitor._update_downloaders()
+
+        assert any(
+            "Added 2 new creator(s) to monitor: NewCreator1, NewCreator2" in str(call)
+            for call in mock_info.call_args_list
+        )
+        assert any(
+            "Removed 1 creator(s) from monitor: OldCreator" in str(call)
+            for call in mock_info.call_args_list
+        )
+
+    @patch('core.live_stream_monitor.read_config')
     def test_active_session_does_not_require_monitored_creator_entry(
         self, mock_read_config, monitor, tmp_path
     ):
@@ -1127,6 +1151,41 @@ class TestCreatorStateTracking:
 
         # Should not raise
         monitor._clear_creator_stream_state("nonexistent")
+
+    def test_clear_creator_stream_state_logs_offline_cleanup(self, mock_api, tmp_path):
+        """Test offline cleanup logs what state was released for the creator."""
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.monitored_creators["creator1"] = CreatorProfile(
+            creator_name="Creator1",
+            creator_oid="creator1",
+        )
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_oid="stream-1",
+            is_current_stream_blocked=True,
+        )
+        monitor.sessions["creator1:session"] = DownloadSession(
+            session_key="creator1:session",
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            state=SessionState.DONE,
+            staging_dir=tmp_path,
+        )
+
+        with patch.object(monitor.logger, 'info') as mock_info:
+            monitor._clear_creator_stream_state("creator1")
+
+        assert any(
+            "Cleared creator state for Creator1" in str(call)
+            and "blocked=True" in str(call)
+            and "pruned_terminal_sessions=1" in str(call)
+            for call in mock_info.call_args_list
+        )
 
     def test_handle_raw_download_blocked_creates_state_if_missing(self, mock_api, tmp_path):
         """Test blocked raw downloads create creator state when absent."""

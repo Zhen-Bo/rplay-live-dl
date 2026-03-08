@@ -158,6 +158,32 @@ class TestGetUniquePath:
             StreamDownloader._get_unique_path(path)
 
 
+class TestYtDlpLoggerBridge:
+    """Tests for filtering noisy yt-dlp internal logs."""
+
+    def test_internal_ytdlp_debug_logs_are_suppressed_by_default(self, tmp_path, monkeypatch):
+        """Test internal yt-dlp debug chatter is hidden unless explicitly enabled."""
+        monkeypatch.delenv("LOG_YTDLP_INTERNAL", raising=False)
+        downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
+        logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
+
+        with patch.object(downloader.logger, "debug") as mock_debug:
+            logger_bridge.debug("[generic] playlist: Downloading webpage")
+
+        mock_debug.assert_not_called()
+
+    def test_internal_ytdlp_debug_logs_can_be_enabled(self, tmp_path, monkeypatch):
+        """Test internal yt-dlp debug chatter can be surfaced for diagnosis."""
+        monkeypatch.setenv("LOG_YTDLP_INTERNAL", "true")
+        downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
+        logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
+
+        with patch.object(downloader.logger, "debug") as mock_debug:
+            logger_bridge.debug("[generic] playlist: Downloading webpage")
+
+        assert any("yt-dlp" in str(call) for call in mock_debug.call_args_list)
+
+
 class TestBuildYdlOptions:
     """Tests for _build_ydl_options method."""
 
@@ -482,6 +508,29 @@ class TestDownloadErrorCallback:
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
         callback.assert_not_called()
+
+    def test_logs_attempt_start_at_info(self, mock_yt_dlp, tmp_path):
+        """Test each full-task download attempt emits a concise INFO log."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            output_dir=tmp_path,
+            output_extension=".ts",
+        )
+        output_path = tmp_path / "test.ts"
+
+        with patch.object(downloader.logger, "info") as mock_info:
+            downloader._download_stream_with_retries(
+                "http://example.com/stream.m3u8",
+                downloader._build_ydl_options(output_path),
+                output_path,
+            )
+
+        assert any(
+            "Download attempt 1/3 started" in str(call)
+            for call in mock_info.call_args_list
+        )
 
     def test_worker_retries_transient_download_errors_within_same_task(
         self, mock_yt_dlp, tmp_path

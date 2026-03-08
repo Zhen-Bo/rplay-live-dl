@@ -5,6 +5,8 @@ Provides functionality to download live streams using yt-dlp,
 with support for concurrent downloads and automatic file management.
 """
 
+import logging
+import os
 import threading
 import time
 from datetime import datetime
@@ -39,6 +41,42 @@ class _RetryableDownloadTaskError(Exception):
     """Internal exception used to retry a full yt-dlp task."""
 
     pass
+
+
+def _read_bool_env(var_name: str, default: bool = False) -> bool:
+    """Parse a boolean environment flag with common truthy values."""
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _YtDlpLoggerBridge:
+    """Route optional yt-dlp internal logs through the downloader logger."""
+
+    def __init__(self, downloader: "StreamDownloader", enabled: bool = False) -> None:
+        self._downloader = downloader
+        self._enabled = enabled
+
+    def _emit(self, message: Any) -> None:
+        if not self._enabled:
+            return
+        normalized = str(message).strip()
+        if not normalized:
+            return
+        self._downloader._log("debug", f"yt-dlp: {normalized}")
+
+    def debug(self, message: Any) -> None:
+        self._emit(message)
+
+    def info(self, message: Any) -> None:
+        self._emit(message)
+
+    def warning(self, message: Any) -> None:
+        self._emit(message)
+
+    def error(self, message: Any) -> None:
+        self._emit(message)
 
 
 class StreamDownloader:
@@ -108,6 +146,10 @@ class StreamDownloader:
         self.output_extension = output_extension
         self._on_download_complete = on_download_complete
         self._on_download_failure = on_download_failure
+        self._yt_dlp_logger = _YtDlpLoggerBridge(
+            self,
+            enabled=_read_bool_env("LOG_YTDLP_INTERNAL", default=False),
+        )
 
     def _log(self, level: str, message: str) -> None:
         """Log a message with creator name prefix."""
@@ -198,7 +240,7 @@ class StreamDownloader:
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
             "http_headers": DEFAULT_HTTP_HEADERS.copy(),
-            "logger": self.logger,
+            "logger": self._yt_dlp_logger,
             "quiet": True,
             "no_progress": True,
             "no_warnings": True,
@@ -406,11 +448,15 @@ class StreamDownloader:
                 with attempt:
                     attempt_number = attempt.retry_state.attempt_number
                     self._log(
-                        "debug",
-                        f"🔁 Download attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} starting; "
-                        f"session_key={self.session_key or 'none'}, "
-                        f"{self._build_output_state_details(output_path)}",
+                        "info",
+                        f"?? Download attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} started: "
+                        f"session_key={self.session_key or 'none'}, output={output_path.name}",
                     )
+                    if self.logger.isEnabledFor(logging.DEBUG):
+                        self._log(
+                            "debug",
+                            f"   Attempt context: {self._build_output_state_details(output_path)}",
+                        )
                     try:
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                             ydl.download([stream_url])

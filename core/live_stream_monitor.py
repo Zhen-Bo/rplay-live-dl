@@ -450,21 +450,57 @@ class LiveStreamMonitor:
         runtime_config = read_config(self.config_path)
         self.api.set_base_url(runtime_config.api_base_url)
         creator_profiles = runtime_config.creators
-        new_creators: List[str] = []
 
         with self._state_lock:
-            existing_creator_ids = set(self.monitored_creators)
+            previous_creators = self.monitored_creators.copy()
             self.monitored_creators = {
                 profile.creator_oid: profile for profile in creator_profiles
             }
             self._monitored_count = len(self.monitored_creators)
 
-        for profile in creator_profiles:
-            if profile.creator_oid not in existing_creator_ids:
-                new_creators.append(profile.creator_name)
+        previous_creator_ids = set(previous_creators)
+        current_creator_ids = {profile.creator_oid for profile in creator_profiles}
+        new_creators = [
+            profile.creator_name
+            for profile in creator_profiles
+            if profile.creator_oid not in previous_creator_ids
+        ]
+        removed_creators = [
+            profile.creator_name
+            for creator_oid, profile in previous_creators.items()
+            if creator_oid not in current_creator_ids
+        ]
 
         if new_creators:
-            self.logger.info(f"Added {len(new_creators)} new creator(s) to monitor")
+            self.logger.info(
+                f"Added {len(new_creators)} new creator(s) to monitor"
+                f"{self._format_creator_name_summary(new_creators)}"
+            )
+        if removed_creators:
+            self.logger.info(
+                f"Removed {len(removed_creators)} creator(s) from monitor"
+                f"{self._format_creator_name_summary(removed_creators)}"
+            )
+
+    @staticmethod
+    def _format_creator_name_summary(creator_names: List[str]) -> str:
+        """Format a concise creator-name summary for info logs."""
+        if not creator_names:
+            return ""
+        if len(creator_names) <= 5:
+            return f": {', '.join(creator_names)}"
+        preview = ", ".join(creator_names[:5])
+        return f": {preview}, +{len(creator_names) - 5} more"
+
+    def _resolve_creator_name_locked(self, creator_oid: str) -> str:
+        """Resolve a creator name from monitored config or known sessions."""
+        profile = self.monitored_creators.get(creator_oid)
+        if profile is not None:
+            return profile.creator_name
+        for session in self.sessions.values():
+            if session.creator_oid == creator_oid:
+                return session.creator_name
+        return creator_oid
 
     def get_active_downloads(self) -> List[str]:
         """Get list of creators with active raw download sessions."""
@@ -502,10 +538,28 @@ class LiveStreamMonitor:
     def _clear_creator_stream_state(self, creator_oid: str) -> None:
         """Remove creator state when they go offline."""
         with self._state_lock:
-            self._creator_states.pop(creator_oid, None)
+            creator_name = self._resolve_creator_name_locked(creator_oid)
+            creator_state = self._creator_states.pop(creator_oid, None)
             self.latest_stream_oid_by_creator.pop(creator_oid, None)
-            self._active_raw_session_by_creator.pop(creator_oid, None)
-            self._prune_terminal_sessions_for_creator_locked(creator_oid)
+            released_raw_lock = self._active_raw_session_by_creator.pop(creator_oid, None)
+            pruned_terminal_sessions = self._prune_terminal_sessions_for_creator_locked(
+                creator_oid
+            )
+            blocked = (
+                creator_state.is_current_stream_blocked if creator_state is not None else False
+            )
+            should_log = (
+                creator_state is not None
+                or released_raw_lock is not None
+                or pruned_terminal_sessions > 0
+            )
+
+        if should_log:
+            self.logger.info(
+                f"Cleared creator state for {creator_name}: blocked={blocked}, "
+                f"released_raw_lock={released_raw_lock is not None}, "
+                f"pruned_terminal_sessions={pruned_terminal_sessions}"
+            )
 
     def _prune_superseded_terminal_sessions_locked(
         self,
@@ -530,7 +584,7 @@ class LiveStreamMonitor:
         for session_key in removable_keys:
             self.sessions.pop(session_key, None)
 
-    def _prune_terminal_sessions_for_creator_locked(self, creator_oid: str) -> None:
+    def _prune_terminal_sessions_for_creator_locked(self, creator_oid: str) -> int:
         """Drop terminal sessions for a creator that is no longer active."""
         removable_keys = [
             session_key
@@ -540,6 +594,7 @@ class LiveStreamMonitor:
         ]
         for session_key in removable_keys:
             self.sessions.pop(session_key, None)
+        return len(removable_keys)
 
     def _get_or_create_session(
         self,
