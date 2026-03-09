@@ -529,7 +529,7 @@ class TestDownloadErrorCallback:
             )
 
         assert any(
-            "Download attempt 1/3 started" in str(call)
+            "🔁 Download attempt 1/3 started" in str(call)
             for call in mock_info.call_args_list
         )
 

@@ -459,7 +459,7 @@ class StreamDownloader:
                     attempt_number = attempt.retry_state.attempt_number
                     self._log(
                         "info",
-                        f"?? Download attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} started: "
+                        f"🔁 Download attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} started: "
                         f"session_key={self.session_key or 'none'}, output={output_path.name}",
                     )
                     if self.logger.isEnabledFor(logging.DEBUG):
