@@ -10,7 +10,7 @@ from core.env import EnvConfigError, load_env
 from core.logger import cleanup_old_logs, setup_logger
 from core.scheduler import run_scheduler
 
-__version__ = "2.0.0-vibe"
+__version__ = "2.0.0"
 
 
 def main() -> None:
