@@ -1,4 +1,4 @@
-﻿"""Session-aware download and monitor event models."""
+"""Session-aware download and monitor event models."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,7 +28,8 @@ class DownloadSession:
     title: str
     stream_start_time: datetime
     state: SessionState
-    staging_dir: Path
+    output_dir: Path
+    session_prefix: str
     recording_started_at: Optional[datetime] = None
     final_output_path: Optional[Path] = None
     last_error: Optional[str] = None
@@ -39,7 +40,7 @@ class RawDownloadCompleted:
     """Event emitted when a raw yt-dlp session finishes successfully."""
 
     session_key: str
-    staging_dir: Path
+    output_dir: Path
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,8 @@ class MergeJobSpec:
     creator_name: str
     title: str
     stream_start_time: datetime
-    staging_dir: Path
+    output_dir: Path
+    session_prefix: str
 
 
 @dataclass(frozen=True)
@@ -98,4 +100,3 @@ class MergeFailed:
 
     session_key: str
     error_message: str
-    failed_staging_dir: Path
