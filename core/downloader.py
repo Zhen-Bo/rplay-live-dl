@@ -123,6 +123,7 @@ class StreamDownloader:
         session_key: Optional[str] = None,
         output_dir: Optional[Path] = None,
         output_extension: str = ".mp4",
+        filename_prefix: str = "",
         on_download_complete: Optional[Callable[[RawDownloadCompleted], None]] = None,
         on_download_failure: Optional[Callable[[RawDownloadFailed], None]] = None,
     ) -> None:
@@ -146,6 +147,7 @@ class StreamDownloader:
         self.session_key = session_key
         self.output_dir = output_dir
         self.output_extension = output_extension
+        self.filename_prefix = filename_prefix
         self._on_download_complete = on_download_complete
         self._on_download_failure = on_download_failure
         self._yt_dlp_logger = _YtDlpLoggerBridge(
@@ -221,7 +223,7 @@ class StreamDownloader:
             Path object for the output file
         """
         date_str = datetime.today().strftime("%Y-%m-%d")
-        filename = f"#{self.creator_name} {date_str} {safe_title}{self.output_extension}"
+        filename = f"{self.filename_prefix}#{self.creator_name} {date_str} {safe_title}{self.output_extension}"
 
         if self.output_dir is not None:
             return self.output_dir / filename
@@ -533,7 +535,7 @@ class StreamDownloader:
             self._on_download_complete(
                 RawDownloadCompleted(
                     session_key=self.session_key,
-                    staging_dir=output_path.parent,
+                    output_dir=output_path.parent,
                 )
             )
         except Exception as e:

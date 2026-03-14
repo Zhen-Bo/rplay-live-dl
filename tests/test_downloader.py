@@ -116,6 +116,20 @@ class TestBuildOutputPath:
             session_key="creator1:2026-03-06T12:00:00",
             output_dir=tmp_path,
             output_extension=".ts",
+            filename_prefix="20260306_120000_",
+        )
+
+        path = downloader._build_output_path("Test")
+
+        assert path == tmp_path / "20260306_120000_#Creator 2026-01-17 Test.ts"
+
+    @freeze_time("2026-01-17")
+    def test_output_path_no_prefix_when_not_set(self, tmp_path):
+        """Test output path has no prefix when filename_prefix is not provided."""
+        downloader = StreamDownloader(
+            "Creator",
+            output_dir=tmp_path,
+            output_extension=".ts",
         )
 
         path = downloader._build_output_path("Test")
@@ -365,6 +379,7 @@ class TestDownloadWorker:
         assert len(events) == 1
         assert isinstance(events[0], RawDownloadCompleted)
         assert events[0].session_key == "creator1:2026-03-06T12:00:00"
+        assert events[0].output_dir == tmp_path
 
     def test_worker_missing_ts_output_without_fragments_does_not_notify_completion(
         self, mock_yt_dlp, tmp_path
