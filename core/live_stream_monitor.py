@@ -657,9 +657,7 @@ class LiveStreamMonitor:
 
     def _make_session_prefix(self, recording_started_at: datetime) -> str:
         """Build the filename prefix from the local recording start time."""
-        local_dt = recording_started_at
-        if local_dt.tzinfo is not None:
-            local_dt = local_dt.replace(tzinfo=None)
+        local_dt = recording_started_at.astimezone().replace(tzinfo=None)
         return local_dt.strftime("%Y%m%d_%H%M%S_")
 
     def _on_raw_download_complete(self, event: RawDownloadCompleted) -> None:
@@ -736,7 +734,6 @@ class LiveStreamMonitor:
                 return
 
             session.state = SessionState.MERGE_QUEUED
-            session.output_dir = event.output_dir
             active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
             if active_session_key == session.session_key:
                 self._active_raw_session_by_creator.pop(session.creator_oid, None)
@@ -745,7 +742,7 @@ class LiveStreamMonitor:
                 creator_name=session.creator_name,
                 title=session.title,
                 stream_start_time=session.stream_start_time,
-                output_dir=event.output_dir,
+                output_dir=session.output_dir,
                 session_prefix=session.session_prefix,
             )
 
