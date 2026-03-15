@@ -1,13 +1,12 @@
 """Tests for RPlay API client module."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
 import responses
 from requests.exceptions import ConnectionError, HTTPError, Timeout
-from urllib3.util.retry import Retry
 
 from core.rplay import (
     RPlayAPI,
@@ -21,25 +20,13 @@ from models.rplay import CreatorStreamState
 class TestRPlayAPIInit:
     """Tests for RPlayAPI initialization."""
 
-    def test_creates_session_with_retry(self):
-        """Test that API client creates session with retry strategy."""
+    def test_creates_session(self):
+        """Test that API client creates a requests session."""
         api = RPlayAPI(auth_token="test_token", user_oid="test_oid")
 
         # Check session has adapters mounted
         assert "https://" in api._session.adapters
         assert "http://" in api._session.adapters
-
-        # Get the adapter and check retry config
-        adapter = api._session.get_adapter("https://example.com")
-        retry = adapter.max_retries
-
-        assert isinstance(retry, Retry)
-        assert retry.total == 3  # DEFAULT_MAX_RETRIES
-        assert 429 in retry.status_forcelist
-        assert 500 in retry.status_forcelist
-        assert 502 in retry.status_forcelist
-        assert 503 in retry.status_forcelist
-        assert 504 in retry.status_forcelist
 
     def test_stores_credentials(self):
         """Test that credentials are stored correctly."""
@@ -56,6 +43,23 @@ class TestRPlayAPIInit:
 
 class TestGetLivestreamStatus:
     """Tests for get_livestream_status method."""
+
+    def test_uses_custom_base_url(self):
+        """Test livestream status uses the instance-level API base URL."""
+        api = RPlayAPI(
+            auth_token="test",
+            user_oid="test",
+            base_url="https://api.example.com/",
+        )
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = []
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(api._session, "get", return_value=mock_response) as mock_get:
+            api.get_livestream_status()
+
+        assert mock_get.call_args.args[0] == "https://api.example.com/live/livestreams"
 
     def test_successful_request(self):
         """Test successful livestream status retrieval."""
@@ -199,90 +203,42 @@ class TestGetStreamKey:
                 api._get_stream_key()
 
 
-class TestRetryMechanism:
-    """Tests specifically for the retry mechanism."""
-
-    def test_retry_on_503(self):
-        """Test that 503 errors trigger retry (via retry strategy config)."""
-        api = RPlayAPI(auth_token="test", user_oid="test")
-
-        adapter = api._session.get_adapter("https://example.com")
-        retry = adapter.max_retries
-
-        # Verify 503 is in the retry list
-        assert 503 in retry.status_forcelist
-        assert retry.total == 3
-
-    def test_retry_on_429(self):
-        """Test that 429 (rate limit) errors trigger retry."""
-        api = RPlayAPI(auth_token="test", user_oid="test")
-
-        adapter = api._session.get_adapter("https://example.com")
-        retry = adapter.max_retries
-
-        assert 429 in retry.status_forcelist
-
-    def test_retry_backoff_factor(self):
-        """Test that backoff factor is configured."""
-        api = RPlayAPI(auth_token="test", user_oid="test")
-
-        adapter = api._session.get_adapter("https://example.com")
-        retry = adapter.max_retries
-
-        # DEFAULT_RETRY_BACKOFF_FACTOR = 0.5
-        assert retry.backoff_factor == 0.5
-
-    def test_retry_allowed_methods(self):
-        """Test that GET and POST are allowed for retry."""
-        api = RPlayAPI(auth_token="test", user_oid="test")
-
-        adapter = api._session.get_adapter("https://example.com")
-        retry = adapter.max_retries
-
-        assert "GET" in retry.allowed_methods
-        assert "POST" in retry.allowed_methods
-
-
 class TestCreatorStreamState:
     """Tests for CreatorStreamState dataclass."""
 
     def test_default_initialization(self):
         """Test CreatorStreamState default values."""
         state = CreatorStreamState()
-        assert state.last_stream_start_time is None
+        assert state.last_stream_oid is None
         assert state.is_current_stream_blocked is False
 
     def test_initialization_with_values(self):
         """Test CreatorStreamState with explicit values."""
-        start_time = datetime(2026, 1, 26, 12, 0, 0)
         state = CreatorStreamState(
-            last_stream_start_time=start_time,
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
-        assert state.last_stream_start_time == start_time
+        assert state.last_stream_oid == "stream-1"
         assert state.is_current_stream_blocked is True
 
     def test_reset_method(self):
         """Test CreatorStreamState reset method clears state."""
-        start_time = datetime(2026, 1, 26, 12, 0, 0)
         state = CreatorStreamState(
-            last_stream_start_time=start_time,
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
         state.reset()
-        assert state.last_stream_start_time is None
+        assert state.last_stream_oid is None
         assert state.is_current_stream_blocked is False
 
-    def test_update_stream_start_time(self):
-        """Test updating stream start time clears blocked flag."""
-        old_time = datetime(2026, 1, 26, 12, 0, 0)
-        new_time = datetime(2026, 1, 26, 14, 0, 0)
+    def test_update_stream_oid(self):
+        """Test updating stream oid clears the blocked flag."""
         state = CreatorStreamState(
-            last_stream_start_time=old_time,
+            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
-        state.update_stream_start_time(new_time)
-        assert state.last_stream_start_time == new_time
+        state.update_stream_oid("stream-2")
+        assert state.last_stream_oid == "stream-2"
         assert state.is_current_stream_blocked is False
 
     def test_mark_blocked(self):
@@ -332,24 +288,78 @@ class TestValidateM3u8Url:
         assert result is False
 
     @responses.activate
-    def test_retries_on_failure(self):
-        """Test retries specified number of times before returning False."""
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
+    @pytest.mark.parametrize("status_code", [403, 404])
+    def test_does_not_retry_blocked_statuses(self, status_code):
+        """Test blocked statuses stop validation immediately."""
+        responses.add(responses.HEAD, self.TEST_URL, status=status_code)
         api = RPlayAPI(auth_token="test", user_oid="test")
 
         with patch("time.sleep"):
             result = api.validate_m3u8_url(self.TEST_URL, retries=3, retry_delay=0.1)
 
         assert result is False
-        assert len(responses.calls) == 3
+        assert len(responses.calls) == 1
+
+    @responses.activate
+    def test_401_raises_auth_error_during_validation(self):
+        """Test 401 during validation is treated as a global auth failure."""
+        responses.add(responses.HEAD, self.TEST_URL, status=401)
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch("time.sleep") as mock_sleep:
+            with pytest.raises(RPlayAuthError, match="Authentication failed"):
+                api.validate_m3u8_url(self.TEST_URL, retries=3, retry_delay=0.1)
+
+        mock_sleep.assert_not_called()
+        assert len(responses.calls) == 1
+
+    def test_get_livestream_status_retries_transient_connection_errors(self):
+        """Test transient API connection failures are retried before succeeding."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+        success_response = MagicMock()
+        success_response.raise_for_status = MagicMock()
+        success_response.json.return_value = []
+
+        with (
+            patch.object(
+                api._session,
+                "get",
+                side_effect=[ConnectionError("boom"), ConnectionError("boom"), success_response],
+            ) as mock_get,
+            patch("time.sleep") as mock_sleep,
+        ):
+            streams = api.get_livestream_status()
+
+        assert streams == []
+        assert mock_get.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    def test_get_stream_key_retries_transient_connection_errors(self):
+        """Test transient key-fetch failures are retried before succeeding."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+        success_response = MagicMock()
+        success_response.raise_for_status = MagicMock()
+        success_response.json.return_value = {"authKey": "my_stream_key"}
+
+        with (
+            patch.object(
+                api._session,
+                "get",
+                side_effect=[ConnectionError("boom"), ConnectionError("boom"), success_response],
+            ) as mock_get,
+            patch("time.sleep") as mock_sleep,
+        ):
+            stream_url = api.get_stream_url("creator123")
+
+        assert "creatorOid=creator123" in stream_url
+        assert mock_get.call_count == 3
+        assert mock_sleep.call_count == 2
 
     @responses.activate
     def test_succeeds_after_retry(self):
         """Test returns True if succeeds on retry."""
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
         responses.add(responses.HEAD, self.TEST_URL, status=200)
         api = RPlayAPI(auth_token="test", user_oid="test")
 
@@ -392,9 +402,9 @@ class TestValidateM3u8Url:
     @responses.activate
     def test_uses_default_retry_values(self):
         """Test uses default retry count (3) and delay (3.0s)."""
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
-        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
         api = RPlayAPI(auth_token="test", user_oid="test")
 
         with patch("time.sleep") as mock_sleep:
@@ -402,7 +412,21 @@ class TestValidateM3u8Url:
 
         assert len(responses.calls) == 3
         assert mock_sleep.call_count == 2
-        mock_sleep.assert_called_with(3.0)
+        assert mock_sleep.call_args_list == [call(3.0), call(6.0)]
+
+    @responses.activate
+    def test_retries_on_retriable_server_errors(self):
+        """Test retriable server errors continue until attempts are exhausted."""
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        responses.add(responses.HEAD, self.TEST_URL, status=500)
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch("time.sleep"):
+            result = api.validate_m3u8_url(self.TEST_URL, retries=3, retry_delay=0.1)
+
+        assert result is False
+        assert len(responses.calls) == 3
 
     @responses.activate
     def test_stops_retrying_on_success(self):

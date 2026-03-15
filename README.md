@@ -2,7 +2,7 @@
     <h1 align="center">RPLAY-LIVE-DL</h1>
 </p>
 <p align="center">
-    <em><code>❯ An automated Docker-based tool for downloading rPlay live streams with multi-stream monitoring and custom naming.</code></em>
+    <em><code>❯ An automated RPlay live recorder designed for long-running Docker deployments.</code></em>
 </p>
 <p align="center">
     <img src="https://img.shields.io/github/license/Zhen-Bo/rplay-live-dl?style=flat&logo=opensourceinitiative&logoColor=white&color=00BFFF" alt="license">
@@ -11,290 +11,602 @@
     <img src="https://img.shields.io/github/languages/count/Zhen-Bo/rplay-live-dl?style=flat&color=00BFFF" alt="repo-language-count">
     <a href="https://codecov.io/gh/Zhen-Bo/rplay-live-dl"><img src="https://codecov.io/gh/Zhen-Bo/rplay-live-dl/graph/badge.svg" alt="codecov"></a>
 </p>
-<p align="center">Built with the tools and technologies:</p>
-<p align="center">
-    <img src="https://img.shields.io/badge/Docker-2496ED.svg?style=flat&logo=Docker&logoColor=white" alt="Docker">
-    <img src="https://img.shields.io/badge/Python-3776AB.svg?style=flat&logo=Python&logoColor=ffdd54" alt="Python">
-    <img src="https://img.shields.io/badge/Poetry-60A5FA.svg?style=flat&logo=Poetry&logoColor=0B3D8D" alt="Poetry">
-    <img src="https://img.shields.io/badge/Pydantic-E92063.svg?style=flat&logo=Pydantic&logoColor=white" alt="Pydantic">
-    <img src="https://shields.io/badge/FFmpeg-%23171717.svg?style=flat&logo=ffmpeg&logoColor=5cb85c" alt="ffmpeg">
-</p>
-<br>
+<p align="center">Built with Docker, Python, Poetry, Pydantic, yt-dlp, and FFmpeg.</p>
 
 ---
 
 ## 📑 Table of Contents
 
--   [📝 Description](#-description)
--   [✨ Features](#-features)
--   [❗ Known Issues](#-known-issues)
--   [📘 Usage Guide](#-usage-guide)
-    -   [System Requirements](#system-requirements)
-    -   [Obtaining Credentials](#obtaining-credentials)
-        -   [AUTH_TOKEN](#auth_token)
-        -   [USER_OID](#user_oid)
-        -   [Creator ID](#creator-id)
-    -   [Configuration](#configuration)
-    -   [Deployment](#deployment)
-    -   [Directory Structure](#directory-structure)
-    -   [Troubleshooting](#troubleshooting)
--   [🔧 Project Structure](#-project-structure)
--   [👥 Contributing](#-contributing)
--   [📜 License](#-license)
+- [📝 Description](#description)
+- [🆕 What's New in v2](#whats-new-in-v2)
+- [⚠️ v2 Upgrade Notes](#v2-upgrade-notes)
+- [✨ Features](#features)
+- [🚀 Quick Start](#quick-start)
+- [📘 Usage Guide](#usage-guide)
+  - [System Requirements](#system-requirements)
+  - [Obtaining Credentials](#obtaining-credentials)
+  - [Configuration](#configuration)
+  - [Download and Merge Flow](#download-and-merge-flow)
+  - [Deployment](#deployment)
+  - [Directory Structure](#directory-structure)
+  - [Troubleshooting](#troubleshooting)
+- [🛠️ Development](#development)
+- [🔧 Project Structure](#project-structure)
+- [👥 Contributing](#contributing)
+- [📜 License](#license)
 
 ---
+
+<a id="description"></a>
 
 ## 📝 Description
 
-rplay-live-dl is a easily deployable solution for recording Rplay live stream content. The system regularly checks streaming status based on a user-configured list of content creators and automatically initiates recording when streams begin. All recorded content is organized by creator name for efficient management and retrieval.
+`rplay-live-dl` monitors a configured list of RPlay creators, starts recording automatically when a stream goes live, and stores finished recordings under `archive/<creator>/`. It is designed for long-running Docker deployments where configuration, archive files, and logs are mounted from the host.
+
+> [!WARNING]
+> **Vibe Coding Notice**: versions with the `-vibe` suffix (for example `2.0.0-vibe`) are AI-assisted releases. They pass automated tests, but you should still review breaking changes before upgrading production deployments.
 
 ---
+
+<a id="whats-new-in-v2"></a>
+
+## 🆕 What's New in v2
+
+Version `2.0.0-vibe` introduces a session-aware download pipeline:
+
+- each live session is tracked by `creator_oid + stream oid`
+- raw media is downloaded into a per-session staging directory as `.ts`
+- completed raw outputs are merged into a final `.mp4`
+- the visible final filename stays compatible with older releases
+- a new live session can start even while the previous session is still merging
+- startup now fails fast when the app detects the legacy `./config.yaml` path
+- detailed runtime behavior is documented below in [Download and Merge Flow](#download-and-merge-flow)
+- `apiBaseUrl` now lives in `config/config.yaml`, is reloaded every poll, and is auto-written with `https://api.rplay.live` if missing
+
+---
+
+<a id="v2-upgrade-notes"></a>
+
+## ⚠️ v2 Upgrade Notes
+
+`2.0.0-vibe` contains a breaking config-path change.
+
+| Before v2 | Since `2.0.0-vibe` |
+| --- | --- |
+| `./config.yaml` | `./config/config.yaml` |
+| mount one file | mount the whole `./config` directory |
+
+Upgrade checklist:
+
+1. Move your config file from `./config.yaml` to `./config/config.yaml`.
+2. Update Docker volume mounts to use `./config:/app/config`.
+3. Restart the container.
+
+Startup protection:
+
+- if `./config/config.yaml` is missing
+- and legacy `./config.yaml` still exists
+- the app exits early with a migration error instead of silently starting with the wrong mount layout
+
+---
+
+<a id="features"></a>
 
 ## ✨ Features
 
--   Automated live stream monitoring and downloading system built with Python
--   Docker container deployment support for consistent runtime environment
--   Customizable monitoring intervals
--   Simultaneous monitoring of multiple streamers
--   Automated file management with creator-based organization
--   Environment variable configuration for deployment flexibility
+- automated live monitoring for multiple creators
+- session-aware download tracking to avoid creator-level blocking
+- raw `.ts` staging plus final `.mp4` output for better HLS stability
+- immediate merge queueing after raw download completion
+- legacy-compatible final filenames such as `#Creator 2026-03-06 Title.mp4`
+- duplicate title protection with suffixed outputs like `_1`, `_2`, and so on
+- paid/private stream detection with blocked-session handling
+- failed merge preservation under `archive/<creator>/_failed/`
+- fail-fast startup validation for legacy config path upgrades
+- Docker-first deployment for long-running operation
 
 ---
 
-> [!WARNING]
-> **Vibe Coding Notice**: Versions with the `-vibe` suffix (e.g., `v1.3.0-vibe`) are products of [vibe coding](https://en.wikipedia.org/wiki/Vibe_coding) - AI-assisted development where code is generated through natural language prompts. These versions are also tagged as `latest` on Docker Hub. While all code passes automated tests, please use with appropriate caution and review the changes if you have concerns.
+<a id="quick-start"></a>
+
+## 🚀 Quick Start
+
+1. Create your environment file.
+   - Local / Poetry run: copy `.env.example` to `.env`
+   - Included `docker-compose.yaml`: copy `.env.example` to `env`, or update the compose volume to mount `.env` instead
+2. Create `config/config.yaml` from `config.yaml.example`.
+3. Fill in your RPlay credentials, creator list, and optionally `apiBaseUrl`.
+4. Optionally set `LOG_LEVEL=DEBUG` when you want verbose lifecycle logs.
+5. Start the service with Docker Compose.
+6. Watch logs until the first polling cycle succeeds.
+
+```bash
+# 1) Prepare config files
+cp .env.example .env
+mkdir -p config
+cp config.yaml.example config/config.yaml
+
+# 2) Start the service
+docker compose up -d
+
+# 3) Follow logs
+docker compose logs -f
+```
+
+If you use the stock `docker-compose.yaml` without modification, replace step 1 with:
+
+```bash
+cp .env.example env
+```
 
 ---
 
-## ❗ Known Issues
-
--   [x] ~~Can't handle M3U8 404 Error~~ - Now automatically detects and skips paid content (useBonusCoinTicket, useSecretKey, etc.)
-
----
+<a id="usage-guide"></a>
 
 ## 📘 Usage Guide
 
 ### System Requirements
 
-Production Requirements:
+Production:
 
--   Docker environment
--   Valid Rplay platform account
--   Sufficient storage space
--   Stable network connection
+- Docker
+- valid RPlay account credentials
+- stable network connectivity
+- enough disk space for raw `.ts` staging and final `.mp4` files
 
-Development Requirements:
+Development:
 
--   Python environment
--   Package manager (pip or poetry)
--   FFmpeg installed
+- Python 3.11+
+- Poetry
+- FFmpeg
 
 ### Obtaining Credentials
 
-#### AUTH_TOKEN
+#### `AUTH_TOKEN`
 
-1. Log into Rplay.live
-2. Open browser DevTools (F12)
-3. Execute: `localStorage.getItem('_AUTHORIZATION_')`
+1. Log in to `rplay.live`
+2. Open browser DevTools (`F12`)
+3. Execute `localStorage.getItem('_AUTHORIZATION_')`
 4. Copy the returned token
-   ![auth_token](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/auth_token.png?raw=true)
 
-#### USER_OID
+![auth_token](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/auth_token.png?raw=true)
+
+#### `USER_OID`
 
 1. Visit `https://rplay.live/myinfo/`
 2. Copy your `User Number`
-   ![user_oid](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/user_oid.png?raw=true)
+
+![user_oid](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/user_oid.png?raw=true)
 
 #### Creator ID
 
-1. Visit creator's profile
-2. Open DevTools > Network
-3. Refresh page and search for "CreatorOid"
-4. Copy the creator's ID
-   ![creator_oid](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/creator_oid.png?raw=true)
+1. Visit the creator profile page
+2. Open DevTools → Network
+3. Refresh the page and search for `CreatorOid`
+4. Copy the creator ID
+
+![creator_oid](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/creator_oid.png?raw=true)
 
 ### Configuration
 
-1. Environment Setup (`.env`):
+#### Environment file
 
-    ```
-    INTERVAL=check interval in seconds
-    USER_OID=your user number
-    AUTH_TOKEN=JWT authentication token
+Copy `.env.example` to `.env` for local runs. If you use the bundled `docker-compose.yaml`, the host file named `env` is mounted to `/app/.env`.
 
-    # Optional: Log rotation settings
-    LOG_MAX_SIZE_MB=5       # Max log file size (default: 5MB)
-    LOG_BACKUP_COUNT=5      # Number of backup files (default: 5)
-    LOG_RETENTION_DAYS=30   # Days to keep old logs (default: 30)
-    ```
+Full example:
 
-2. Creator Configuration (`config.yaml`):
-    ```yaml
-    creators:
-        - name: "Creator Nickname 1"
-          id: "Creator ID 1"
-        - name: "Creator Nickname 2"
-          id: "Creator ID 2"
-    ```
+```dotenv
+# Required: RPlay account credentials
+AUTH_TOKEN=your_auth_token
+USER_OID=your_user_oid
+
+# Optional: monitor poll interval in seconds (10-3600)
+INTERVAL=60
+
+# Optional: application log level
+LOG_LEVEL=INFO
+
+# Optional: surface yt-dlp internal debug chatter (`1`, `true`, `yes`, `on`)
+LOG_YTDLP_INTERNAL=false
+
+# Optional: log rotation settings
+LOG_MAX_SIZE_MB=5
+LOG_BACKUP_COUNT=5
+LOG_RETENTION_DAYS=30
+
+# Optional: startup metadata shown as Git SHA in logs
+# Usually injected automatically during Docker image builds
+APP_GIT_SHA=
+```
+
+Environment variables:
+
+| Variable | Required | Default | Validation / accepted values | Purpose |
+| --- | --- | --- | --- | --- |
+| `AUTH_TOKEN` | yes | none | non-empty | RPlay auth token used for API and stream access |
+| `USER_OID` | yes | none | non-empty | Your RPlay user identifier |
+| `INTERVAL` | no | `60` | integer `10`-`3600` | Poll interval in seconds |
+| `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; invalid values fall back to `INFO` | Console and file log verbosity |
+| `LOG_YTDLP_INTERNAL` | no | `false` | truthy values: `1`, `true`, `yes`, `on` | Enables noisy yt-dlp internal debug lines |
+| `LOG_MAX_SIZE_MB` | no | `5` | integer `1`-`100` | Maximum size of each log file before rotation |
+| `LOG_BACKUP_COUNT` | no | `5` | integer `1`-`50` | Number of rotated log files to keep |
+| `LOG_RETENTION_DAYS` | no | `30` | integer `1`-`365` | Age-based cleanup window for old logs |
+| `APP_GIT_SHA` | no | empty | free-form string | Startup version metadata shown in logs; usually injected by Docker/image builds |
+
+Notes:
+
+- local runs load from `.env` or process environment variables
+- the bundled Docker Compose file maps a host file named `env` to `/app/.env`
+- `LOG_YTDLP_INTERNAL=true` is only for deep diagnosis; it is intentionally noisy
+
+#### Creator configuration
+
+Copy `config.yaml.example` to `config/config.yaml` and edit it like this:
+
+```yaml
+# Optional. If missing, the app keeps using the default and writes it back.
+apiBaseUrl: https://api.rplay.live
+
+creators:
+    - name: "Creator Nickname 1"
+      id: "Creator OID 1"
+    - name: "Creator Nickname 2"
+      id: "Creator OID 2"
+```
+
+Configuration keys:
+
+| Key | Required | Default | Validation | Purpose |
+| --- | --- | --- | --- | --- |
+| `apiBaseUrl` | no | `https://api.rplay.live` | absolute URL; surrounding whitespace is trimmed and trailing `/` is removed | Base URL for the RPlay API |
+| `creators` | no | empty list | YAML list | Creators to monitor |
+| `creators[].name` | yes | none | non-empty, max `100` characters | Display name used in logs, folder names, and final filenames |
+| `creators[].id` | yes | none | non-empty | Creator OID from the RPlay profile/network requests |
+
+Notes:
+
+- if `apiBaseUrl` is missing, the app keeps using the default and writes the key back into `config/config.yaml`
+- the monitor re-reads `config/config.yaml` on every poll, so updating `apiBaseUrl` in a running Docker deployment does not require a container restart
+- an invalid `apiBaseUrl` is treated as a config error and the current poll is skipped until the file is fixed
+- you can temporarily leave `creators: []` while validating a deployment
+
+### Download and Merge Flow
+
+The v2 runtime uses a session-aware download pipeline.
+
+1. **Poll**
+   - the monitor loads `config/config.yaml`
+   - it refreshes `apiBaseUrl` from config before calling the API
+   - it checks live status for all configured creators
+
+2. **Create a session**
+   - each live stream gets a session key based on `creator_oid` and the API `oid`
+   - the raw download is isolated in `archive/<creator>/.staging/<session_dir>/`
+   - `session_dir` is the filesystem-safe form of the session key, not the raw key string
+
+3. **Download raw transport stream files**
+   - yt-dlp writes raw outputs as `.ts`
+   - each download task uses a `10`-second socket timeout
+   - transient task failures automatically retry up to `3` attempts total with exponential backoff
+   - `HTTP 404` on a fresh stream is retried before the current session is marked blocked
+   - `HTTP 403` is still treated as immediate blocked/private access
+   - `HTTP 401` is treated as an authentication failure instead of a blocked session
+   - raw staging names keep the familiar visible format, for example:
+     - `#Creator 2026-03-06 Title.ts`
+     - `#Creator 2026-03-06 Title_1.ts`
+
+4. **Queue merge immediately after download completes**
+   - as soon as raw download finishes, the merge job is submitted to the merge executor
+   - the control loop can move on quickly, so a new live session from the same creator can be picked up without waiting for the old merge to finish
+
+5. **Merge into final `.mp4`**
+   - all `.ts` files in that session staging directory are merged into one final `.mp4`
+   - even if only one raw `.ts` file exists, the final visible output is still `.mp4`
+
+6. **Clean up or preserve for recovery**
+   - on success, the merged `.ts` files are deleted and the session staging directory is removed
+   - on merge failure or timeout, the whole session staging directory is moved to `archive/<creator>/_failed/<session_dir>/`
+
+7. **Observe lifecycle logs**
+   - set `LOG_LEVEL=DEBUG` in `.env` to see stream-candidate evaluation and skip reasons
+   - set `LOG_YTDLP_INTERNAL=true` only when you need raw yt-dlp internal chatter in addition to app logs
+   - the default `INFO` level keeps routine output readable for long-running Docker deployments
+
+#### Final filename rules
+
+Visible final outputs intentionally keep the old naming style:
+
+- first session: `#Creator 2026-03-06 Title.mp4`
+- second session on the same day with the same title: `#Creator 2026-03-06 Title_1.mp4`
+- later duplicates continue as `_2`, `_3`, and so on
+
+This means:
+
+- users still see the same filename pattern as previous releases
+- collisions are resolved only at the final visible output layer
+- raw session isolation happens inside `.staging`, not in the archive root
 
 ### Deployment
 
-Using Docker Compose (recommended):
+#### Docker Compose (recommended)
 
 ```bash
 # Start recording
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 
 # Stop recording
-docker-compose down
+docker compose down
 
-# Update application
-docker-compose pull
-docker-compose up -d
+# Update image and restart
+docker compose pull
+docker compose up -d
 ```
 
-Using Docker directly:
+The bundled `docker-compose.yaml` mounts:
+
+- `./env` → `/app/.env`
+- `./config` → `/app/config`
+- `./archive` → `/app/archive`
+- `./logs` → `/app/logs`
+
+#### Docker directly
 
 ```bash
 docker run -d \
   -v $(pwd)/.env:/app/.env \
-  -v $(pwd)/config.yaml:/app/config.yaml \
+  -v $(pwd)/config:/app/config \
   -v $(pwd)/archive:/app/archive \
   -v $(pwd)/logs:/app/logs \
-  rplay-live-dl
+  paverz/rplay-live-dl:latest
 ```
 
 ### Directory Structure
 
-```
+Typical runtime layout:
+
+```text
 rplay-live-dl/
-├── archive/              # Recorded streams
-│   └── [Creator Name]/   # Organized by creator
-├── config.yaml           # Creator configuration
-├── .env                  # Environment variables
-└── logs/                 # Application logs
+├── archive/
+│   └── Creator/
+│       ├── #Creator 2026-03-06 Title.mp4
+│       ├── #Creator 2026-03-06 Title_1.mp4
+│       ├── .staging/
+│       │   └── creator_oid_2026-03-06T12_00_00/
+│       │       └── #Creator 2026-03-06 Title.ts
+│       └── _failed/
+│           └── creator_oid_2026-03-06T13_00_00/
+│               └── #Creator 2026-03-06 Title.ts
+├── config/
+│   ├── .gitkeep
+│   └── config.yaml
+├── env                  # used by the bundled docker-compose.yaml
+├── .env                 # used for local runs or custom docker run usage
+├── logs/
+└── docker-compose.yaml
 ```
+
+Notes:
+
+- `.staging` is an internal working area for active or just-finished sessions
+- `_failed` keeps raw files visible for manual inspection and recovery
+- `.staging` and `_failed` appear only when there is active or failed session data
+- final user-facing recordings live directly under `archive/<creator>/`
 
 ### Troubleshooting
 
-#### Common Issues
+#### 1. Startup fails after upgrading to v2
 
-1. **Stream Not Recording**
+Symptom:
 
-    - Verify `AUTH_TOKEN` is valid
-    - Check `creatorOid` is correct
-    - Ensure sufficient disk space
+- the app exits with a config migration error
 
-2. **M3U8 404 Error (Paid Content)**
+Cause:
 
-    - The system automatically detects and skips paid streams (bonus coins, secret keys, etc.)
-    - A warning log `🔒 CreatorName: Cannot access stream (likely paid content)` will appear
-    - The stream will be retried automatically when a new session starts
+- `./config.yaml` still exists, but `./config/config.yaml` does not
 
-3. **Container Crashes**
-    - Check logs: `docker-compose logs`
-    - Verify environment configuration
-    - Ensure network connectivity
+Fix:
+
+- move `./config.yaml` to `./config/config.yaml`
+- update Docker to mount `./config:/app/config`
+
+#### 2. Stream is not recording
+
+Check:
+
+- `AUTH_TOKEN` is still valid
+- `USER_OID` is correct
+- creator ID is correct
+- there is enough free disk space
+- logs do not show API or connection failures
+
+#### 3. Stream access fails (`401` / `403` / `404`)
+
+Behavior:
+
+- `401` usually means `AUTH_TOKEN` is missing, expired, or invalid
+- `403` is treated as immediate blocked/private/paid access
+- `404` can appear for a few seconds right after stream start; the downloader retries automatically before marking the current session blocked
+- timeout-like transport errors also retry automatically within the same download task
+- after retries are exhausted, the current session is marked blocked or failed according to the final error
+- a later new session from that creator can still be retried normally
+
+Check:
+
+- refresh `AUTH_TOKEN` if logs show `401`
+- if repeated `403` persists, confirm the stream is not paid/private for your account
+- if repeated `404` persists after the automatic retries, wait a few seconds and confirm the stream actually remained live
+
+#### 4. Merge failed
+
+Behavior:
+
+- raw files are preserved under `archive/<creator>/_failed/<session_dir>/`
+- the app does not silently delete the session fragments
+
+Check:
+
+- FFmpeg availability in the runtime image
+- file-system permissions
+- available disk space
+- the preserved raw `.ts` files for manual recovery
+
+#### 5. Shutdown takes time
+
+Behavior:
+
+- graceful shutdown may wait for active merge work to finish
+- this is expected for a long-running recorder that prioritizes keeping completed raw work recoverable
 
 ---
 
-## 🔧 Project Structure
+<a id="development"></a>
 
-```sh
-└── rplay-live-dl/
-    ├── core/
-    │   ├── config.py
-    │   ├── downloader.py
-    │   ├── env.py
-    │   ├── live_stream_monitor.py
-    │   ├── logger.py
-    │   ├── rplay.py
-    │   ├── scheduler.py
-    │   └── utils.py
-    ├── models/
-    │   ├── config.py
-    │   ├── env.py
-    │   └── rplay.py
-    ├── tests/
-    │   ├── test_downloader.py
-    │   ├── test_env.py
-    │   ├── test_live_stream_monitor.py
-    │   ├── test_logger.py
-    │   ├── test_rplay.py
-    │   ├── test_scheduler.py
-    │   └── test_utils.py
-    ├── images/
-    │   ├── auth_token.png
-    │   ├── user_oid.png
-    │   └── creator_oid.png
-    ├── LICENSE
-    ├── config.yaml.example
-    ├── .env.example
-    ├── docker-compose.yaml
-    ├── dockerfile
-    ├── main.py
-    ├── poetry.lock
-    ├── pyproject.toml
-    ├── requirements.txt
-    ├── .gitignore
-    └── README.md
+## 🛠️ Development
+
+Install dependencies:
+
+```bash
+poetry install --with dev
+```
+
+Run locally:
+
+```bash
+poetry run python main.py
+```
+
+Run tests:
+
+```bash
+poetry run pytest
+```
+
+Run tests with coverage:
+
+```bash
+poetry run pytest --cov --cov-report=xml
 ```
 
 ---
 
+<a id="project-structure"></a>
+
+## 🔧 Project Structure
+
+```text
+rplay-live-dl/
+├── .github/
+│   └── workflows/
+│       ├── coverage.yml
+│       ├── main.yaml
+│       └── test.yml
+├── core/
+│   ├── config.py
+│   ├── constants.py
+│   ├── download_merge_executor.py
+│   ├── downloader.py
+│   ├── env.py
+│   ├── live_stream_monitor.py
+│   ├── logger.py
+│   ├── rplay.py
+│   ├── scheduler.py
+│   └── utils.py
+├── models/
+│   ├── config.py
+│   ├── download.py
+│   ├── env.py
+│   └── rplay.py
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_config.py
+│   ├── test_download_merge_executor.py
+│   ├── test_download_models.py
+│   ├── test_downloader.py
+│   ├── test_env.py
+│   ├── test_live_stream_monitor.py
+│   ├── test_logger.py
+│   ├── test_merge_flow.py
+│   ├── test_models.py
+│   ├── test_monitor_events.py
+│   ├── test_rplay.py
+│   ├── test_scheduler.py
+│   └── test_utils.py
+├── images/
+│   ├── auth_token.png
+│   ├── creator_oid.png
+│   └── user_oid.png
+├── config/
+│   └── .gitkeep
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── LICENSE
+├── config.yaml.example
+├── docker-compose.yaml
+├── Dockerfile
+├── main.py
+├── poetry.lock
+├── pyproject.toml
+├── requirements.txt
+└── README.md
+```
+
+---
+
+<a id="contributing"></a>
+
 ## 👥 Contributing
 
--   **💬 [Join the Discussions](https://github.com/Zhen-Bo/rplay-live-dl/discussions)**: Share your insights, provide feedback, or ask questions.
--   **🐛 [Report Issues](https://github.com/Zhen-Bo/rplay-live-dl/issues)**: Submit bugs found or log feature requests for the `rplay-live-dl` project.
--   **💡 [Submit Pull Requests](https://github.com/Zhen-Bo/rplay-live-dl/pulls)**: Review open PRs, and submit your own PRs.
+- **💬 [Join the Discussions](https://github.com/Zhen-Bo/rplay-live-dl/discussions)**: Share ideas, ask questions, or discuss operational trade-offs.
+- **🐛 [Report Issues](https://github.com/Zhen-Bo/rplay-live-dl/issues)**: Submit bugs, regressions, or feature requests.
+- **💡 [Submit Pull Requests](https://github.com/Zhen-Bo/rplay-live-dl/pulls)**: Review open PRs and contribute improvements.
 
 <details closed>
-<summary>Contributing Guidelines</summary>
+<summary>Contribution Workflow</summary>
 
-1. **Fork the Repository**: Start by forking the project repository to your github account.
-2. **Clone Locally**: Clone the forked repository to your local machine using a git client.
-    ```sh
-    git clone https://github.com/Zhen-Bo/rplay-live-dl
-    ```
-3. **Create a New Branch**: Always work on a new branch, giving it a descriptive name.
-    ```sh
-    git checkout -b new-feature-x
-    ```
-4. **Make Your Changes**: Develop and test your changes locally.
-5. **Commit Your Changes**: Commit with a clear message describing your updates.
-    ```sh
-    git commit -m 'Implemented new feature x.'
-    ```
-6. **Push to github**: Push the changes to your forked repository.
-    ```sh
-    git push origin new-feature-x
-    ```
-7. **Submit a Pull Request**: Create a PR against the original project repository. Clearly describe the changes and their motivations.
-8. **Review**: Once your PR is reviewed and approved, it will be merged into the main branch. Congratulations on your contribution!
+1. **Fork the repository** to your own GitHub account.
+2. **Clone locally**:
+   ```bash
+   git clone https://github.com/Zhen-Bo/rplay-live-dl
+   ```
+3. **Create a focused branch**:
+   ```bash
+   git checkout -b your-change
+   ```
+4. **Make your changes** and keep the scope tight.
+5. **Run the relevant verification** before opening a PR:
+   ```bash
+   poetry run pytest
+   ```
+6. **Commit with a clear message** using Conventional Commit style when possible.
+7. **Push your branch** and open a pull request.
+8. **Describe the change clearly** with test evidence and any config or operational impact.
 
-Notice! Please ensure your PR:
+PR checklist:
 
-1. Follows the existing code style (black + flake8 + isort).
-2. Use [conventional commit messages format](https://www.conventionalcommits.org/en/v1.0.0/)
-3. Includes tests for new functionality (run `poetry run pytest`).
-4. Updates documentation.
-5. Describes the changes made.
- </details>
+1. Follows the existing project style and naming conventions.
+2. Uses Conventional Commit style for commit messages when practical.
+3. Includes tests for behavior changes, or clearly explains why tests were not needed.
+4. Updates documentation and example config files when user-facing behavior changes.
+5. Calls out any breaking change, migration step, or deployment impact.
+</details>
 
 ### Contributor Graph
 
-<br>
 <p align="left">
-   <a href="https://github.com{/Zhen-Bo/rplay-live-dl/}graphs/contributors">
-      <img src="https://contrib.rocks/image?repo=Zhen-Bo/rplay-live-dl">
+   <a href="https://github.com/Zhen-Bo/rplay-live-dl/graphs/contributors">
+      <img src="https://contrib.rocks/image?repo=Zhen-Bo/rplay-live-dl" alt="Contributor graph">
    </a>
 </p>
 
+---
+
+<a id="license"></a>
+
 ## 📜 License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
----
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

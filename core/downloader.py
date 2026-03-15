@@ -1,29 +1,83 @@
-"""
+﻿"""
 Stream downloader module.
 
 Provides functionality to download live streams using yt-dlp,
 with support for concurrent downloads and automatic file management.
 """
 
+import logging
+import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import yt_dlp
 from pathvalidate import sanitize_filename
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from core.constants import (
     DEFAULT_DOWNLOAD_RETRIES,
+    DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
+    DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR,
     DEFAULT_FRAGMENT_RETRIES,
     DEFAULT_HTTP_HEADERS,
+    DEFAULT_MAX_RETRIES,
 )
 from core.logger import setup_logger
 from core.utils import format_file_size
+from models.download import (
+    RawDownloadAuthFailed,
+    RawDownloadCompleted,
+    RawDownloadFailed,
+)
 
 __all__ = [
     "StreamDownloader",
 ]
+
+
+class _RetryableDownloadTaskError(Exception):
+    """Internal exception used to retry a full yt-dlp task."""
+
+    pass
+
+
+def _read_bool_env(var_name: str, default: bool = False) -> bool:
+    """Parse a boolean environment flag with common truthy values."""
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class _YtDlpLoggerBridge:
+    """Route optional yt-dlp internal logs through the downloader logger."""
+
+    def __init__(self, downloader: "StreamDownloader", enabled: bool = False) -> None:
+        self._downloader = downloader
+        self._enabled = enabled
+
+    def _emit(self, message: Any) -> None:
+        if not self._enabled:
+            return
+        normalized = str(message).strip()
+        if not normalized:
+            return
+        self._downloader._log("debug", f"yt-dlp: {normalized}")
+
+    def debug(self, message: Any) -> None:
+        self._emit(message)
+
+    def info(self, message: Any) -> None:
+        self._emit(message)
+
+    def warning(self, message: Any) -> None:
+        self._emit(message)
+
+    def error(self, message: Any) -> None:
+        self._emit(message)
 
 
 class StreamDownloader:
@@ -51,18 +105,26 @@ class StreamDownloader:
     # Maximum number of duplicate files before raising an error
     MAX_DUPLICATE_FILES = 1000
 
-    # Error message patterns indicating M3U8 access failure (e.g., paid content)
-    M3U8_ERROR_PATTERNS = [
+    # Error message patterns indicating non-retriable access failure.
+    ACCESS_ERROR_PATTERNS = [
+        "HTTP Error 403",
         "HTTP Error 404",
-        "unable to download",
-        "ffmpeg exited with code",
-        "ffmpeg could not be found",
     ]
+    RETRYABLE_ACCESS_ERROR_PATTERNS = ["HTTP Error 404"]
+    AUTH_ERROR_PATTERNS = ["HTTP Error 401"]
+    DOWNLOAD_TASK_RETRY_ATTEMPTS = DEFAULT_MAX_RETRIES
+    DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR = DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR
 
     def __init__(
         self,
         creator_name: str,
         on_download_error: Optional[Callable[[str], None]] = None,
+        on_download_auth_error: Optional[Callable[[Any], None]] = None,
+        session_key: Optional[str] = None,
+        output_dir: Optional[Path] = None,
+        output_extension: str = ".mp4",
+        on_download_complete: Optional[Callable[[RawDownloadCompleted], None]] = None,
+        on_download_failure: Optional[Callable[[RawDownloadFailed], None]] = None,
     ) -> None:
         """
         Initialize a new stream downloader for a creator.
@@ -80,6 +142,16 @@ class StreamDownloader:
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
         self._on_download_error = on_download_error
+        self._on_download_auth_error = on_download_auth_error
+        self.session_key = session_key
+        self.output_dir = output_dir
+        self.output_extension = output_extension
+        self._on_download_complete = on_download_complete
+        self._on_download_failure = on_download_failure
+        self._yt_dlp_logger = _YtDlpLoggerBridge(
+            self,
+            enabled=_read_bool_env("LOG_YTDLP_INTERNAL", default=False),
+        )
 
     def _log(self, level: str, message: str) -> None:
         """Log a message with creator name prefix."""
@@ -115,6 +187,10 @@ class StreamDownloader:
 
         self._log("info", f"📥 Starting download: \"{safe_title}\"")
         self._log("info", f"   Output: {output_path.name}")
+        self._log(
+            "debug",
+            f"   Context: session_key={self.session_key or 'none'}, output_path={output_path}",
+        )
 
         # Start download in a separate thread
         self.download_thread = threading.Thread(
@@ -145,7 +221,10 @@ class StreamDownloader:
             Path object for the output file
         """
         date_str = datetime.today().strftime("%Y-%m-%d")
-        filename = f"#{self.creator_name} {date_str} {safe_title}.mp4"
+        filename = f"#{self.creator_name} {date_str} {safe_title}{self.output_extension}"
+
+        if self.output_dir is not None:
+            return self.output_dir / filename
 
         return Path.cwd() / self.ARCHIVE_DIR / self.creator_name / filename
 
@@ -159,21 +238,26 @@ class StreamDownloader:
         Returns:
             Dictionary of yt-dlp options
         """
-        return {
+        options = {
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
-            "merge_output_format": "mp4",
             "http_headers": DEFAULT_HTTP_HEADERS.copy(),
-            "logger": self.logger,
+            "logger": self._yt_dlp_logger,
             "quiet": True,
             "no_progress": True,
             "no_warnings": True,
             # Retry settings for reliability
             "retries": DEFAULT_DOWNLOAD_RETRIES,
             "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
+            "socket_timeout": DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
             # Continue partial downloads
             "continuedl": True,
         }
+
+        if self.output_extension == ".mp4":
+            options["merge_output_format"] = "mp4"
+
+        return options
 
     @classmethod
     def _get_unique_path(cls, base_path: Path) -> Path:
@@ -206,6 +290,29 @@ class StreamDownloader:
             if counter > cls.MAX_DUPLICATE_FILES:
                 raise RuntimeError(f"Too many duplicate files for {stem}")
 
+    @staticmethod
+    def _has_sibling_fragment_outputs(output_path: Path) -> bool:
+        """Return True when yt-dlp left numbered sibling fragments for this output."""
+        fragment_pattern = f"{output_path.stem}_*{output_path.suffix}"
+        return any(output_path.parent.glob(fragment_pattern))
+
+    def _build_output_state_details(self, output_path: Path) -> str:
+        """Build a compact output-state summary for downloader logs."""
+        part_path = Path(f"{output_path}.part")
+        output_exists = output_path.exists()
+        part_exists = part_path.exists()
+        sibling_fragments = self._has_sibling_fragment_outputs(output_path)
+        output_size = (
+            format_file_size(output_path.stat().st_size) if output_exists else "0 B"
+        )
+        part_size = format_file_size(part_path.stat().st_size) if part_exists else "0 B"
+        return (
+            f"output_path={output_path}, "
+            f"output_exists={output_exists}, output_size={output_size}, "
+            f"part_path={part_path}, part_exists={part_exists}, part_size={part_size}, "
+            f"sibling_fragments={sibling_fragments}"
+        )
+
     def _download_worker(
         self,
         stream_url: str,
@@ -223,8 +330,7 @@ class StreamDownloader:
             output_path: Path where the stream will be saved
         """
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([stream_url])
+            self._download_stream_with_retries(stream_url, ydl_opts, output_path)
 
             # Calculate download duration
             if self._download_start_time:
@@ -245,15 +351,37 @@ class StreamDownloader:
             else:
                 self._log(
                     "warning",
-                    f"⚠️  Download finished but file not found: {output_path}",
+                    "⚠️  Download finished but file not found: "
+                    f"{output_path}; {self._build_output_state_details(output_path)}",
                 )
+                if not self._has_sibling_fragment_outputs(output_path):
+                    return
+
+            self._notify_download_complete(output_path)
 
         except yt_dlp.utils.DownloadError as e:
-            self.logger.error(f"❌ Download error: {e}")
-            self._notify_download_error(str(e))
+            error_message = str(e)
+            self._log(
+                "error",
+                "❌ Download error: "
+                f"{error_message}; session_key={self.session_key or 'none'}, "
+                f"{self._build_output_state_details(output_path)}",
+            )
+            if self._is_auth_error(error_message):
+                self._notify_auth_error(error_message)
+            elif self._is_m3u8_access_error(error_message):
+                self._notify_download_error(error_message)
+            else:
+                self._notify_download_failure(error_message)
 
         except Exception as e:
-            self.logger.error(f"❌ Unexpected download error: {e}")
+            self._log(
+                "error",
+                "❌ Unexpected download error: "
+                f"{e}; session_key={self.session_key or 'none'}, "
+                f"{self._build_output_state_details(output_path)}",
+            )
+            self._notify_download_failure(str(e))
 
         finally:
             self._current_output_path = None
@@ -271,8 +399,95 @@ class StreamDownloader:
         """
         return any(
             pattern.lower() in error_message.lower()
-            for pattern in self.M3U8_ERROR_PATTERNS
+            for pattern in self.ACCESS_ERROR_PATTERNS
         )
+
+    def _is_auth_error(self, error_message: str) -> bool:
+        """Check if the error message indicates an authentication failure."""
+        return any(
+            pattern.lower() in error_message.lower()
+            for pattern in self.AUTH_ERROR_PATTERNS
+        )
+
+    def _is_retryable_access_error(self, error_message: str) -> bool:
+        """Check if an access error should retry before the stream is blocked."""
+        return any(
+            pattern.lower() in error_message.lower()
+            for pattern in self.RETRYABLE_ACCESS_ERROR_PATTERNS
+        )
+
+    def _build_download_retrying(self) -> Retrying:
+        """Build a tenacity retry controller for full-task yt-dlp retries."""
+        return Retrying(
+            reraise=True,
+            stop=stop_after_attempt(max(1, self.DOWNLOAD_TASK_RETRY_ATTEMPTS)),
+            wait=wait_exponential(multiplier=self.DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR),
+            retry=retry_if_exception_type(_RetryableDownloadTaskError),
+            sleep=time.sleep,
+            before_sleep=self._log_before_retry,
+        )
+
+    def _log_before_retry(self, retry_state) -> None:
+        """Log one retry attempt before sleeping."""
+        exception = retry_state.outcome.exception()
+        wait_seconds = 0.0
+        if retry_state.next_action is not None:
+            wait_seconds = retry_state.next_action.sleep
+        output_state = "output_path=unknown"
+        if self._current_output_path is not None:
+            output_state = self._build_output_state_details(self._current_output_path)
+        self._log(
+            "warning",
+            f"⚠️ Download attempt {retry_state.attempt_number}/"
+            f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed; retrying in "
+            f"{wait_seconds:.1f}s: {exception}; "
+            f"session_key={self.session_key or 'none'}, {output_state}",
+        )
+
+    def _download_stream_with_retries(
+        self,
+        stream_url: str,
+        ydl_opts: Dict[str, Any],
+        output_path: Path,
+    ) -> None:
+        """Run yt-dlp and retry the full task for transient download failures."""
+        attempt_number = 0
+
+        try:
+            for attempt in self._build_download_retrying():
+                with attempt:
+                    attempt_number = attempt.retry_state.attempt_number
+                    self._log(
+                        "info",
+                        f"🔁 Download attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} started: "
+                        f"session_key={self.session_key or 'none'}, output={output_path.name}",
+                    )
+                    if self.logger.isEnabledFor(logging.DEBUG):
+                        self._log(
+                            "debug",
+                            f"   Attempt context: {self._build_output_state_details(output_path)}",
+                        )
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([stream_url])
+                    except yt_dlp.utils.DownloadError as exc:
+                        error_message = str(exc)
+                        if self._is_auth_error(error_message):
+                            raise
+                        if self._is_retryable_access_error(error_message):
+                            raise _RetryableDownloadTaskError(error_message) from exc
+                        if self._is_m3u8_access_error(error_message):
+                            raise
+                        raise _RetryableDownloadTaskError(error_message) from exc
+        except _RetryableDownloadTaskError as exc:
+            raise yt_dlp.utils.DownloadError(str(exc)) from exc
+
+        if attempt_number > 1:
+            self._log(
+                "info",
+                f"✅ Download succeeded on retry attempt "
+                f"{attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
+            )
 
     def _notify_download_error(self, error_message: str) -> None:
         """
@@ -290,6 +505,55 @@ class StreamDownloader:
             except Exception as e:
                 self.logger.error(f"Error in download error callback: {e}")
 
+    def _notify_auth_error(self, error_message: str) -> None:
+        """Notify listeners that credentials appear invalid for this download."""
+        if not self._on_download_auth_error or not self._is_auth_error(error_message):
+            return
+
+        try:
+            if self.session_key:
+                self._on_download_auth_error(
+                    RawDownloadAuthFailed(
+                        session_key=self.session_key,
+                        error_message=error_message,
+                    )
+                )
+                return
+
+            self._on_download_auth_error(error_message)
+        except Exception as e:
+            self.logger.error(f"Error in download auth callback: {e}")
+
+    def _notify_download_complete(self, output_path: Path) -> None:
+        """Notify listeners that a raw download finished successfully."""
+        if not self._on_download_complete or not self.session_key:
+            return
+
+        try:
+            self._on_download_complete(
+                RawDownloadCompleted(
+                    session_key=self.session_key,
+                    staging_dir=output_path.parent,
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Error in download complete callback: {e}")
+
+    def _notify_download_failure(self, error_message: str) -> None:
+        """Notify listeners that a raw download failed for a non-blocked reason."""
+        if not self._on_download_failure or not self.session_key:
+            return
+
+        try:
+            self._on_download_failure(
+                RawDownloadFailed(
+                    session_key=self.session_key,
+                    error_message=error_message,
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Error in download failure callback: {e}")
+
     @property
     def current_output_path(self) -> Optional[Path]:
         """Get the current download output path, if any."""
@@ -301,3 +565,4 @@ class StreamDownloader:
         if self._download_start_time and self.is_alive():
             return (datetime.now() - self._download_start_time).total_seconds()
         return None
+

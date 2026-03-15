@@ -7,7 +7,7 @@ to ensure consistency and ease of maintenance.
 
 # RPlay platform URLs
 RPLAY_SITE_URL = "https://rplay.live"
-RPLAY_API_BASE_URL = "https://api.rplay-cdn.com"
+DEFAULT_RPLAY_API_BASE_URL = "https://api.rplay.live"
 
 # Default User-Agent for HTTP requests
 DEFAULT_USER_AGENT = (
@@ -31,10 +31,12 @@ RETRY_STATUS_CODES = [429, 500, 502, 503, 504]
 # Download configuration
 DEFAULT_DOWNLOAD_RETRIES = 10
 DEFAULT_FRAGMENT_RETRIES = 10
+DEFAULT_DOWNLOAD_SOCKET_TIMEOUT = 10
+DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR = 2.0
 
 __all__ = [
     "RPLAY_SITE_URL",
-    "RPLAY_API_BASE_URL",
+    "DEFAULT_RPLAY_API_BASE_URL",
     "DEFAULT_USER_AGENT",
     "DEFAULT_HTTP_HEADERS",
     "DEFAULT_REQUEST_TIMEOUT",
@@ -43,4 +45,6 @@ __all__ = [
     "RETRY_STATUS_CODES",
     "DEFAULT_DOWNLOAD_RETRIES",
     "DEFAULT_FRAGMENT_RETRIES",
+    "DEFAULT_DOWNLOAD_SOCKET_TIMEOUT",
+    "DEFAULT_DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR",
 ]

@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 import colorlog
 import wcwidth
+from dotenv import dotenv_values
 
 __all__ = [
     "setup_logger",
@@ -29,6 +30,7 @@ __all__ = [
 
 # Default log configuration
 DEFAULT_LOG_LEVEL = logging.INFO
+LOG_LEVEL_ENV_VAR = "LOG_LEVEL"
 
 
 def _get_log_max_bytes() -> int:
@@ -41,6 +43,47 @@ def _get_log_backup_count() -> int:
 
 def _get_log_retention_days() -> int:
     return int(os.getenv("LOG_RETENTION_DAYS", "30"))
+
+
+def _read_log_level_from_dotenv() -> Optional[str]:
+    """Read LOG_LEVEL from the working-directory .env file when present."""
+    dotenv_path = Path.cwd() / ".env"
+    if not dotenv_path.exists():
+        return None
+
+    value = dotenv_values(dotenv_path).get(LOG_LEVEL_ENV_VAR)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _parse_log_level(value: Optional[str]) -> Optional[int]:
+    """Parse a case-insensitive log level name into a logging constant."""
+    if value is None:
+        return None
+
+    normalized = value.strip().upper()
+    if not normalized:
+        return None
+
+    level = logging.getLevelNamesMapping().get(normalized)
+    return level if isinstance(level, int) else None
+
+
+def _resolve_log_level(level: Optional[int]) -> int:
+    """Resolve the configured log level from explicit args, env, or .env."""
+    if level is not None:
+        return level
+
+    configured_value = os.getenv(LOG_LEVEL_ENV_VAR)
+    if configured_value is None:
+        configured_value = _read_log_level_from_dotenv()
+
+    parsed_level = _parse_log_level(configured_value)
+    if parsed_level is None:
+        return DEFAULT_LOG_LEVEL
+
+    return parsed_level
 
 # Logger name display width (for alignment)
 # Set to match the longest logger name: "Downloader" = 10 characters
@@ -321,7 +364,7 @@ def get_logs_dir() -> Path:
 
 def setup_logger(
     name: str,
-    level: int = DEFAULT_LOG_LEVEL,
+    level: Optional[int] = None,
     log_to_file: bool = True,
     log_to_console: bool = True,
 ) -> logging.Logger:
@@ -333,18 +376,21 @@ def setup_logger(
 
     Args:
         name: Logger name (used for both identification and log filename)
-        level: Logging level (default: INFO)
+        level: Logging level. When omitted, resolves from LOG_LEVEL then falls back to INFO.
         log_to_file: Whether to output to file (default: True)
         log_to_console: Whether to output to console (default: True)
 
     Returns:
         logging.Logger: Configured logger instance
     """
+    resolved_level = _resolve_log_level(level)
     logger = logging.getLogger(name)
-    logger.setLevel(level)
+    logger.setLevel(resolved_level)
 
     # Avoid adding duplicate handlers
     if logger.handlers:
+        for handler in logger.handlers:
+            handler.setLevel(resolved_level)
         return logger
 
     # Format strings - level and name are centered by the formatter
@@ -354,7 +400,7 @@ def setup_logger(
 
     if log_to_console:
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
+        console_handler.setLevel(resolved_level)
         console_formatter = ColoredAlignedFormatter(
             fmt=console_fmt,
             datefmt=date_fmt,
@@ -373,7 +419,7 @@ def setup_logger(
             backupCount=_get_log_backup_count(),
             encoding="utf-8",
         )
-        file_handler.setLevel(level)
+        file_handler.setLevel(resolved_level)
         file_formatter = AlignedFormatter(
             fmt=file_fmt,
             datefmt=date_fmt,

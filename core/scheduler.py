@@ -1,4 +1,4 @@
-"""
+﻿"""
 Scheduler module for rplay-live-dl.
 
 Provides the scheduling infrastructure for periodic live stream
@@ -6,6 +6,7 @@ monitoring and downloading operations.
 """
 
 import logging
+import os
 import signal
 import sys
 from typing import Optional
@@ -13,6 +14,7 @@ from typing import Optional
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from core.config import DEFAULT_CONFIG_PATH, validate_startup_config_path
 from core.env import EnvConfig
 from core.live_stream_monitor import LiveStreamMonitor
 
@@ -59,6 +61,7 @@ class LiveStreamScheduler:
         self.logger = logger
         self.env = env
         self.version = version
+        self.git_sha = os.getenv("APP_GIT_SHA", "").strip()
         self.monitor = LiveStreamMonitor(self.env.auth_token, self.env.user_oid)
         self.scheduler = BlockingScheduler()
 
@@ -79,6 +82,8 @@ class LiveStreamScheduler:
         try:
             self.logger.info("=" * 50)
             self.logger.info(f"rplay-live-dl v{self.version}")
+            if self.git_sha:
+                self.logger.info(f"Git SHA: {self.git_sha[:7]}")
             self.logger.info("=" * 50)
             self.logger.info("Starting live stream monitoring system")
 
@@ -106,6 +111,7 @@ class LiveStreamScheduler:
         """Stop the scheduler gracefully."""
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
+            self.monitor.shutdown()
             self.logger.info("Scheduler stopped")
 
 
@@ -124,5 +130,6 @@ def run_scheduler(env: EnvConfig, logger: logging.Logger, version: str) -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    validate_startup_config_path(DEFAULT_CONFIG_PATH)
     _scheduler = LiveStreamScheduler(env=env, logger=logger, version=version)
     _scheduler.start()

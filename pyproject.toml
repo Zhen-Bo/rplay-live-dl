@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "rplay-live-dl"
-version = "1.2.1"
+version = "2.0.0"
 description = ""
 authors = ["paver(kevinsun)"]
 license = "MIT"
@@ -11,32 +11,27 @@ package-mode = false
 python = "^3.11"
 pyyaml = "^6.0.2"
 pydantic = "^2.10.4"
-yt-dlp = "^2024.12.23"
+yt-dlp = "^2026.2.21"
 python-dotenv = "^1.0.1"
-requests = "^2.32.3"
+requests = "^2.32.4"
 apscheduler = "^3.11.0"
 urllib3 = "^2.6.3"
 colorlog = "^6.10.1"
 pydantic-settings = "^2.12.0"
 pathvalidate = "^3.3.1"
 wcwidth = "^0.2.14"
+tenacity = ">=8,<10"
 
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
 pytest-cov = "^7.0.0"
+freezegun = "^1.5.5"
+responses = "^0.25.8"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
-[dependency-groups]
-dev = [
-    "pytest (>=9.0.2,<10.0.0)",
-    "pytest-cov (>=7.0.0,<8.0.0)",
-    "freezegun (>=1.5.5,<2.0.0)",
-    "responses (>=0.25.8,<0.26.0)"
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
