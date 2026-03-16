@@ -288,10 +288,9 @@ class TestValidateM3u8Url:
         assert result is False
 
     @responses.activate
-    @pytest.mark.parametrize("status_code", [403, 404])
-    def test_does_not_retry_blocked_statuses(self, status_code):
-        """Test blocked statuses stop validation immediately."""
-        responses.add(responses.HEAD, self.TEST_URL, status=status_code)
+    def test_does_not_retry_blocked_statuses(self):
+        """Test 403 stops validation immediately without retry."""
+        responses.add(responses.HEAD, self.TEST_URL, status=403)
         api = RPlayAPI(auth_token="test", user_oid="test")
 
         with patch("time.sleep"):
@@ -299,6 +298,33 @@ class TestValidateM3u8Url:
 
         assert result is False
         assert len(responses.calls) == 1
+
+    @responses.activate
+    def test_retries_on_404_before_giving_up(self):
+        """Test 404 is retried before returning False (stream may not be ready yet)."""
+        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch("time.sleep"):
+            result = api.validate_m3u8_url(self.TEST_URL, retries=3, retry_delay=0.1)
+
+        assert result is False
+        assert len(responses.calls) == 3
+
+    @responses.activate
+    def test_returns_true_after_404_then_200(self):
+        """Test returns True when 404 is followed by 200 on retry."""
+        responses.add(responses.HEAD, self.TEST_URL, status=404)
+        responses.add(responses.HEAD, self.TEST_URL, status=200)
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch("time.sleep"):
+            result = api.validate_m3u8_url(self.TEST_URL, retries=3, retry_delay=0.1)
+
+        assert result is True
+        assert len(responses.calls) == 2
 
     @responses.activate
     def test_401_raises_auth_error_during_validation(self):
