@@ -18,7 +18,6 @@
 ## 📑 Table of Contents
 
 - [📝 Description](#description)
-- [🆕 What's New in v2](#whats-new-in-v2)
 - [⚠️ v2 Upgrade Notes](#v2-upgrade-notes)
 - [✨ Features](#features)
 - [🚀 Quick Start](#quick-start)
@@ -45,23 +44,6 @@
 
 > [!WARNING]
 > **Vibe Coding Notice**: versions with the `-vibe` suffix (for example `2.0.0-vibe`) are AI-assisted releases. They pass automated tests, but you should still review breaking changes before upgrading production deployments.
-
----
-
-<a id="whats-new-in-v2"></a>
-
-## 🆕 What's New in v2
-
-Version `2.0.0-vibe` introduces a session-aware download pipeline:
-
-- each live session is tracked by `creator_oid + stream oid`
-- raw media is downloaded into a per-session staging directory as `.ts`
-- completed raw outputs are merged into a final `.mp4`
-- the visible final filename stays compatible with older releases
-- a new live session can start even while the previous session is still merging
-- startup now fails fast when the app detects the legacy `./config.yaml` path
-- detailed runtime behavior is documented below in [Download and Merge Flow](#download-and-merge-flow)
-- `apiBaseUrl` now lives in `config/config.yaml`, is reloaded every poll, and is auto-written with `https://api.rplay.live` if missing
 
 ---
 
@@ -96,12 +78,12 @@ Startup protection:
 
 - automated live monitoring for multiple creators
 - session-aware download tracking to avoid creator-level blocking
-- raw `.ts` staging plus final `.mp4` output for better HLS stability
+- flat archive layout with timestamp-prefixed `.ts` files per session
 - immediate merge queueing after raw download completion
 - legacy-compatible final filenames such as `#Creator 2026-03-06 Title.mp4`
 - duplicate title protection with suffixed outputs like `_1`, `_2`, and so on
 - paid/private stream detection with blocked-session handling
-- failed merge preservation under `archive/<creator>/_failed/`
+- failed merge leaves raw `.ts` files in place for manual recovery
 - fail-fast startup validation for legacy config path upgrades
 - Docker-first deployment for long-running operation
 
@@ -111,9 +93,7 @@ Startup protection:
 
 ## 🚀 Quick Start
 
-1. Create your environment file.
-   - Local / Poetry run: copy `.env.example` to `.env`
-   - Included `docker-compose.yaml`: copy `.env.example` to `env`, or update the compose volume to mount `.env` instead
+1. Create your environment file: copy `.env.example` to `.env`.
 2. Create `config/config.yaml` from `config.yaml.example`.
 3. Fill in your RPlay credentials, creator list, and optionally `apiBaseUrl`.
 4. Optionally set `LOG_LEVEL=DEBUG` when you want verbose lifecycle logs.
@@ -133,12 +113,6 @@ docker compose up -d
 docker compose logs -f
 ```
 
-If you use the stock `docker-compose.yaml` without modification, replace step 1 with:
-
-```bash
-cp .env.example env
-```
-
 ---
 
 <a id="usage-guide"></a>
@@ -152,7 +126,7 @@ Production:
 - Docker
 - valid RPlay account credentials
 - stable network connectivity
-- enough disk space for raw `.ts` staging and final `.mp4` files
+- enough disk space for `.ts` recordings and final `.mp4` files
 
 Development:
 
@@ -191,7 +165,7 @@ Development:
 
 #### Environment file
 
-Copy `.env.example` to `.env` for local runs. If you use the bundled `docker-compose.yaml`, the host file named `env` is mounted to `/app/.env`.
+Copy `.env.example` to `.env`. Both local runs and the bundled `docker-compose.yaml` use `.env`.
 
 Full example:
 
@@ -236,7 +210,7 @@ Environment variables:
 Notes:
 
 - local runs load from `.env` or process environment variables
-- the bundled Docker Compose file maps a host file named `env` to `/app/.env`
+- the bundled Docker Compose file mounts `.env` to `/app/.env`
 - `LOG_YTDLP_INTERNAL=true` is only for deep diagnosis; it is intentionally noisy
 
 #### Creator configuration
@@ -281,31 +255,31 @@ The v2 runtime uses a session-aware download pipeline.
 
 2. **Create a session**
    - each live stream gets a session key based on `creator_oid` and the API `oid`
-   - the raw download is isolated in `archive/<creator>/.staging/<session_dir>/`
-   - `session_dir` is the filesystem-safe form of the session key, not the raw key string
+   - a timestamp prefix (`YYYYMMDD_HHMMSS_`) is derived from `recording_started_at` in machine local time
+   - raw files are written directly to `archive/<creator>/` using this prefix for isolation
 
 3. **Download raw transport stream files**
-   - yt-dlp writes raw outputs as `.ts`
+   - yt-dlp writes raw outputs as `.ts` directly into `archive/<creator>/`
    - each download task uses a `10`-second socket timeout
    - transient task failures automatically retry up to `3` attempts total with exponential backoff
-   - `HTTP 404` on a fresh stream is retried before the current session is marked blocked
+   - `HTTP 404` on the stream playlist is retried with exponential backoff before the session is marked blocked
    - `HTTP 403` is still treated as immediate blocked/private access
    - `HTTP 401` is treated as an authentication failure instead of a blocked session
-   - raw staging names keep the familiar visible format, for example:
-     - `#Creator 2026-03-06 Title.ts`
-     - `#Creator 2026-03-06 Title_1.ts`
+   - raw filenames carry the session timestamp prefix, for example:
+     - `20260306_120000_#Creator 2026-03-06 Title.ts`
+     - `20260306_120000_#Creator 2026-03-06 Title_1.ts`
 
 4. **Queue merge immediately after download completes**
    - as soon as raw download finishes, the merge job is submitted to the merge executor
    - the control loop can move on quickly, so a new live session from the same creator can be picked up without waiting for the old merge to finish
 
 5. **Merge into final `.mp4`**
-   - all `.ts` files in that session staging directory are merged into one final `.mp4`
+   - all `.ts` files in `archive/<creator>/` matching the session prefix are merged into one final `.mp4`
    - even if only one raw `.ts` file exists, the final visible output is still `.mp4`
 
 6. **Clean up or preserve for recovery**
-   - on success, the merged `.ts` files are deleted and the session staging directory is removed
-   - on merge failure or timeout, the whole session staging directory is moved to `archive/<creator>/_failed/<session_dir>/`
+   - on success, the `.ts` files matching the session prefix are deleted from `archive/<creator>/`
+   - on merge failure, the `.ts` files remain in `archive/<creator>/` for manual inspection and recovery
 
 7. **Observe lifecycle logs**
    - set `LOG_LEVEL=DEBUG` in `.env` to see stream-candidate evaluation and skip reasons
@@ -314,17 +288,17 @@ The v2 runtime uses a session-aware download pipeline.
 
 #### Final filename rules
 
-Visible final outputs intentionally keep the old naming style:
+Visible final outputs use a clean naming style:
 
 - first session: `#Creator 2026-03-06 Title.mp4`
 - second session on the same day with the same title: `#Creator 2026-03-06 Title_1.mp4`
 - later duplicates continue as `_2`, `_3`, and so on
 
-This means:
+Raw `.ts` files carry a timestamp prefix for session isolation:
 
-- users still see the same filename pattern as previous releases
-- collisions are resolved only at the final visible output layer
-- raw session isolation happens inside `.staging`, not in the archive root
+- `20260306_120000_#Creator 2026-03-06 Title.ts`
+- prefix format is `YYYYMMDD_HHMMSS_` in machine local time
+- prefix uniquely identifies the recording session; files from different sessions never collide
 
 ### Deployment
 
@@ -347,7 +321,7 @@ docker compose up -d
 
 The bundled `docker-compose.yaml` mounts:
 
-- `./env` → `/app/.env`
+- `./.env` → `/app/.env`
 - `./config` → `/app/config`
 - `./archive` → `/app/archive`
 - `./logs` → `/app/logs`
@@ -373,26 +347,21 @@ rplay-live-dl/
 │   └── Creator/
 │       ├── #Creator 2026-03-06 Title.mp4
 │       ├── #Creator 2026-03-06 Title_1.mp4
-│       ├── .staging/
-│       │   └── creator_oid_2026-03-06T12_00_00/
-│       │       └── #Creator 2026-03-06 Title.ts
-│       └── _failed/
-│           └── creator_oid_2026-03-06T13_00_00/
-│               └── #Creator 2026-03-06 Title.ts
+│       ├── 20260306_120000_#Creator 2026-03-06 Title.ts    ← active or failed session
+│       └── 20260306_130000_#Creator 2026-03-06 Title.ts    ← active or failed session
 ├── config/
 │   ├── .gitkeep
 │   └── config.yaml
-├── env                  # used by the bundled docker-compose.yaml
-├── .env                 # used for local runs or custom docker run usage
+├── .env                 # credentials and runtime settings
 ├── logs/
 └── docker-compose.yaml
 ```
 
 Notes:
 
-- `.staging` is an internal working area for active or just-finished sessions
-- `_failed` keeps raw files visible for manual inspection and recovery
-- `.staging` and `_failed` appear only when there is active or failed session data
+- `.ts` files with a timestamp prefix are either active downloads or unmerged fragments from a failed session
+- on successful merge the matching `.ts` files are deleted automatically
+- on merge failure the `.ts` files remain in place for manual inspection and recovery
 - final user-facing recordings live directly under `archive/<creator>/`
 
 ### Troubleshooting
@@ -443,7 +412,7 @@ Check:
 
 Behavior:
 
-- raw files are preserved under `archive/<creator>/_failed/<session_dir>/`
+- the `.ts` files matching the failed session prefix remain in `archive/<creator>/`
 - the app does not silently delete the session fragments
 
 Check:
@@ -451,7 +420,7 @@ Check:
 - FFmpeg availability in the runtime image
 - file-system permissions
 - available disk space
-- the preserved raw `.ts` files for manual recovery
+- the preserved raw `.ts` files in `archive/<creator>/` for manual recovery
 
 #### 5. Shutdown takes time
 
