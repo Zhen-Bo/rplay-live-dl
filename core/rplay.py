@@ -280,11 +280,14 @@ class RPlayAPI:
                             "Authentication failed. Please check your AUTH_TOKEN."
                         )
 
-                    if status_code in (403, 404):
+                    if status_code == 403:
                         self.logger.debug(
-                            f"M3U8 validation stopped on non-retriable status {status_code}"
+                            "M3U8 validation stopped on non-retriable status 403"
                         )
                         return False
+
+                    if status_code == 404:
+                        raise _RetryableStatusCodeError(status_code)
 
                     if self._is_retryable_status_code(status_code):
                         raise _RetryableStatusCodeError(status_code)

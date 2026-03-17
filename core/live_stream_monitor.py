@@ -1,6 +1,5 @@
 """Live stream monitoring module."""
 
-import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -384,8 +383,9 @@ class LiveStreamMonitor:
             ),
             on_download_auth_error=self._on_raw_download_auth_failed,
             session_key=session.session_key,
-            output_dir=session.staging_dir,
+            output_dir=session.output_dir,
             output_extension=".ts",
+            filename_prefix=session.session_prefix,
             on_download_complete=self._on_raw_download_complete,
             on_download_failure=self._on_raw_download_failed,
         )
@@ -612,6 +612,8 @@ class LiveStreamMonitor:
                     session_key = f"{base_session_key}-{suffix}"
                     suffix += 1
 
+            session_prefix = self._make_session_prefix(recording_started_at)
+            output_dir = self._build_session_output_dir(creator_name)
             self.sessions[session_key] = DownloadSession(
                 session_key=session_key,
                 creator_oid=stream.creator_oid,
@@ -619,7 +621,8 @@ class LiveStreamMonitor:
                 title=stream.title,
                 stream_start_time=stream.stream_start_time,
                 state=SessionState.RAW_RUNNING,
-                staging_dir=self._build_staging_dir(creator_name, session_key),
+                output_dir=output_dir,
+                session_prefix=session_prefix,
                 recording_started_at=recording_started_at,
             )
             self._active_raw_session_by_creator[stream.creator_oid] = session_key
@@ -648,21 +651,14 @@ class LiveStreamMonitor:
             recording_started_at = recording_started_at.astimezone(timezone.utc)
         return f"{creator_oid}:{int(recording_started_at.timestamp() * 1000)}"
 
-    def _build_staging_dir(self, creator_name: str, session_key: str) -> Path:
-        """Build the staging directory for one session."""
-        return (
-            Path.cwd()
-            / StreamDownloader.ARCHIVE_DIR
-            / creator_name
-            / ".staging"
-            / self._make_session_dir_name(session_key)
-        )
+    def _build_session_output_dir(self, creator_name: str) -> Path:
+        """Return the flat output directory for a creator's recordings."""
+        return Path.cwd() / StreamDownloader.ARCHIVE_DIR / creator_name
 
-    def _make_session_dir_name(self, session_key: str) -> str:
-        """Convert a session key into a filesystem-safe directory name."""
-        if ":" in session_key:
-            return session_key.rsplit(":", 1)[1]
-        return sanitize_filename(session_key, replacement_text="_")
+    def _make_session_prefix(self, recording_started_at: datetime) -> str:
+        """Build the filename prefix from the local recording start time."""
+        local_dt = recording_started_at.astimezone().replace(tzinfo=None)
+        return local_dt.strftime("%Y%m%d_%H%M%S_")
 
     def _on_raw_download_complete(self, event: RawDownloadCompleted) -> None:
         """Receive raw completion from a downloader thread and queue it."""
@@ -717,12 +713,11 @@ class LiveStreamMonitor:
                 )
             elif isinstance(event, MergeFailed):
                 session.last_error = event.error_message
-                session.staging_dir = event.failed_staging_dir
                 session.state = SessionState.MERGE_FAILED
                 log_method = self.logger.warning
                 log_message = (
                     f"⚠️ Merge failed for {session.creator_name}: {event.error_message}. "
-                    f"Raw files preserved at: {event.failed_staging_dir}"
+                    f"Raw .ts files left in: {session.output_dir}"
                 )
             else:
                 self.logger.error(f"Unhandled session event type: {type(event)}")
@@ -739,7 +734,6 @@ class LiveStreamMonitor:
                 return
 
             session.state = SessionState.MERGE_QUEUED
-            session.staging_dir = event.staging_dir
             active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
             if active_session_key == session.session_key:
                 self._active_raw_session_by_creator.pop(session.creator_oid, None)
@@ -748,13 +742,14 @@ class LiveStreamMonitor:
                 creator_name=session.creator_name,
                 title=session.title,
                 stream_start_time=session.stream_start_time,
-                staging_dir=session.staging_dir,
+                output_dir=session.output_dir,
+                session_prefix=session.session_prefix,
             )
 
         self.merge_executor.submit_merge(lambda: self._run_merge_job(merge_job))
         self.logger.info(
             f"🧩 Queued merge for {merge_job.creator_name}: "
-            f"session_key={merge_job.session_key}, staging_dir={merge_job.staging_dir}"
+            f"session_key={merge_job.session_key}, output_dir={merge_job.output_dir}"
         )
 
     def _handle_raw_download_auth_failed(self, event: RawDownloadAuthFailed) -> None:
@@ -861,12 +856,13 @@ class LiveStreamMonitor:
 
     def _merge_session_to_mp4(self, merge_job: MergeJobSpec) -> Union[MergeCompleted, MergeFailed]:
         """Merge one session's raw ts outputs into the final mp4 artifact."""
-        ts_files = sorted(merge_job.staging_dir.glob("*.ts"))
+        ts_files = sorted(merge_job.output_dir.glob(f"{merge_job.session_prefix}*.ts"))
 
         try:
             if not ts_files:
                 raise FileNotFoundError(
-                    f"No ts files found for session {merge_job.session_key}"
+                    f"No ts files found for session {merge_job.session_key} "
+                    f"(prefix={merge_job.session_prefix})"
                 )
 
             output_path = self._reserve_final_output_path(
@@ -879,36 +875,21 @@ class LiveStreamMonitor:
             for ts_file in ts_files:
                 ts_file.unlink(missing_ok=True)
 
-            if merge_job.staging_dir.exists():
-                shutil.rmtree(merge_job.staging_dir)
-
             return MergeCompleted(
                 session_key=merge_job.session_key,
                 output_path=output_path,
             )
 
         except subprocess.TimeoutExpired as exc:
-            failed_dir = self._move_failed_staging_dir(
-                creator_name=merge_job.creator_name,
-                session_key=merge_job.session_key,
-                staging_dir=merge_job.staging_dir,
-            )
             timeout_value = int(exc.timeout) if exc.timeout is not None else self.merge_timeout_seconds
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
-                failed_staging_dir=failed_dir,
             )
         except Exception as exc:
-            failed_dir = self._move_failed_staging_dir(
-                creator_name=merge_job.creator_name,
-                session_key=merge_job.session_key,
-                staging_dir=merge_job.staging_dir,
-            )
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=str(exc),
-                failed_staging_dir=failed_dir,
             )
 
     def _reserve_final_output_path(
@@ -970,30 +951,6 @@ class LiveStreamMonitor:
         """Format one concat-demuxer input line with apostrophe-safe escaping."""
         escaped_path = ts_file.resolve().as_posix().replace("'", "'\''")
         return f"file '{escaped_path}'"
-
-    def _move_failed_staging_dir(
-        self,
-        creator_name: str,
-        session_key: str,
-        staging_dir: Path,
-    ) -> Path:
-        """Move failed raw session files into the visible failed directory."""
-        failed_dir = (
-            Path.cwd()
-            / StreamDownloader.ARCHIVE_DIR
-            / creator_name
-            / "_failed"
-            / self._make_session_dir_name(session_key)
-        )
-
-        if not staging_dir.exists():
-            return failed_dir
-
-        failed_dir.parent.mkdir(parents=True, exist_ok=True)
-        if failed_dir.exists():
-            shutil.rmtree(failed_dir)
-        shutil.move(staging_dir, failed_dir)
-        return failed_dir
 
     def shutdown(self) -> None:
         """Shut down background monitor and merge work."""

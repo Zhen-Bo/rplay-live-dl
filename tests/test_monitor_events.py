@@ -32,12 +32,13 @@ def test_raw_completion_event_immediately_submits_merge(tmp_path):
         title="Test Stream",
         stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
         state=SessionState.RAW_RUNNING,
-        staging_dir=tmp_path,
+        output_dir=tmp_path,
+        session_prefix="20260306_120000_",
     )
 
     with patch.object(monitor.merge_executor, "submit_merge") as mock_submit:
         monitor._on_raw_download_complete(
-            RawDownloadCompleted(session_key=session_key, staging_dir=tmp_path)
+            RawDownloadCompleted(session_key=session_key, output_dir=tmp_path)
         )
         monitor._event_queue.join()
 
@@ -62,7 +63,8 @@ def test_raw_failure_event_allows_same_session_retry(tmp_path):
         title="Test Stream",
         stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
         state=SessionState.RAW_RUNNING,
-        staging_dir=tmp_path,
+        output_dir=tmp_path,
+        session_prefix="20260306_120000_",
     )
     mock_stream = MagicMock()
     mock_stream.creator_oid = "creator1"
@@ -96,7 +98,8 @@ def test_get_active_downloads_uses_session_state_only(tmp_path):
         title="Test Stream",
         stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
         state=SessionState.RAW_RUNNING,
-        staging_dir=tmp_path,
+        output_dir=tmp_path,
+        session_prefix="20260306_120000_",
     )
 
     assert monitor.get_active_downloads() == ["Creator1"]
@@ -133,7 +136,8 @@ def test_unhandled_session_event_logs_error(tmp_path):
         title="Test Stream",
         stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
         state=SessionState.MERGE_QUEUED,
-        staging_dir=tmp_path,
+        output_dir=tmp_path,
+        session_prefix="20260306_120000_",
     )
 
     class UnknownSessionEvent:
@@ -174,7 +178,8 @@ def test_shutdown_drains_pending_raw_completion_before_executor_shutdown(tmp_pat
         title="Test Stream",
         stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
         state=SessionState.RAW_RUNNING,
-        staging_dir=tmp_path,
+        output_dir=tmp_path,
+        session_prefix="20260306_120000_",
     )
 
     handle_started = ThreadEvent()
@@ -214,7 +219,7 @@ def test_shutdown_drains_pending_raw_completion_before_executor_shutdown(tmp_pat
         ),
     ):
         monitor._on_raw_download_complete(
-            RawDownloadCompleted(session_key=session_key, staging_dir=tmp_path)
+            RawDownloadCompleted(session_key=session_key, output_dir=tmp_path)
         )
         assert handle_started.wait(timeout=1)
 

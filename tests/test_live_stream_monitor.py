@@ -164,7 +164,7 @@ class TestSessionAwareMonitoring:
         monitor._handle_monitor_event(
             RawDownloadCompleted(
                 session_key=first_session_key,
-                staging_dir=tmp_path / "first-staging",
+                output_dir=tmp_path / "first-staging",
             )
         )
         monitor.check_live_streams_and_start_download()
@@ -287,7 +287,8 @@ class TestSessionAwareMonitoring:
             title="Old Stream",
             stream_start_time=old_time,
             state=SessionState.MERGING,
-            staging_dir=tmp_path / "old",
+            output_dir=tmp_path / "old",
+            session_prefix="20260306_120000_",
         )
 
         monitor.check_live_streams_and_start_download()
@@ -318,7 +319,8 @@ class TestSessionAwareMonitoring:
             title="Old Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
             state=SessionState.DONE,
-            staging_dir=tmp_path / "old",
+            output_dir=tmp_path / "old",
+            session_prefix="20260306_120000_",
         )
         mock_stream = MagicMock()
         mock_stream.oid = "stream-2"
@@ -352,7 +354,8 @@ class TestSessionAwareMonitoring:
             title="Finished Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
             state=SessionState.DONE,
-            staging_dir=tmp_path / "creator1",
+            output_dir=tmp_path / "creator1",
+            session_prefix="20260306_120000_",
         )
         monitor.sessions[active_session_key] = DownloadSession(
             session_key=active_session_key,
@@ -361,7 +364,8 @@ class TestSessionAwareMonitoring:
             title="Active Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 5, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path / "creator2",
+            output_dir=tmp_path / "creator2",
+            session_prefix="20260306_120500_",
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_oid="stream-1"
@@ -405,7 +409,8 @@ class TestSessionAwareMonitoring:
             title="Test Stream",
             stream_start_time=start_time,
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path / "running",
+            output_dir=tmp_path / "running",
+            session_prefix="20260306_120000_",
         )
         monitor._active_raw_session_by_creator["creator1"] = "creator1:1772798400"
 
@@ -429,11 +434,12 @@ class TestSessionAwareMonitoring:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260306_120000_",
         )
         result = RawDownloadCompleted(
             session_key=session_key,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
         )
 
         with patch.object(monitor.merge_executor, 'submit_merge') as mock_submit:
@@ -552,7 +558,8 @@ class TestUpdateDownloaders:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260306_120000_",
         )
 
         mock_read_config.return_value = _runtime_config([])
@@ -778,7 +785,8 @@ class TestCheckLiveStreams:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260306_120000_",
         )
         monitor._active_raw_session_by_creator["creator_oid"] = "creator_oid:1772798400"
 
@@ -960,7 +968,8 @@ class TestGetActiveDownloads:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
             state=SessionState.MERGING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260306_120000_",
         )
 
         assert monitor.get_active_downloads() == []
@@ -980,7 +989,8 @@ class TestGetActiveDownloads:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260306_120000_",
         )
         monitor.sessions["inactive:2026-03-06T11:00:00"] = DownloadSession(
             session_key="inactive:2026-03-06T11:00:00",
@@ -989,7 +999,8 @@ class TestGetActiveDownloads:
             title="Old Stream",
             stream_start_time=datetime(2026, 3, 6, 11, 0, 0),
             state=SessionState.MERGING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260306_110000_",
         )
 
         result = monitor.get_active_downloads()
@@ -1011,7 +1022,8 @@ class TestGetActiveDownloads:
                 title="Test Stream",
                 stream_start_time=datetime(2026, 3, 6, 12, i, 0),
                 state=SessionState.RAW_RUNNING,
-                staging_dir=tmp_path,
+                output_dir=tmp_path,
+                session_prefix=f"2026030612{i:02d}00_",
             )
 
         result = monitor.get_active_downloads()
@@ -1174,7 +1186,8 @@ class TestCreatorStateTracking:
             title="Test Stream",
             stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
             state=SessionState.DONE,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260126_120000_",
         )
 
         with patch.object(monitor.logger, 'info') as mock_info:
@@ -1201,7 +1214,8 @@ class TestCreatorStateTracking:
             title="Test Stream",
             stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260126_120000_",
         )
 
         monitor._handle_raw_download_blocked(
@@ -1401,7 +1415,8 @@ class TestSessionDownloadBlockedHandling:
             title="Test Stream",
             stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260126_120000_",
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_oid="stream-1",
@@ -1431,7 +1446,8 @@ class TestSessionDownloadBlockedHandling:
             title="Test Stream",
             stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260126_120000_",
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_oid="stream-1",
@@ -1474,7 +1490,8 @@ class TestSessionDownloadBlockedHandling:
             title="Test Stream",
             stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
             state=SessionState.BLOCKED,
-            staging_dir=tmp_path,
+            output_dir=tmp_path,
+            session_prefix="20260126_120000_",
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
@@ -1609,7 +1626,8 @@ class TestSessionLifecycleLogging:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 7, 5, 1, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path / "running",
+            output_dir=tmp_path / "running",
+            session_prefix="20260307_050005_",
             recording_started_at=recording_started_at,
         )
         monitor._active_raw_session_by_creator["creator1"] = "creator1:1772859660"
@@ -1649,7 +1667,8 @@ class TestSessionLifecycleLogging:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 7, 5, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path / "running",
+            output_dir=tmp_path / "running",
+            session_prefix="20260307_050000_",
         )
         monitor._active_raw_session_by_creator["creator1"] = "creator1:1741323600"
 
@@ -1682,7 +1701,8 @@ class TestSessionLifecycleLogging:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 7, 5, 0, 0),
             state=SessionState.RAW_RUNNING,
-            staging_dir=tmp_path / "staging",
+            output_dir=tmp_path / "staging",
+            session_prefix="20260307_050000_",
         )
 
         with patch.object(monitor.merge_executor, "submit_merge") as mock_submit_merge:
@@ -1690,7 +1710,7 @@ class TestSessionLifecycleLogging:
                 monitor._handle_raw_download_completed(
                     RawDownloadCompleted(
                         session_key="creator1:stream-1",
-                        staging_dir=tmp_path / "staging",
+                        output_dir=tmp_path / "staging",
                     )
                 )
 
@@ -1711,7 +1731,8 @@ class TestSessionLifecycleLogging:
             title="Test Stream",
             stream_start_time=datetime(2026, 3, 7, 5, 0, 0),
             state=SessionState.MERGING,
-            staging_dir=tmp_path / "staging",
+            output_dir=tmp_path / "staging",
+            session_prefix="20260307_050000_",
         )
         output_path = tmp_path / "archive" / "Creator1" / "#Creator1 2026-03-07 Test Stream.mp4"
 
