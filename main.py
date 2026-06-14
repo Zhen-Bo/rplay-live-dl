@@ -5,12 +5,22 @@ Entry point for the application.
 """
 
 import sys
+import tomllib
+from pathlib import Path
 
 from core.env import EnvConfigError, load_env
 from core.logger import cleanup_old_logs, setup_logger
 from core.scheduler import run_scheduler
 
-__version__ = "2.1.0"
+
+def _read_version() -> str:
+    pyproject_path = Path(__file__).parent / "pyproject.toml"
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)
+    return data["tool"]["poetry"]["version"]
+
+
+__version__ = _read_version()
 
 
 def main() -> None:
