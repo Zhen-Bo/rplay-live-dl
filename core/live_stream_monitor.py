@@ -403,7 +403,6 @@ class LiveStreamMonitor:
         self._remove_session(session_key)
 
         if isinstance(exc, RPlayAuthError):
-            self._mark_check_failed()
             self.logger.error(
                 f"Auth error for {creator_name}: {exc}. "
                 "Please verify AUTH_TOKEN and USER_OID credentials."
