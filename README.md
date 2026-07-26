@@ -218,7 +218,7 @@ Notes:
 Copy `config.yaml.example` to `config/config.yaml` and edit it like this:
 
 ```yaml
-# Optional. If missing, the app keeps using the default and writes it back.
+# Optional. If missing, the app uses the default below without modifying this file.
 apiBaseUrl: https://api.rplay.live
 
 creators:
@@ -239,7 +239,7 @@ Configuration keys:
 
 Notes:
 
-- if `apiBaseUrl` is missing, the app keeps using the default and writes the key back into `config/config.yaml`
+- if `apiBaseUrl` is missing, the app uses the default in memory and leaves `config/config.yaml` untouched
 - the monitor re-reads `config/config.yaml` on every poll, so updating `apiBaseUrl` in a running Docker deployment does not require a container restart
 - an invalid `apiBaseUrl` is treated as a config error and the current poll is skipped until the file is fixed
 - you can temporarily leave `creators: []` while validating a deployment
