@@ -224,3 +224,49 @@ class TestCreatorStreamState:
         state = CreatorStreamState()
         state.mark_blocked()
         assert state.is_current_stream_blocked is True
+
+
+class TestTransientRetry:
+    """Tests for retrying transient failures on the surviving API calls."""
+
+    def test_get_livestream_status_retries_transient_connection_errors(self):
+        """Test transient API connection failures are retried before succeeding."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+        success_response = MagicMock()
+        success_response.raise_for_status = MagicMock()
+        success_response.json.return_value = []
+
+        with (
+            patch.object(
+                api._session,
+                "get",
+                side_effect=[ConnectionError("boom"), ConnectionError("boom"), success_response],
+            ) as mock_get,
+            patch("time.sleep") as mock_sleep,
+        ):
+            streams = api.get_livestream_status()
+
+        assert streams == []
+        assert mock_get.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    def test_get_stream_key_retries_transient_connection_errors(self):
+        """Test transient key-fetch failures are retried before succeeding."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+        success_response = MagicMock()
+        success_response.raise_for_status = MagicMock()
+        success_response.json.return_value = {"authKey": "my_stream_key"}
+
+        with (
+            patch.object(
+                api._session,
+                "get",
+                side_effect=[ConnectionError("boom"), ConnectionError("boom"), success_response],
+            ) as mock_get,
+            patch("time.sleep") as mock_sleep,
+        ):
+            stream_url = api.get_stream_url("creator123")
+
+        assert "creatorOid=creator123" in stream_url
+        assert mock_get.call_count == 3
+        assert mock_sleep.call_count == 2
