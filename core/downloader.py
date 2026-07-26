@@ -187,11 +187,18 @@ class StreamDownloader:
         # Configure yt-dlp options
         ydl_opts = self._build_ydl_options(output_path)
 
-        self._log("info", f"📥 Starting download: \"{safe_title}\"")
-        self._log("info", f"   Output: {output_path.name}")
+        # The title already appeared on the monitor's "is live" line; repeating it
+        # here (and again in the output filename) is what made one event span
+        # three lines. The session prefix is what ties this log to a file on disk.
+        session_prefix = (self.filename_prefix or "").rstrip("_")
+        self._log(
+            "info",
+            f"📥 Recording started (session {session_prefix})" if session_prefix
+            else "📥 Recording started",
+        )
         self._log(
             "debug",
-            f"   Context: session_key={self.session_key or 'none'}, output_path={output_path}",
+            f"session_key={self.session_key or 'none'}, output_path={output_path}",
         )
 
         # Start download in a separate thread
@@ -459,15 +466,20 @@ class StreamDownloader:
             for attempt in self._build_download_retrying():
                 with attempt:
                     attempt_number = attempt.retry_state.attempt_number
-                    self._log(
-                        "info",
-                        f"🔁 Download attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} started: "
-                        f"session_key={self.session_key or 'none'}, output={output_path.name}",
-                    )
+                    # The first attempt is already implied by "Recording started".
+                    # Only a retry is worth a line of its own.
+                    if attempt_number > 1:
+                        self._log(
+                            "info",
+                            f"🔁 Retry {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
+                        )
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self._log(
                             "debug",
-                            f"   Attempt context: {self._build_output_state_details(output_path)}",
+                            f"attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}, "
+                            f"session_key={self.session_key or 'none'}, "
+                            f"output={output_path.name}, "
+                            f"{self._build_output_state_details(output_path)}",
                         )
                     try:
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

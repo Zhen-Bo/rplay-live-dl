@@ -604,8 +604,8 @@ class TestStartDownload:
             "http://example.com/stream.m3u8", "Test Stream"
         )
 
-    def test_start_download_logs_live_emoji(self, mock_api, monitor):
-        """Test the first live log preserves the visible red-circle marker."""
+    def test_start_download_logs_live_line_with_creator_prefix(self, mock_api, monitor, caplog):
+        """Test the first live log carries the creator-prefixed context line."""
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_stream = MagicMock()
         mock_stream.creator_oid = "test_oid"
@@ -616,13 +616,11 @@ class TestStartDownload:
             creator_oid="test_oid",
         )
 
-        with (
-            patch('core.live_stream_monitor.StreamDownloader.download'),
-            patch.object(monitor.logger, 'info') as mock_info,
-        ):
+        with patch('core.live_stream_monitor.StreamDownloader.download'):
             monitor._start_download(mock_stream)
 
-        assert mock_info.call_args_list[0].args[0] == "🔴 TestCreator is live: \"Test Stream\""
+        messages = [record.getMessage() for record in caplog.records]
+        assert '[TestCreator] 🔴 Live: "Test Stream"' in messages
 
     def test_start_download_auth_error(self, mock_api, monitor):
         """Test auth error is logged."""
@@ -725,7 +723,12 @@ class TestCheckLiveStreams:
             user_oid="test_oid",
             api=mock_api,
         )
-        monitor.check_live_streams_and_start_download()
+        # Without this the monitor spawns a real yt-dlp thread against
+        # example.com. Its failure callback lands after this test returns and
+        # logs through the process-wide "Monitor" logger, which is how it used
+        # to pollute whichever test happened to be patching that logger.
+        with patch('core.live_stream_monitor.StreamDownloader.download'):
+            monitor.check_live_streams_and_start_download()
         mock_api.get_stream_url.assert_called_once_with("creator_oid")
 
     @patch('core.live_stream_monitor.read_config')

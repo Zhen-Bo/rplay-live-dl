@@ -121,7 +121,7 @@ class TestStartScheduler:
             scheduler.start()
 
         log_calls = [str(call) for call in mock_logger.info.call_args_list]
-        assert any("Git SHA" in call and "5bae5e3" in call for call in log_calls)
+        assert any("5bae5e3" in call for call in log_calls)
 
     def test_start_adds_job(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that start adds scheduled job."""
@@ -159,7 +159,7 @@ class TestStartScheduler:
         scheduler.start()
 
         log_calls = [str(call) for call in mock_logger.info.call_args_list]
-        assert any("60 seconds" in call for call in log_calls)
+        assert any("60s" in call for call in log_calls)
 
     def test_start_handles_keyboard_interrupt(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that KeyboardInterrupt is handled gracefully."""

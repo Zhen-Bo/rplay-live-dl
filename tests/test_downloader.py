@@ -525,8 +525,8 @@ class TestDownloadErrorCallback:
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
         callback.assert_not_called()
 
-    def test_logs_attempt_start_at_info(self, mock_yt_dlp, tmp_path):
-        """Test each full-task download attempt emits a concise INFO log."""
+    def test_first_attempt_is_not_logged_at_info(self, mock_yt_dlp, tmp_path):
+        """Test the first download attempt does not emit a redundant Retry INFO log."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader = StreamDownloader(
             "TestCreator",
@@ -543,8 +543,8 @@ class TestDownloadErrorCallback:
                 output_path,
             )
 
-        assert any(
-            "🔁 Download attempt 1/3 started" in str(call)
+        assert not any(
+            "Retry" in str(call)
             for call in mock_info.call_args_list
         )
 

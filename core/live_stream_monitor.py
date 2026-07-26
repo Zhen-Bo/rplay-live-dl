@@ -29,7 +29,7 @@ from models.rplay import CreatorStreamState, LiveStream, StreamState
 from .config import ConfigError, DEFAULT_CONFIG_PATH, read_app_config as read_config
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
-from .logger import setup_logger
+from .logger import bind, clip, setup_logger
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 
 __all__ = [
@@ -329,7 +329,7 @@ class LiveStreamMonitor:
             creator_name=creator_name,
             recording_started_at=recording_started_at,
         )
-        self.logger.info(f'🔴 {creator_name} is live: "{stream.title}"')
+        bind(self.logger, creator_name).info(f'🔴 Live: "{clip(stream.title)}"')
 
         try:
             self._launch_session_downloader(
@@ -361,8 +361,9 @@ class LiveStreamMonitor:
             on_download_failure=self._on_raw_download_failed,
         )
 
+        # The downloader logs "Recording started" itself; repeating it here added
+        # a line that carried no information the previous one did not already have.
         active_downloader.download(stream_url, title)
-        self.logger.info(f"⬇️  Started downloading: {session.creator_name}")
 
     def _handle_start_download_error(
         self,
