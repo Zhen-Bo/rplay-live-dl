@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 from core.logger import (
+    _display_width,
     bind,
     cleanup_old_logs,
+    clip,
     get_logs_dir,
     setup_logger,
     AlignedFormatter,
@@ -17,6 +19,7 @@ from core.logger import (
     LazyRotatingFileHandler,
     LOGGER_NAME_WIDTH,
     LOG_LEVEL_WIDTH,
+    LOG_TEXT_MAX_COLUMNS,
     LOG_COLORS,
 )
 
@@ -393,3 +396,38 @@ class TestContextAdapter:
         record = caplog.records[-1]
         assert record.exc_info is not None
         assert record.getMessage() == "[SomeCreator] boom"
+
+
+class TestClip:
+    """Tests for clip() and _display_width()."""
+
+    def test_short_text_is_returned_unchanged(self):
+        """Test text under the column budget passes through unchanged."""
+        assert clip("耳舐めASMR") == "耳舐めASMR"
+
+    def test_ascii_text_is_clipped_to_the_budget(self):
+        """Test ASCII text over the budget is clipped to exactly 40 columns."""
+        result = clip("a" * 60)
+        assert len(result) == 40
+        assert result.endswith("…")
+
+    def test_cjk_counts_as_two_columns(self):
+        """Test CJK characters count as two columns each, unlike len()."""
+        assert _display_width("耳舐め") == 6
+        assert len("耳舐め") == 3
+
+    def test_clipped_result_never_exceeds_the_budget_in_columns(self):
+        """Test a clipped CJK string never exceeds the column budget."""
+        result = clip("配信" * 40)
+        assert _display_width(result) <= 40
+
+    def test_custom_budget_is_respected(self):
+        """Test a custom columns budget is honored instead of the default."""
+        result = clip("a" * 30, columns=10)
+        assert _display_width(result) <= 10
+
+    def test_exact_budget_is_not_clipped(self):
+        """Test text exactly at the budget is not clipped."""
+        result = clip("a" * 40)
+        assert result == "a" * 40
+        assert "…" not in result

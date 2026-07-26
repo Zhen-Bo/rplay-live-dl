@@ -17,12 +17,16 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import colorlog
+import wcwidth
 
 __all__ = [
     "setup_logger",
     "cleanup_old_logs",
     "get_logs_dir",
+    "bind",
+    "clip",
     "DEFAULT_LOG_LEVEL",
+    "LOG_TEXT_MAX_COLUMNS",
 ]
 
 # Default log configuration
@@ -75,6 +79,11 @@ LOGGER_NAME_WIDTH = 10
 # Set to match the longest level name: "CRITICAL" = 8 characters
 LOG_LEVEL_WIDTH = 8
 
+# Column budget for user-controlled text (stream titles) inside a log message.
+# Measured live: with this cap every line fits in ~110 columns, while 10 of 16
+# real titles would otherwise wrap a 120-column terminal.
+LOG_TEXT_MAX_COLUMNS = 40
+
 # Global logs directory
 _logs_dir: Optional[Path] = None
 
@@ -91,6 +100,44 @@ LOG_COLORS = {
 def _fit(text: str, width: int) -> str:
     """Center text in a fixed-width column, truncating anything that overflows."""
     return f"{text:^{width}.{width}}"
+
+
+def _display_width(text: str) -> int:
+    """
+    Terminal columns occupied by text.
+
+    CJK characters and emoji occupy two columns each, so len() understates them
+    badly: a 40-character Japanese title is 80 columns wide.
+    """
+    total = 0
+    for char in text:
+        width = wcwidth.wcwidth(char)
+        # wcwidth returns -1 for unprintable characters; they occupy nothing.
+        total += width if width and width > 0 else 0
+    return total
+
+
+def clip(text: str, columns: int = LOG_TEXT_MAX_COLUMNS, suffix: str = "…") -> str:
+    """
+    Clip text to a terminal-column budget, keeping the front.
+
+    Stream titles are front-loaded: the bracketed category comes first and the
+    tail is usually the creator name or a timestamp, both of which already
+    appear elsewhere on the log line. Keeping the head is what stays useful.
+    """
+    if _display_width(text) <= columns:
+        return text
+
+    budget = columns - _display_width(suffix)
+    kept, used = [], 0
+    for char in text:
+        width = wcwidth.wcwidth(char)
+        width = width if width and width > 0 else 0
+        if used + width > budget:
+            break
+        kept.append(char)
+        used += width
+    return "".join(kept) + suffix
 
 
 class ContextAdapter(logging.LoggerAdapter):
