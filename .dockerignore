@@ -11,6 +11,7 @@ Dockerfile
 # Environment and config
 .env*
 config.yaml*
+config/
 .vscode/
 .pytest_cache/
 __pycache__/
@@ -26,3 +27,4 @@ logs/
 *.egg-info/
 .coverage
 .venv/
+tests/
