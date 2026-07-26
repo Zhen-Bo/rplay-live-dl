@@ -1,12 +1,32 @@
 """Tests for session merge flow."""
 
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
-from datetime import datetime
+from datetime import datetime, timezone
+
+import pytest
 
 from core.live_stream_monitor import LiveStreamMonitor
 from models.download import MergeCompleted, MergeFailed, MergeJobSpec
+
+
+@pytest.fixture
+def taipei_timezone(monkeypatch):
+    """Pin the process timezone to UTC+8 so date-boundary assertions are host independent."""
+    # time.tzset() is POSIX-only; on Windows the process timezone cannot be rebound.
+    tzset = getattr(time, "tzset", None)
+    if tzset is None:
+        pytest.skip("pinning the process timezone requires POSIX time.tzset()")
+
+    monkeypatch.setenv("TZ", "Asia/Taipei")
+    tzset()
+    try:
+        yield
+    finally:
+        monkeypatch.undo()
+        tzset()
 
 
 class TestMergeFlow:
@@ -193,6 +213,25 @@ class TestMergeFlow:
         with patch("core.live_stream_monitor.subprocess.run", side_effect=fake_run):
             monitor._run_ffmpeg_merge([ts_file], output_path)
 
-        escaped = ts_file.resolve().as_posix().replace("'", "'\''")
-        assert captured["content"] == f"file '{escaped}'"
+        assert r"it'\''s live.ts" in captured["content"]
+        monitor.shutdown()
+
+    def test_reserve_final_output_path_uses_local_timezone_for_date(
+        self, tmp_path, monkeypatch, taipei_timezone
+    ):
+        """Test the mp4 filename date uses local time, not raw UTC (tz regression guard)."""
+        monkeypatch.chdir(tmp_path)
+        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+
+        # 2026-03-06 23:50 UTC is 2026-03-07 07:50 in Asia/Taipei (UTC+8).
+        stream_start_time = datetime(2026, 3, 6, 23, 50, 0, tzinfo=timezone.utc)
+
+        output_path = monitor._reserve_final_output_path(
+            creator_name="Creator",
+            title="Title",
+            stream_start_time=stream_start_time,
+        )
+
+        assert "2026-03-07" in output_path.name
+        assert "2026-03-06" not in output_path.name
         monitor.shutdown()

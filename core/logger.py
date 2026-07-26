@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 
 import colorlog
 import wcwidth
-from dotenv import dotenv_values
 
 __all__ = [
     "setup_logger",
@@ -45,18 +44,6 @@ def _get_log_retention_days() -> int:
     return int(os.getenv("LOG_RETENTION_DAYS", "30"))
 
 
-def _read_log_level_from_dotenv() -> Optional[str]:
-    """Read LOG_LEVEL from the working-directory .env file when present."""
-    dotenv_path = Path.cwd() / ".env"
-    if not dotenv_path.exists():
-        return None
-
-    value = dotenv_values(dotenv_path).get(LOG_LEVEL_ENV_VAR)
-    if value is None:
-        return None
-    return str(value)
-
-
 def _parse_log_level(value: Optional[str]) -> Optional[int]:
     """Parse a case-insensitive log level name into a logging constant."""
     if value is None:
@@ -71,14 +58,11 @@ def _parse_log_level(value: Optional[str]) -> Optional[int]:
 
 
 def _resolve_log_level(level: Optional[int]) -> int:
-    """Resolve the configured log level from explicit args, env, or .env."""
+    """Resolve the configured log level from explicit args or env, else INFO."""
     if level is not None:
         return level
 
     configured_value = os.getenv(LOG_LEVEL_ENV_VAR)
-    if configured_value is None:
-        configured_value = _read_log_level_from_dotenv()
-
     parsed_level = _parse_log_level(configured_value)
     if parsed_level is None:
         return DEFAULT_LOG_LEVEL

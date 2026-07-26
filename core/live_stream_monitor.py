@@ -900,7 +900,7 @@ class LiveStreamMonitor:
     ) -> Path:
         """Reserve the next available final mp4 output path."""
         safe_title = sanitize_filename(title, replacement_text="_") or "untitled"
-        date_str = stream_start_time.strftime("%Y-%m-%d")
+        date_str = stream_start_time.astimezone().strftime("%Y-%m-%d")
         base_dir = Path.cwd() / StreamDownloader.ARCHIVE_DIR / creator_name
         base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -949,7 +949,7 @@ class LiveStreamMonitor:
 
     def _format_ffconcat_input_path(self, ts_file: Path) -> str:
         """Format one concat-demuxer input line with apostrophe-safe escaping."""
-        escaped_path = ts_file.resolve().as_posix().replace("'", "'\''")
+        escaped_path = ts_file.resolve().as_posix().replace("'", r"'\''")
         return f"file '{escaped_path}'"
 
     def shutdown(self) -> None:

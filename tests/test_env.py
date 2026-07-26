@@ -156,10 +156,10 @@ class TestLoadEnv:
 class TestLogConfigEnvVars:
     """Tests for log configuration environment variables."""
 
-    def test_log_config_defaults(self, monkeypatch):
+    def test_log_config_defaults(self, no_dotenv_file):
         """Test default values for log configuration."""
-        monkeypatch.setenv("AUTH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
+        no_dotenv_file.setenv("AUTH_TOKEN", "test_token")
+        no_dotenv_file.setenv("USER_OID", "test_oid")
 
         config = load_env()
 

@@ -8,6 +8,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from core.env import EnvConfigError, load_env
 from core.logger import cleanup_old_logs, setup_logger
 from core.scheduler import run_scheduler
@@ -25,6 +27,7 @@ __version__ = _read_version()
 
 def main() -> None:
     """Main entry point for the application."""
+    load_dotenv()
     logger = setup_logger("Main")
 
     # Cleanup old log files on startup

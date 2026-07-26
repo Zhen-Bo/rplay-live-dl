@@ -210,7 +210,7 @@ Environment variables:
 Notes:
 
 - local runs load from `.env` or process environment variables
-- the bundled Docker Compose file mounts `.env` to `/app/.env`
+- the bundled Docker Compose file loads `.env` through `env_file`, so its values become real container environment variables
 - `LOG_YTDLP_INTERNAL=true` is only for deep diagnosis; it is intentionally noisy
 
 #### Creator configuration
@@ -254,7 +254,7 @@ The v2 runtime uses a session-aware download pipeline.
    - it checks live status for all configured creators
 
 2. **Create a session**
-   - each live stream gets a session key based on `creator_oid` and the API `oid`
+   - each live stream gets a session key based on `creator_oid` and the local recording start time (`recording_started_at`), not the API stream `oid`
    - a timestamp prefix (`YYYYMMDD_HHMMSS_`) is derived from `recording_started_at` in machine local time
    - raw files are written directly to `archive/<creator>/` using this prefix for isolation
 
@@ -319,9 +319,8 @@ docker compose pull
 docker compose up -d
 ```
 
-The bundled `docker-compose.yaml` mounts:
+The bundled `docker-compose.yaml` reads `./.env` via `env_file`, and mounts:
 
-- `./.env` → `/app/.env`
 - `./config` → `/app/config`
 - `./archive` → `/app/archive`
 - `./logs` → `/app/logs`
@@ -330,11 +329,11 @@ The bundled `docker-compose.yaml` mounts:
 
 ```bash
 docker run -d \
-  -v $(pwd)/.env:/app/.env \
+  --env-file .env \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/archive:/app/archive \
   -v $(pwd)/logs:/app/logs \
-  paverz/rplay-live-dl:latest
+  paverz/rplay-live-dl:v2.1.1-vibe
 ```
 
 ### Directory Structure
@@ -520,7 +519,6 @@ rplay-live-dl/
 ├── main.py
 ├── poetry.lock
 ├── pyproject.toml
-├── requirements.txt
 └── README.md
 ```
 
