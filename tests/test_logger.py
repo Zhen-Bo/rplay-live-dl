@@ -8,11 +8,10 @@ from pathlib import Path
 import pytest
 
 from core.logger import (
-    _get_display_width,
-    _truncate_to_width,
-    _pad_to_width,
-    _center_to_width,
+    _display_width,
+    bind,
     cleanup_old_logs,
+    clip,
     get_logs_dir,
     setup_logger,
     AlignedFormatter,
@@ -20,6 +19,7 @@ from core.logger import (
     LazyRotatingFileHandler,
     LOGGER_NAME_WIDTH,
     LOG_LEVEL_WIDTH,
+    LOG_TEXT_MAX_COLUMNS,
     LOG_COLORS,
 )
 
@@ -152,118 +152,6 @@ class TestCleanupOldLogs:
         assert removed == 3
 
 
-class TestGetDisplayWidth:
-    """Tests for _get_display_width function."""
-
-    def test_ascii_characters(self):
-        """Test width calculation for ASCII characters."""
-        assert _get_display_width("hello") == 5
-        assert _get_display_width("a") == 1
-        assert _get_display_width("") == 0
-
-    def test_cjk_characters(self):
-        """Test width calculation for CJK (double-width) characters."""
-        assert _get_display_width("你好") == 4  # 2 chars * 2 width
-        assert _get_display_width("日本語") == 6  # 3 chars * 2 width
-
-    def test_mixed_characters(self):
-        """Test width calculation for mixed ASCII and CJK."""
-        assert _get_display_width("hello你好") == 9  # 5 + 4
-
-    def test_emoji_characters(self):
-        """Test width calculation for emoji characters."""
-        # Emoji width varies by implementation, test it doesn't crash
-        width = _get_display_width("👍")
-        assert isinstance(width, int)
-        assert width >= 0
-
-    def test_non_printable_characters(self):
-        """Test width calculation handles non-printable characters."""
-        # Non-printable should be treated as 0 width
-        assert _get_display_width("\x00") == 0
-
-
-class TestTruncateToWidth:
-    """Tests for _truncate_to_width function."""
-
-    def test_no_truncation_needed(self):
-        """Test string shorter than max width is unchanged."""
-        assert _truncate_to_width("hello", 10) == "hello"
-
-    def test_exact_width(self):
-        """Test string exactly at max width is unchanged."""
-        assert _truncate_to_width("hello", 5) == "hello"
-
-    def test_truncation_with_suffix(self):
-        """Test string longer than max width is truncated with suffix."""
-        result = _truncate_to_width("hello world", 8)
-        assert result == "hello w…"
-        assert _get_display_width(result) <= 8
-
-    def test_truncation_cjk(self):
-        """Test truncation with CJK characters."""
-        result = _truncate_to_width("你好世界", 5)
-        # Should truncate to fit within 5 width + suffix
-        assert _get_display_width(result) <= 5
-
-    def test_custom_suffix(self):
-        """Test truncation with custom suffix."""
-        result = _truncate_to_width("hello world", 8, suffix="...")
-        assert result.endswith("...")
-        assert _get_display_width(result) <= 8
-
-
-class TestPadToWidth:
-    """Tests for _pad_to_width function."""
-
-    def test_pad_shorter_string(self):
-        """Test padding a string shorter than target width."""
-        result = _pad_to_width("hi", 5)
-        assert result == "hi   "
-        assert len(result) == 5
-
-    def test_pad_exact_width(self):
-        """Test string at exact width is unchanged."""
-        result = _pad_to_width("hello", 5)
-        assert result == "hello"
-
-    def test_pad_longer_string(self):
-        """Test string longer than target is not truncated."""
-        result = _pad_to_width("hello world", 5)
-        assert result == "hello world"
-
-    def test_pad_cjk_string(self):
-        """Test padding with CJK characters."""
-        result = _pad_to_width("你好", 6)  # 你好 is 4 width
-        assert _get_display_width(result) == 6
-
-
-class TestCenterToWidth:
-    """Tests for _center_to_width function."""
-
-    def test_center_shorter_string(self):
-        """Test centering a string shorter than target width."""
-        result = _center_to_width("hi", 6)
-        assert result == "  hi  "
-        assert len(result) == 6
-
-    def test_center_odd_padding(self):
-        """Test centering with odd total padding."""
-        result = _center_to_width("hi", 5)
-        # 5 - 2 = 3 padding, left=1, right=2
-        assert result == " hi  "
-
-    def test_center_exact_width(self):
-        """Test string at exact width is unchanged."""
-        result = _center_to_width("hello", 5)
-        assert result == "hello"
-
-    def test_center_longer_string(self):
-        """Test string longer than target is not truncated."""
-        result = _center_to_width("hello world", 5)
-        assert result == "hello world"
-
-
 class TestAlignedFormatter:
     """Tests for AlignedFormatter class."""
 
@@ -322,7 +210,7 @@ class TestAlignedFormatter:
             exc_info=None,
         )
         result = formatter.format(record)
-        assert _get_display_width(result.strip()) <= 5
+        assert len(result.strip()) <= 5
 
 
 class TestColoredAlignedFormatter:
@@ -456,3 +344,100 @@ class TestLazyRotatingFileHandler:
 
         content = log_file.read_text()
         assert "hello world" in content
+
+
+class TestContextAdapter:
+    """Tests for ContextAdapter and bind()."""
+
+    def test_prefixes_message_with_context(self, caplog):
+        """Test bind() prefixes a logged message with the bound context tag."""
+        logger = logging.getLogger("test_context_adapter_prefix")
+        logger.setLevel(logging.INFO)
+        adapter = bind(logger, "SomeCreator")
+
+        adapter.info("hello")
+
+        assert caplog.records[-1].getMessage() == "[SomeCreator] hello"
+
+    def test_returns_message_unchanged_when_context_is_empty(self, caplog):
+        """Test bind() with an empty context leaves the message unprefixed."""
+        logger = logging.getLogger("test_context_adapter_empty_context")
+        logger.setLevel(logging.INFO)
+        adapter = bind(logger, "")
+
+        adapter.info("hello")
+
+        assert caplog.records[-1].getMessage() == "hello"
+
+    def test_adapter_forwards_level_filtering(self, caplog):
+        """Test the adapter forwards the underlying logger's level filtering."""
+        logger = logging.getLogger("test_context_adapter_level_filter")
+        logger.setLevel(logging.WARNING)
+        adapter = bind(logger, "SomeCreator")
+
+        adapter.info("should be filtered")
+        adapter.warning("should be logged")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert "[SomeCreator] should be filtered" not in messages
+        assert "[SomeCreator] should be logged" in messages
+
+    def test_exception_through_adapter_keeps_traceback(self, caplog):
+        """Test .exception() through the adapter keeps exc_info and the context prefix."""
+        logger = logging.getLogger("test_context_adapter_exception")
+        logger.setLevel(logging.INFO)
+        adapter = bind(logger, "SomeCreator")
+
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            adapter.exception("boom")
+
+        record = caplog.records[-1]
+        assert record.exc_info is not None
+        assert record.getMessage() == "[SomeCreator] boom"
+
+
+class TestClip:
+    """Tests for clip() and _display_width()."""
+
+    def test_short_text_is_returned_unchanged(self):
+        """Test text under the column budget passes through unchanged."""
+        assert clip("耳舐めASMR") == "耳舐めASMR"
+
+    def test_ascii_text_is_clipped_to_the_budget(self):
+        """Test ASCII text over the budget is clipped to exactly 40 columns."""
+        result = clip("a" * 60)
+        assert len(result) == 40
+        assert result.endswith("…")
+
+    def test_cjk_counts_as_two_columns(self):
+        """Test CJK characters count as two columns each, unlike len()."""
+        assert _display_width("耳舐め") == 6
+        assert len("耳舐め") == 3
+
+    def test_clipped_result_never_exceeds_the_budget_in_columns(self):
+        """Test a clipped CJK string never exceeds the column budget."""
+        result = clip("配信" * 40)
+        assert _display_width(result) <= 40
+
+    def test_custom_budget_is_respected(self):
+        """Test a custom columns budget is honored instead of the default."""
+        result = clip("a" * 30, columns=10)
+        assert _display_width(result) <= 10
+
+    def test_exact_budget_is_not_clipped(self):
+        """Test text exactly at the budget is not clipped."""
+        result = clip("a" * 40)
+        assert result == "a" * 40
+        assert "…" not in result
+
+    def test_returns_empty_when_budget_cannot_fit_the_suffix(self):
+        """Test clip() returns empty text when the budget can't even fit the suffix."""
+        assert clip("界", columns=0) == ""
+
+    def test_never_exceeds_budget_for_any_small_budget(self):
+        """Test clip() never exceeds a small columns budget, for every budget 0-5."""
+        for n in range(6):
+            result = clip("配信配信配信", columns=n)
+            assert _display_width(result) <= n, f"columns={n} produced {result!r}"

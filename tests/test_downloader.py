@@ -313,6 +313,23 @@ class TestDownloadMethod:
             for call in mock_log.call_args_list
         )
 
+    def test_does_not_log_recording_started_when_thread_fails_to_start(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Test a failed thread start leaves no misleading Recording started log."""
+        monkeypatch.chdir(tmp_path)
+        downloader = StreamDownloader("TestCreator")
+
+        with patch("core.downloader.threading.Thread") as mock_thread_class:
+            mock_thread_class.return_value.start.side_effect = RuntimeError(
+                "can't start new thread"
+            )
+            with pytest.raises(RuntimeError):
+                downloader.download("http://example.com/stream.m3u8", "Test Stream")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any("Recording started" in message for message in messages)
+
 
 class TestDownloadWorker:
     """Tests for _download_worker method."""
@@ -525,8 +542,8 @@ class TestDownloadErrorCallback:
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
         callback.assert_not_called()
 
-    def test_logs_attempt_start_at_info(self, mock_yt_dlp, tmp_path):
-        """Test each full-task download attempt emits a concise INFO log."""
+    def test_first_attempt_is_not_logged_at_info(self, mock_yt_dlp, tmp_path):
+        """Test the first download attempt does not emit a redundant Retry INFO log."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader = StreamDownloader(
             "TestCreator",
@@ -543,8 +560,8 @@ class TestDownloadErrorCallback:
                 output_path,
             )
 
-        assert any(
-            "🔁 Download attempt 1/3 started" in str(call)
+        assert not any(
+            "Retry" in str(call)
             for call in mock_info.call_args_list
         )
 

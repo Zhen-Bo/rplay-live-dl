@@ -80,12 +80,11 @@ class LiveStreamScheduler:
         periodic checks at the configured interval.
         """
         try:
-            self.logger.info("=" * 50)
-            self.logger.info(f"rplay-live-dl v{self.version}")
-            if self.git_sha:
-                self.logger.info(f"Git SHA: {self.git_sha[:7]}")
-            self.logger.info("=" * 50)
-            self.logger.info("Starting live stream monitoring system")
+            build = f" ({self.git_sha[:7]})" if self.git_sha else ""
+            self.logger.info(
+                f"rplay-live-dl v{self.version}{build} — "
+                f"checking every {self.env.interval}s"
+            )
 
             self.scheduler.add_job(
                 self.check_and_download,
@@ -96,9 +95,6 @@ class LiveStreamScheduler:
             # Perform initial check
             self.check_and_download()
 
-            self.logger.info(
-                f"Scheduler started, checking every {self.env.interval} seconds"
-            )
             self.scheduler.start()
 
         except KeyboardInterrupt:
