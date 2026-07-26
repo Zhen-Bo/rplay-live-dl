@@ -11,6 +11,8 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
 
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v3
@@ -20,6 +22,12 @@ jobs:
               with:
                   username: ${{ secrets.DOCKERHUB_USERNAME }}
                   password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Refuse to publish a tag that is not on main
+              run: |
+                  git fetch --no-tags origin main
+                  git merge-base --is-ancestor "${{ github.sha }}" origin/main \
+                    || { echo "::error::tag is not an ancestor of main"; exit 1; }
 
             - name: Build and push
               uses: docker/build-push-action@v5
