@@ -556,15 +556,3 @@ class StreamDownloader:
         except Exception as e:
             self.logger.error(f"Error in download failure callback: {e}")
 
-    @property
-    def current_output_path(self) -> Optional[Path]:
-        """Get the current download output path, if any."""
-        return self._current_output_path
-
-    @property
-    def download_duration(self) -> Optional[float]:
-        """Get the current download duration in seconds, if downloading."""
-        if self._download_start_time and self.is_alive():
-            return (datetime.now() - self._download_start_time).total_seconds()
-        return None
-

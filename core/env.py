@@ -13,13 +13,7 @@ __all__ = [
     "EnvConfigError",
     "EnvConfig",
     "load_env",
-    "MIN_INTERVAL",
-    "MAX_INTERVAL",
 ]
-
-# Minimum and maximum values for interval
-MIN_INTERVAL = 10  # seconds
-MAX_INTERVAL = 3600  # 1 hour
 
 
 class EnvConfigError(Exception):

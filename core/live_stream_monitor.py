@@ -332,42 +332,13 @@ class LiveStreamMonitor:
         self.logger.info(f'🔴 {creator_name} is live: "{stream.title}"')
 
         try:
-            stream_url = self._get_accessible_stream_url(
-                creator_oid=creator_oid,
-                session_key=session.session_key,
-                creator_name=creator_name,
-            )
-            if stream_url is None:
-                return
-
             self._launch_session_downloader(
                 session=session,
-                stream_url=stream_url,
+                stream_url=self.api.get_stream_url(creator_oid),
                 title=stream.title,
             )
         except Exception as exc:
             self._handle_start_download_error(session.session_key, creator_name, exc)
-
-    def _get_accessible_stream_url(
-        self,
-        creator_oid: str,
-        session_key: str,
-        creator_name: str,
-    ) -> Optional[str]:
-        """Get a stream URL and return it only when the m3u8 is accessible."""
-        stream_url = self.api.get_stream_url(creator_oid)
-        if self.api.validate_m3u8_url(stream_url):
-            return stream_url
-
-        self._mark_session_blocked(
-            session_key=session_key,
-            error_message="Cannot access stream (likely paid content)",
-            creator_name=creator_name,
-        )
-        self.logger.warning(
-            f"🔒 {creator_name}: Cannot access stream (likely paid content)"
-        )
-        return None
 
     def _launch_session_downloader(
         self,
@@ -516,14 +487,6 @@ class LiveStreamMonitor:
         """Check if the last monitoring check was successful."""
         with self._state_lock:
             return self._last_check_success
-
-    def _is_new_stream_for_creator(self, stream: LiveStream) -> bool:
-        """Check if the creator is now on a different handled stream start time."""
-        with self._state_lock:
-            state = self._creator_states.get(stream.creator_oid)
-        if state is None:
-            return True
-        return state.last_stream_start_time != stream.stream_start_time
 
     def _update_creator_stream_state(self, stream: LiveStream) -> None:
         """Update or create creator state with the current handled stream metadata."""
@@ -809,36 +772,6 @@ class LiveStreamMonitor:
             if state is None:
                 state = CreatorStreamState()
                 self._creator_states[creator_oid] = state
-            was_blocked = state.is_current_stream_blocked
-            state.mark_blocked()
-
-        if not was_blocked:
-            self.logger.warning(
-                f"🔒 {creator_name}: Stream marked as inaccessible "
-                f"after download failure (likely paid content)"
-            )
-
-    def _mark_session_blocked(
-        self,
-        session_key: str,
-        error_message: str,
-        creator_name: str,
-    ) -> None:
-        """Mark a session blocked directly on the control loop."""
-        with self._state_lock:
-            session = self.sessions.get(session_key)
-            if session is None:
-                return
-
-            session.last_error = error_message
-            session.state = SessionState.BLOCKED
-            active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
-            if active_session_key == session.session_key:
-                self._active_raw_session_by_creator.pop(session.creator_oid, None)
-            state = self._creator_states.get(session.creator_oid)
-            if state is None:
-                state = CreatorStreamState()
-                self._creator_states[session.creator_oid] = state
             was_blocked = state.is_current_stream_blocked
             state.mark_blocked()
 

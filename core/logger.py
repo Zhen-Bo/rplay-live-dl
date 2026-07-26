@@ -14,7 +14,7 @@ import os
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import colorlog
 import wcwidth
@@ -23,7 +23,6 @@ __all__ = [
     "setup_logger",
     "cleanup_old_logs",
     "get_logs_dir",
-    "get_all_loggers",
     "DEFAULT_LOG_LEVEL",
 ]
 
@@ -441,13 +440,3 @@ def cleanup_old_logs(retention_days: Optional[int] = None) -> int:
             pass
 
     return removed_count
-
-
-def get_all_loggers() -> List[str]:
-    """
-    Get names of all active loggers.
-
-    Returns:
-        list[str]: List of logger names
-    """
-    return list(logging.Logger.manager.loggerDict.keys())

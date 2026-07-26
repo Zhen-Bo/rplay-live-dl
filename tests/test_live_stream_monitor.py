@@ -109,7 +109,6 @@ class TestSessionAwareMonitoring:
         second_stream.title = "Same Stream"
 
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_api.get_livestream_status.side_effect = [[first_stream], [second_stream]]
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
@@ -148,7 +147,6 @@ class TestSessionAwareMonitoring:
         second_stream.title = "Repeated Title"
 
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_api.get_livestream_status.side_effect = [[first_stream], [second_stream]]
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
@@ -192,7 +190,6 @@ class TestSessionAwareMonitoring:
         second_stream.title = "Repeated Title"
 
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_api.get_livestream_status.side_effect = [[first_stream], [second_stream]]
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
@@ -245,7 +242,6 @@ class TestSessionAwareMonitoring:
 
         fixed_now = datetime(2026, 3, 7, 5, 3, 41)
         mock_api.get_stream_url.side_effect = assert_eager_state
-        mock_api.validate_m3u8_url.return_value = True
 
         with patch('core.live_stream_monitor.datetime') as mock_datetime:
             mock_datetime.now.return_value = fixed_now
@@ -271,7 +267,6 @@ class TestSessionAwareMonitoring:
 
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
         ])
@@ -592,7 +587,6 @@ class TestStartDownload:
     def test_start_download_success(self, mock_api, monitor):
         """Test successful download start."""
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_stream = MagicMock()
         mock_stream.creator_oid = "test_oid"
         mock_stream.title = "Test Stream"
@@ -613,7 +607,6 @@ class TestStartDownload:
     def test_start_download_logs_live_emoji(self, mock_api, monitor):
         """Test the first live log preserves the visible red-circle marker."""
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_stream = MagicMock()
         mock_stream.creator_oid = "test_oid"
         mock_stream.title = "Test Stream"
@@ -646,30 +639,6 @@ class TestStartDownload:
             monitor._start_download(mock_stream)
 
         mock_download.assert_not_called()
-
-    def test_start_download_validation_401_logs_auth_error(self, mock_api, monitor):
-        """Test playlist validation 401 is treated as a credential problem."""
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.side_effect = RPlayAuthError("Authentication failed")
-        mock_stream = MagicMock()
-        mock_stream.creator_oid = "test_oid"
-        mock_stream.title = "Test Stream"
-        monitor.monitored_creators["test_oid"] = CreatorProfile(
-            creator_name="TestCreator",
-            creator_oid="test_oid",
-        )
-
-        with (
-            patch('core.live_stream_monitor.StreamDownloader.download') as mock_download,
-            patch.object(monitor.logger, 'error') as mock_error,
-        ):
-            monitor._start_download(mock_stream)
-
-        mock_download.assert_not_called()
-        assert any(
-            "credential" in call.args[0].lower() or "auth" in call.args[0].lower()
-            for call in mock_error.call_args_list
-        )
 
     def test_start_download_api_error(self, mock_api, monitor):
         """Test API error is logged as warning."""
@@ -1045,61 +1014,6 @@ class TestCreatorStateTracking:
         )
         assert monitor._creator_states == {}
 
-    def test_is_new_stream_for_creator_no_previous_state(self, mock_api):
-        """Test new session detection when no previous state exists."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-        mock_stream = MagicMock()
-        mock_stream.oid = "stream-1"
-        mock_stream.creator_oid = "creator1"
-
-        result = monitor._is_new_stream_for_creator(mock_stream)
-
-        assert result is True
-
-    def test_is_new_stream_for_creator_same_start_time(self, mock_api):
-        """Test returns False when the creator is still on the same stream start time."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-        monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
-            last_stream_oid="stream-1",
-        )
-        mock_stream = MagicMock()
-        mock_stream.oid = "stream-1"
-        mock_stream.creator_oid = "creator1"
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
-
-        result = monitor._is_new_stream_for_creator(mock_stream)
-
-        assert result is False
-
-    def test_is_new_stream_for_creator_different_start_time(self, mock_api):
-        """Test returns True when the creator switches to a new stream start time."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-        monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
-            last_stream_oid="stream-1",
-        )
-        mock_stream = MagicMock()
-        mock_stream.oid = "stream-2"
-        mock_stream.creator_oid = "creator1"
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 14, 0, 0)
-
-        result = monitor._is_new_stream_for_creator(mock_stream)
-
-        assert result is True
-
     def test_update_creator_stream_state_creates_new_state(self, mock_api):
         """Test that updating state creates new entry if none exists."""
         monitor = LiveStreamMonitor(
@@ -1273,7 +1187,6 @@ class TestM3u8ValidationIntegration:
         mock_stream.title = "New Stream"
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
         ])
@@ -1291,60 +1204,6 @@ class TestM3u8ValidationIntegration:
         monitor.check_live_streams_and_start_download()
 
         mock_api.get_stream_url.assert_not_called()
-
-    @patch('core.live_stream_monitor.read_config')
-    def test_marks_blocked_on_m3u8_validation_failure(self, mock_read_config, mock_api):
-        """Test that stream is marked blocked when M3U8 validation fails."""
-        mock_stream = MagicMock()
-        mock_stream.creator_oid = "creator1"
-        mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
-        mock_stream.title = "Test Stream"
-        mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = False
-        mock_read_config.return_value = _runtime_config([
-            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ])
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-
-        monitor.check_live_streams_and_start_download()
-
-        # Should mark as blocked
-        assert monitor._creator_states["creator1"].is_current_stream_blocked is True
-
-    @patch('core.live_stream_monitor.read_config')
-    def test_starts_download_on_m3u8_validation_success(self, mock_read_config, mock_api):
-        """Test that download starts when M3U8 validation succeeds."""
-        mock_stream = MagicMock()
-        mock_stream.creator_oid = "creator1"
-        mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
-        mock_stream.title = "Test Stream"
-        mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
-        mock_read_config.return_value = _runtime_config([
-            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ])
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-
-        monitor.check_live_streams_and_start_download()
-
-        # Should validate M3U8 URL
-        mock_api.validate_m3u8_url.assert_called_once_with(
-            "http://example.com/stream.m3u8"
-        )
-        # State should be updated (not blocked)
-        assert monitor._creator_states["creator1"].is_current_stream_blocked is False
 
     @patch('core.live_stream_monitor.read_config')
     def test_clears_state_when_creator_not_in_list(self, mock_read_config, mock_api):
@@ -1368,34 +1227,6 @@ class TestM3u8ValidationIntegration:
 
         # State should be cleared
         assert "creator1" not in monitor._creator_states
-
-    @patch('core.live_stream_monitor.read_config')
-    def test_logs_warning_for_blocked_stream(self, mock_read_config, mock_api):
-        """Test that warning is logged when stream is marked blocked."""
-        mock_stream = MagicMock()
-        mock_stream.creator_oid = "creator1"
-        mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
-        mock_stream.title = "Test Stream"
-        mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = False
-        mock_read_config.return_value = _runtime_config([
-            CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-        ])
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-
-        with patch.object(monitor.logger, 'warning') as mock_warning:
-            monitor.check_live_streams_and_start_download()
-
-        # Should log warning about blocked stream
-        mock_warning.assert_called()
-        warning_msg = mock_warning.call_args[0][0]
-        assert "Creator1" in warning_msg or "creator1" in warning_msg
 
 
 class TestSessionDownloadBlockedHandling:
@@ -1474,7 +1305,6 @@ class TestSessionDownloadBlockedHandling:
         mock_stream.title = "Test Stream"
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
         ])
@@ -1540,7 +1370,6 @@ class TestHeartbeatLogOptimization:
         mock_stream.title = "Test Stream"
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_api.validate_m3u8_url.return_value = True
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
         ])

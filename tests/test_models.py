@@ -137,24 +137,6 @@ class TestMultiLangNick:
         assert nick.en is None
         assert nick.jp is None
 
-    def test_get_display_name_preferred_language(self):
-        """Test getting display name in preferred language."""
-        nick = MultiLangNick(ko="한국어", en="English", jp="日本語")
-        assert nick.get_display_name("ko") == "한국어"
-        assert nick.get_display_name("en") == "English"
-        assert nick.get_display_name("jp") == "日本語"
-
-    def test_get_display_name_fallback(self):
-        """Test fallback when preferred language not available."""
-        nick = MultiLangNick(ko="한국어")
-        # Should fall back to Korean when English not available
-        assert nick.get_display_name("en") == "한국어"
-
-    def test_get_display_name_none(self):
-        """Test returning None when no names available."""
-        nick = MultiLangNick()
-        assert nick.get_display_name() is None
-
 
 class TestStreamState:
     """Tests for StreamState enum."""

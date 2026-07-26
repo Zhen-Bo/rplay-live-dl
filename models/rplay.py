@@ -31,12 +31,6 @@ class CreatorStreamState:
     last_stream_oid: Optional[str] = field(default=None)
     is_current_stream_blocked: bool = field(default=False)
 
-    def reset(self) -> None:
-        """Reset state to defaults (used when creator goes offline)."""
-        self.last_stream_start_time = None
-        self.last_stream_oid = None
-        self.is_current_stream_blocked = False
-
     def update_stream_start_time(
         self,
         start_time: datetime,
@@ -54,18 +48,6 @@ class CreatorStreamState:
         self.last_stream_start_time = start_time
         if stream_oid is not None:
             self.last_stream_oid = stream_oid
-        self.is_current_stream_blocked = False
-
-    def update_stream_oid(self, stream_oid: str) -> None:
-        """
-        Update the current stream oid (indicates a new session).
-
-        Also clears the blocked flag since a new session should be retried.
-
-        Args:
-            stream_oid: The oid of the newly observed live stream
-        """
-        self.last_stream_oid = stream_oid
         self.is_current_stream_blocked = False
 
     def mark_blocked(self) -> None:
@@ -105,29 +87,6 @@ class MultiLangNick(BaseModel):
     ko: Optional[str] = Field(default=None, description="Korean nickname")
     en: Optional[str] = Field(default=None, description="English nickname")
     jp: Optional[str] = Field(default=None, description="Japanese nickname")
-
-    def get_display_name(self, preferred_lang: str = "en") -> Optional[str]:
-        """
-        Get display name in preferred language, with fallback.
-
-        Args:
-            preferred_lang: Preferred language code (ko, en, jp)
-
-        Returns:
-            Nickname in preferred language, or first available, or None
-        """
-        lang_map = {"ko": self.ko, "en": self.en, "jp": self.jp}
-
-        # Try preferred language first
-        if preferred_lang in lang_map and lang_map[preferred_lang]:
-            return lang_map[preferred_lang]
-
-        # Fall back to any available
-        for nickname in [self.en, self.ko, self.jp]:
-            if nickname:
-                return nickname
-
-        return None
 
 
 class LiveStream(BaseModel):
@@ -176,24 +135,6 @@ class LiveStream(BaseModel):
         "populate_by_name": True,
         "str_strip_whitespace": True,
     }
-
-    @property
-    def is_live(self) -> bool:
-        """Check if the stream is currently live on native platform."""
-        return self.stream_state == StreamState.LIVE
-
-    @property
-    def duration_seconds(self) -> float:
-        """
-        Calculate stream duration in seconds from start time.
-
-        Note:
-            This method uses the timezone info from stream_start_time to ensure
-            correct calculation. If stream_start_time is timezone-aware, the
-            current time will be fetched with the same timezone. If it's naive
-            (tzinfo is None), a naive datetime.now() is used for comparison.
-        """
-        return (datetime.now(self.stream_start_time.tzinfo) - self.stream_start_time).total_seconds()
 
     def __str__(self) -> str:
         """Return string representation of the live stream."""

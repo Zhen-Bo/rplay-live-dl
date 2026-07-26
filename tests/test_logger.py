@@ -13,7 +13,6 @@ from core.logger import (
     _pad_to_width,
     _center_to_width,
     cleanup_old_logs,
-    get_all_loggers,
     get_logs_dir,
     setup_logger,
     AlignedFormatter,
@@ -151,18 +150,6 @@ class TestCleanupOldLogs:
         removed = cleanup_old_logs(retention_days=30)
 
         assert removed == 3
-
-
-class TestGetAllLoggers:
-    """Tests for get_all_loggers function."""
-
-    def test_returns_list(self):
-        """Test that get_all_loggers returns a list."""
-        # First create a logger
-        setup_logger("test_for_list")
-        loggers = get_all_loggers()
-        assert isinstance(loggers, list)
-        assert "test_for_list" in loggers
 
 
 class TestGetDisplayWidth:
