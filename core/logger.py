@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import colorlog
-import wcwidth
 
 __all__ = [
     "setup_logger",
@@ -89,105 +88,27 @@ LOG_COLORS = {
 }
 
 
-def _get_display_width(text: str) -> int:
+def _fit(text: str, width: int) -> str:
+    """Center text in a fixed-width column, truncating anything that overflows."""
+    return f"{text:^{width}.{width}}"
+
+
+class ContextAdapter(logging.LoggerAdapter):
+    """Prefix every message with a stable ``[context]`` tag."""
+
+    def process(self, msg: Any, kwargs: Any) -> Any:
+        context = (self.extra or {}).get("context")
+        return (f"[{context}] {msg}" if context else msg), kwargs
+
+
+def bind(logger: logging.Logger, context: str) -> logging.LoggerAdapter:
     """
-    Calculate the display width of a string using wcwidth.
+    Bind a logger to a stable context tag, usually the creator name.
 
-    This properly handles East Asian characters (CJK) and emojis
-    that take multiple terminal columns.
-
-    Args:
-        text: The string to measure
-
-    Returns:
-        The display width in terminal columns
+    Every message logged through the returned adapter is prefixed with
+    ``[context]``, so one recording can be followed with a single grep.
     """
-    width = 0
-    for char in text:
-        char_width = wcwidth.wcwidth(char)
-        # wcwidth returns -1 for non-printable characters, treat as 0
-        if char_width < 0:
-            char_width = 0
-        width += char_width
-    return width
-
-
-def _truncate_to_width(text: str, max_width: int, suffix: str = "…") -> str:
-    """
-    Truncate a string to fit within a maximum display width.
-
-    Args:
-        text: The string to truncate
-        max_width: Maximum display width allowed
-        suffix: Suffix to append when truncating (default: "…")
-
-    Returns:
-        Truncated string that fits within max_width
-    """
-    current_width = _get_display_width(text)
-    if current_width <= max_width:
-        return text
-
-    suffix_width = _get_display_width(suffix)
-    target_width = max_width - suffix_width
-
-    # Build truncated string character by character
-    result = []
-    width = 0
-    for char in text:
-        char_width = wcwidth.wcwidth(char)
-        if char_width < 0:
-            char_width = 0
-        if width + char_width > target_width:
-            break
-        result.append(char)
-        width += char_width
-
-    return "".join(result) + suffix
-
-
-def _pad_to_width(text: str, target_width: int) -> str:
-    """
-    Pad a string to a target display width.
-
-    If the text is longer than target_width, it will be returned as-is
-    (no truncation). If shorter, it will be padded with spaces.
-
-    Args:
-        text: The string to pad
-        target_width: The desired display width
-
-    Returns:
-        String padded to at least target_width display width
-    """
-    current_width = _get_display_width(text)
-    if current_width >= target_width:
-        return text
-    padding = target_width - current_width
-    return text + " " * padding
-
-
-def _center_to_width(text: str, target_width: int) -> str:
-    """
-    Center a string within a target display width.
-
-    If the text is longer than target_width, it will be returned as-is
-    (no truncation). If shorter, it will be padded with spaces on both sides.
-
-    Args:
-        text: The string to center
-        target_width: The desired display width
-
-    Returns:
-        String centered within target_width display width
-    """
-    current_width = _get_display_width(text)
-    if current_width >= target_width:
-        return text
-    total_padding = target_width - current_width
-    left_padding = total_padding // 2
-    right_padding = total_padding - left_padding
-    return " " * left_padding + text + " " * right_padding
+    return ContextAdapter(logger, {"context": context})
 
 
 class AlignedFormatter(logging.Formatter):
@@ -210,16 +131,8 @@ class AlignedFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """Format the record with centered logger name and level."""
-        # Center the name
-        name = record.name
-        name = _truncate_to_width(name, self.name_width)
-        name = _center_to_width(name, self.name_width)
-        record.name = name
-
-        # Center the level name
-        levelname = record.levelname
-        record.levelname = _center_to_width(levelname, self.level_width)
-
+        record.name = _fit(record.name, self.name_width)
+        record.levelname = _fit(record.levelname, self.level_width)
         return super().format(record)
 
 
@@ -244,24 +157,18 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """Format the record with centered logger name and level."""
-        # Center the name
         original_name = record.name
-        name = _truncate_to_width(original_name, self.name_width)
-        name = _center_to_width(name, self.name_width)
-        record.name = name
+        record.name = _fit(original_name, self.name_width)
 
-        # Save original levelname for color lookup
+        # colorlog picks the colour by looking up record.levelname, so it has to
+        # stay unpadded until after formatting.
         original_levelname = record.levelname
-
-        # Let colorlog format with original levelname (for correct color lookup)
         result = super().format(record)
-
-        # Restore original name
         record.name = original_name
 
         # Replace levelname with centered version in the output
         # The format is: "date │ <color>LEVELNAME<reset> │ name │ message"
-        centered_levelname = _center_to_width(original_levelname, self.level_width)
+        centered_levelname = _fit(original_levelname, self.level_width)
         parts = result.split('│', 2)
         if len(parts) >= 2:
             parts[1] = parts[1].replace(original_levelname, centered_levelname, 1)

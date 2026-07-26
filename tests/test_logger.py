@@ -8,10 +8,7 @@ from pathlib import Path
 import pytest
 
 from core.logger import (
-    _get_display_width,
-    _truncate_to_width,
-    _pad_to_width,
-    _center_to_width,
+    bind,
     cleanup_old_logs,
     get_logs_dir,
     setup_logger,
@@ -152,118 +149,6 @@ class TestCleanupOldLogs:
         assert removed == 3
 
 
-class TestGetDisplayWidth:
-    """Tests for _get_display_width function."""
-
-    def test_ascii_characters(self):
-        """Test width calculation for ASCII characters."""
-        assert _get_display_width("hello") == 5
-        assert _get_display_width("a") == 1
-        assert _get_display_width("") == 0
-
-    def test_cjk_characters(self):
-        """Test width calculation for CJK (double-width) characters."""
-        assert _get_display_width("你好") == 4  # 2 chars * 2 width
-        assert _get_display_width("日本語") == 6  # 3 chars * 2 width
-
-    def test_mixed_characters(self):
-        """Test width calculation for mixed ASCII and CJK."""
-        assert _get_display_width("hello你好") == 9  # 5 + 4
-
-    def test_emoji_characters(self):
-        """Test width calculation for emoji characters."""
-        # Emoji width varies by implementation, test it doesn't crash
-        width = _get_display_width("👍")
-        assert isinstance(width, int)
-        assert width >= 0
-
-    def test_non_printable_characters(self):
-        """Test width calculation handles non-printable characters."""
-        # Non-printable should be treated as 0 width
-        assert _get_display_width("\x00") == 0
-
-
-class TestTruncateToWidth:
-    """Tests for _truncate_to_width function."""
-
-    def test_no_truncation_needed(self):
-        """Test string shorter than max width is unchanged."""
-        assert _truncate_to_width("hello", 10) == "hello"
-
-    def test_exact_width(self):
-        """Test string exactly at max width is unchanged."""
-        assert _truncate_to_width("hello", 5) == "hello"
-
-    def test_truncation_with_suffix(self):
-        """Test string longer than max width is truncated with suffix."""
-        result = _truncate_to_width("hello world", 8)
-        assert result == "hello w…"
-        assert _get_display_width(result) <= 8
-
-    def test_truncation_cjk(self):
-        """Test truncation with CJK characters."""
-        result = _truncate_to_width("你好世界", 5)
-        # Should truncate to fit within 5 width + suffix
-        assert _get_display_width(result) <= 5
-
-    def test_custom_suffix(self):
-        """Test truncation with custom suffix."""
-        result = _truncate_to_width("hello world", 8, suffix="...")
-        assert result.endswith("...")
-        assert _get_display_width(result) <= 8
-
-
-class TestPadToWidth:
-    """Tests for _pad_to_width function."""
-
-    def test_pad_shorter_string(self):
-        """Test padding a string shorter than target width."""
-        result = _pad_to_width("hi", 5)
-        assert result == "hi   "
-        assert len(result) == 5
-
-    def test_pad_exact_width(self):
-        """Test string at exact width is unchanged."""
-        result = _pad_to_width("hello", 5)
-        assert result == "hello"
-
-    def test_pad_longer_string(self):
-        """Test string longer than target is not truncated."""
-        result = _pad_to_width("hello world", 5)
-        assert result == "hello world"
-
-    def test_pad_cjk_string(self):
-        """Test padding with CJK characters."""
-        result = _pad_to_width("你好", 6)  # 你好 is 4 width
-        assert _get_display_width(result) == 6
-
-
-class TestCenterToWidth:
-    """Tests for _center_to_width function."""
-
-    def test_center_shorter_string(self):
-        """Test centering a string shorter than target width."""
-        result = _center_to_width("hi", 6)
-        assert result == "  hi  "
-        assert len(result) == 6
-
-    def test_center_odd_padding(self):
-        """Test centering with odd total padding."""
-        result = _center_to_width("hi", 5)
-        # 5 - 2 = 3 padding, left=1, right=2
-        assert result == " hi  "
-
-    def test_center_exact_width(self):
-        """Test string at exact width is unchanged."""
-        result = _center_to_width("hello", 5)
-        assert result == "hello"
-
-    def test_center_longer_string(self):
-        """Test string longer than target is not truncated."""
-        result = _center_to_width("hello world", 5)
-        assert result == "hello world"
-
-
 class TestAlignedFormatter:
     """Tests for AlignedFormatter class."""
 
@@ -322,7 +207,7 @@ class TestAlignedFormatter:
             exc_info=None,
         )
         result = formatter.format(record)
-        assert _get_display_width(result.strip()) <= 5
+        assert len(result.strip()) <= 5
 
 
 class TestColoredAlignedFormatter:
