@@ -23,8 +23,6 @@ __all__ = [
     "LEGACY_CONFIG_PATH",
     "DEFAULT_RPLAY_API_BASE_URL",
     "read_app_config",
-    "read_config",
-    "validate_config",
     "validate_startup_config_path",
 ]
 
@@ -73,11 +71,6 @@ def validate_startup_config_path(config_path: str) -> None:
     raise ConfigError(f"Configuration file not found: {config_path}")
 
 
-def read_config(config_path: str) -> List[CreatorProfile]:
-    """Backward-compatible helper that returns only creator profiles."""
-    return read_app_config(config_path).creators
-
-
 def read_app_config(config_path: str) -> AppConfig:
     """
     Read and parse the YAML configuration file to extract application config.
@@ -124,7 +117,7 @@ def read_app_config(config_path: str) -> AppConfig:
                 _get_logger().error(error_msg)
                 raise ConfigError(error_msg)
 
-            api_base_url = _resolve_api_base_url(data, path)
+            api_base_url = _resolve_api_base_url(data)
             creators = _parse_creators(data)
             if "creators" not in data:
                 _get_logger().warning("No 'creators' key found in configuration")
@@ -152,11 +145,10 @@ def read_app_config(config_path: str) -> AppConfig:
         raise ConfigError(error_msg) from e
 
 
-def _resolve_api_base_url(yaml_data: Dict[str, Any], config_path: Path) -> str:
-    """Return the configured API base URL, persisting the default when missing."""
+def _resolve_api_base_url(yaml_data: Dict[str, Any]) -> str:
+    """Return the configured API base URL, defaulting when missing."""
     raw_value = yaml_data.get("apiBaseUrl")
     if raw_value is None:
-        _persist_default_api_base_url(config_path)
         return DEFAULT_RPLAY_API_BASE_URL
 
     api_base_url = str(raw_value).strip().rstrip("/")
@@ -164,39 +156,6 @@ def _resolve_api_base_url(yaml_data: Dict[str, Any], config_path: Path) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ConfigError(f"Invalid apiBaseUrl: {raw_value}")
     return api_base_url
-
-
-def _persist_default_api_base_url(config_path: Path) -> None:
-    """Best-effort migration that writes the default apiBaseUrl into config.yaml."""
-    line = f"apiBaseUrl: {DEFAULT_RPLAY_API_BASE_URL}"
-
-    try:
-        original = config_path.read_text(encoding="utf-8")
-        updated = _prepend_top_level_yaml_key(original, line)
-        config_path.write_text(updated, encoding="utf-8")
-    except OSError as exc:
-        _get_logger().warning(
-            f"Failed to persist default apiBaseUrl to {config_path}: {exc}"
-        )
-
-
-def _prepend_top_level_yaml_key(original: str, line: str) -> str:
-    """Insert one YAML key near the top while preserving the rest of the file."""
-    bom = ""
-    if original.startswith("\ufeff"):
-        bom = "\ufeff"
-        original = original[1:]
-
-    if not original.strip():
-        return f"{bom}{line}\n"
-
-    lines = original.splitlines(keepends=True)
-    if lines and lines[0].strip() == "---":
-        remainder = "".join(lines[1:])
-        separator = "" if remainder.startswith("\n") else "\n"
-        return f"{bom}{lines[0]}{line}\n{separator}{remainder}"
-
-    return f"{bom}{line}\n\n{original}"
 
 
 def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:
@@ -259,24 +218,3 @@ def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:
             continue
 
     return creators
-
-
-def validate_config(config_path: str) -> tuple[bool, Optional[str]]:
-    """
-    Validate a configuration file without loading it for use.
-
-    Args:
-        config_path: Path to the YAML configuration file
-
-    Returns:
-        Tuple of (is_valid, error_message)
-        - is_valid: True if configuration is valid
-        - error_message: Error description if invalid, None otherwise
-    """
-    try:
-        result = read_config(config_path)
-        if len(result) == 0:
-            return False, "No valid creator profiles found"
-        return True, None
-    except ConfigError as e:
-        return False, str(e)
