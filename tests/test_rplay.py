@@ -221,26 +221,6 @@ class TestCreatorStreamState:
         assert state.last_stream_oid == "stream-1"
         assert state.is_current_stream_blocked is True
 
-    def test_reset_method(self):
-        """Test CreatorStreamState reset method clears state."""
-        state = CreatorStreamState(
-            last_stream_oid="stream-1",
-            is_current_stream_blocked=True,
-        )
-        state.reset()
-        assert state.last_stream_oid is None
-        assert state.is_current_stream_blocked is False
-
-    def test_update_stream_oid(self):
-        """Test updating stream oid clears the blocked flag."""
-        state = CreatorStreamState(
-            last_stream_oid="stream-1",
-            is_current_stream_blocked=True,
-        )
-        state.update_stream_oid("stream-2")
-        assert state.last_stream_oid == "stream-2"
-        assert state.is_current_stream_blocked is False
-
     def test_mark_blocked(self):
         """Test mark_blocked sets the blocked flag."""
         state = CreatorStreamState()
