@@ -341,3 +341,55 @@ class TestLazyRotatingFileHandler:
 
         content = log_file.read_text()
         assert "hello world" in content
+
+
+class TestContextAdapter:
+    """Tests for ContextAdapter and bind()."""
+
+    def test_prefixes_message_with_context(self, caplog):
+        """Test bind() prefixes a logged message with the bound context tag."""
+        logger = logging.getLogger("test_context_adapter_prefix")
+        logger.setLevel(logging.INFO)
+        adapter = bind(logger, "SomeCreator")
+
+        adapter.info("hello")
+
+        assert caplog.records[-1].getMessage() == "[SomeCreator] hello"
+
+    def test_returns_message_unchanged_when_context_is_empty(self, caplog):
+        """Test bind() with an empty context leaves the message unprefixed."""
+        logger = logging.getLogger("test_context_adapter_empty_context")
+        logger.setLevel(logging.INFO)
+        adapter = bind(logger, "")
+
+        adapter.info("hello")
+
+        assert caplog.records[-1].getMessage() == "hello"
+
+    def test_adapter_forwards_level_filtering(self, caplog):
+        """Test the adapter forwards the underlying logger's level filtering."""
+        logger = logging.getLogger("test_context_adapter_level_filter")
+        logger.setLevel(logging.WARNING)
+        adapter = bind(logger, "SomeCreator")
+
+        adapter.info("should be filtered")
+        adapter.warning("should be logged")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert "[SomeCreator] should be filtered" not in messages
+        assert "[SomeCreator] should be logged" in messages
+
+    def test_exception_through_adapter_keeps_traceback(self, caplog):
+        """Test .exception() through the adapter keeps exc_info and the context prefix."""
+        logger = logging.getLogger("test_context_adapter_exception")
+        logger.setLevel(logging.INFO)
+        adapter = bind(logger, "SomeCreator")
+
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            adapter.exception("boom")
+
+        record = caplog.records[-1]
+        assert record.exc_info is not None
+        assert record.getMessage() == "[SomeCreator] boom"
