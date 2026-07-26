@@ -129,6 +129,10 @@ def clip(text: str, columns: int = LOG_TEXT_MAX_COLUMNS, suffix: str = "…") ->
         return text
 
     budget = columns - _display_width(suffix)
+    if budget < 0:
+        # No room for the suffix itself; the contract is that the result never
+        # exceeds `columns`, so nothing can be shown.
+        return ""
     kept, used = [], 0
     for char in text:
         width = wcwidth.wcwidth(char)

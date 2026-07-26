@@ -187,15 +187,6 @@ class StreamDownloader:
         # Configure yt-dlp options
         ydl_opts = self._build_ydl_options(output_path)
 
-        # The title already appeared on the monitor's "is live" line; repeating it
-        # here (and again in the output filename) is what made one event span
-        # three lines. The session prefix is what ties this log to a file on disk.
-        session_prefix = (self.filename_prefix or "").rstrip("_")
-        self._log(
-            "info",
-            f"📥 Recording started (session {session_prefix})" if session_prefix
-            else "📥 Recording started",
-        )
         self._log(
             "debug",
             f"session_key={self.session_key or 'none'}, output_path={output_path}",
@@ -209,6 +200,20 @@ class StreamDownloader:
             daemon=True,
         )
         self.download_thread.start()
+
+        # Logged only once the thread is actually running. This is now the sole
+        # confirmation that a recording began, so it must not be emitted while
+        # Thread.start() can still raise.
+        #
+        # The title already appeared on the monitor's "is live" line; repeating it
+        # here (and again in the output filename) is what made one event span
+        # three lines. The session prefix is what ties this log to a file on disk.
+        session_prefix = (self.filename_prefix or "").rstrip("_")
+        self._log(
+            "info",
+            f"📥 Recording started (session {session_prefix})" if session_prefix
+            else "📥 Recording started",
+        )
 
     def is_alive(self) -> bool:
         """

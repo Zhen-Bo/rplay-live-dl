@@ -313,6 +313,23 @@ class TestDownloadMethod:
             for call in mock_log.call_args_list
         )
 
+    def test_does_not_log_recording_started_when_thread_fails_to_start(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Test a failed thread start leaves no misleading Recording started log."""
+        monkeypatch.chdir(tmp_path)
+        downloader = StreamDownloader("TestCreator")
+
+        with patch("core.downloader.threading.Thread") as mock_thread_class:
+            mock_thread_class.return_value.start.side_effect = RuntimeError(
+                "can't start new thread"
+            )
+            with pytest.raises(RuntimeError):
+                downloader.download("http://example.com/stream.m3u8", "Test Stream")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not any("Recording started" in message for message in messages)
+
 
 class TestDownloadWorker:
     """Tests for _download_worker method."""

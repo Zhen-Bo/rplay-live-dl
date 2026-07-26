@@ -431,3 +431,13 @@ class TestClip:
         result = clip("a" * 40)
         assert result == "a" * 40
         assert "…" not in result
+
+    def test_returns_empty_when_budget_cannot_fit_the_suffix(self):
+        """Test clip() returns empty text when the budget can't even fit the suffix."""
+        assert clip("界", columns=0) == ""
+
+    def test_never_exceeds_budget_for_any_small_budget(self):
+        """Test clip() never exceeds a small columns budget, for every budget 0-5."""
+        for n in range(6):
+            result = clip("配信配信配信", columns=n)
+            assert _display_width(result) <= n, f"columns={n} produced {result!r}"
