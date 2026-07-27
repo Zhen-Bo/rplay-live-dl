@@ -332,7 +332,7 @@ docker run -d \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/archive:/app/archive \
   -v $(pwd)/logs:/app/logs \
-  paverz/rplay-live-dl:v2.1.1-vibe
+  paverz/rplay-live-dl:v2.2.0-vibe
 ```
 
 ### Directory Structure
@@ -467,7 +467,7 @@ poetry run pytest --cov --cov-report=xml
 rplay-live-dl/
 ├── .github/
 │   └── workflows/
-│       ├── coverage.yml
+│       ├── docker-smoke.yml
 │       ├── main.yaml
 │       └── test.yml
 ├── core/
