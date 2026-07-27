@@ -9,7 +9,6 @@
     <img src="https://img.shields.io/github/last-commit/Zhen-Bo/rplay-live-dl?style=flat&logo=git&logoColor=white&color=00BFFF" alt="last-commit">
     <img src="https://img.shields.io/github/languages/top/Zhen-Bo/rplay-live-dl?style=flat&color=00BFFF" alt="repo-top-language">
     <img src="https://img.shields.io/github/languages/count/Zhen-Bo/rplay-live-dl?style=flat&color=00BFFF" alt="repo-language-count">
-    <a href="https://codecov.io/gh/Zhen-Bo/rplay-live-dl"><img src="https://codecov.io/gh/Zhen-Bo/rplay-live-dl/graph/badge.svg" alt="codecov"></a>
 </p>
 <p align="center">Built with Docker, Python, Poetry, Pydantic, yt-dlp, and FFmpeg.</p>
 
