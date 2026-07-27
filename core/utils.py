@@ -4,12 +4,57 @@ Utility functions for rplay-live-dl.
 Provides common helper functions used across multiple modules.
 """
 
+import psutil
+
 __all__ = [
     "format_file_size",
+    "terminate_child_processes",
 ]
 
 
-def format_file_size(size_bytes: int) -> str:
+def terminate_child_processes(timeout_seconds: float = 10.0) -> int:
+    """
+    Terminate every child process of this process, politely then firmly.
+
+    yt-dlp downloads HLS through FFmpegFD, which spawns ffmpeg as a subprocess
+    and keeps the Popen object in a local variable, so there is no handle to
+    stop it through. Measured on shutdown: the recording ffmpeg processes
+    survive the Python process and keep downloading indefinitely.
+
+    Sends terminate to the whole child tree, waits, then kills whatever is
+    still alive. Returns the number of children that had to be dealt with.
+    """
+    total = 0
+    # Two passes: a still-running download thread can spawn a fresh ffmpeg
+    # between the snapshot and the kill (yt-dlp retry), so re-scan once.
+    for pass_timeout in (timeout_seconds, 2.0):
+        try:
+            children = psutil.Process().children(recursive=True)
+        except psutil.Error:
+            break
+        if not children:
+            break
+
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.Error:
+                # Already gone, or access denied: neither may stop the sweep.
+                continue
+
+        _, alive = psutil.wait_procs(children, timeout=pass_timeout)
+        for child in alive:
+            try:
+                child.kill()
+            except psutil.Error:
+                continue
+
+        total += len(children)
+
+    return total
+
+
+def format_file_size(size_bytes: float) -> str:
     """
     Format file size in human-readable format.
 

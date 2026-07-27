@@ -1,8 +1,11 @@
 """Tests for utility functions."""
 
+import subprocess
+import sys
+
 import pytest
 
-from core.utils import format_file_size
+from core.utils import format_file_size, terminate_child_processes
 
 
 class TestFormatFileSize:
@@ -54,3 +57,25 @@ class TestFormatFileSize:
     def test_format_file_size(self, size_bytes: int, expected: str):
         """Test formatting file sizes across all unit ranges."""
         assert format_file_size(size_bytes) == expected
+
+
+class TestTerminateChildProcesses:
+    """Tests for terminating child processes."""
+
+    def test_returns_zero_when_no_children(self):
+        """Test no-child cleanup returns zero."""
+        assert terminate_child_processes(timeout_seconds=1.0) == 0
+
+    def test_terminates_a_real_child_process(self):
+        """Test a real child process is terminated and reaped."""
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            assert proc.poll() is None
+            assert terminate_child_processes(timeout_seconds=5.0) >= 1
+            proc.wait(timeout=5)
+            assert proc.returncode is not None
+        finally:
+            try:
+                proc.kill()
+            except OSError:
+                pass

@@ -17,6 +17,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from core.config import DEFAULT_CONFIG_PATH, validate_startup_config_path
 from core.env import EnvConfig
 from core.live_stream_monitor import LiveStreamMonitor
+from core.utils import terminate_child_processes
 
 __all__ = [
     "LiveStreamScheduler",
@@ -64,6 +65,7 @@ class LiveStreamScheduler:
         self.git_sha = os.getenv("APP_GIT_SHA", "").strip()
         self.monitor = LiveStreamMonitor(self.env.auth_token, self.env.user_oid)
         self.scheduler = BlockingScheduler()
+        self._stopped = False
 
     def check_and_download(self) -> None:
         """Execute check and download task."""
@@ -99,16 +101,34 @@ class LiveStreamScheduler:
 
         except KeyboardInterrupt:
             self.logger.info("Monitoring system manually stopped")
+            self.stop()
         except Exception as e:
             self.logger.error(f"System runtime error: {e}")
             raise
 
     def stop(self) -> None:
-        """Stop the scheduler gracefully."""
+        """Stop the scheduler, drain the monitor, and reap download subprocesses."""
+        if self._stopped:
+            return
+        self._stopped = True
+
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
-            self.monitor.shutdown()
-            self.logger.info("Scheduler stopped")
+
+        # Always shut the monitor down, even when the scheduler never started:
+        # its control thread and merge executor exist from construction.
+        self.monitor.shutdown()
+
+        # The monitor has drained the merge queue by now, so any child process
+        # still alive is a recording ffmpeg spawned by yt-dlp's FFmpegFD. Those
+        # outlive the interpreter and keep downloading unless reaped here.
+        reaped = terminate_child_processes()
+        if reaped:
+            self.logger.warning(
+                f"Terminated {reaped} download subprocess(es) left running by yt-dlp"
+            )
+
+        self.logger.info("Scheduler stopped")
 
 
 def run_scheduler(env: EnvConfig, logger: logging.Logger, version: str) -> None:

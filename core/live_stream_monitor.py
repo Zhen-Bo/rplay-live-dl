@@ -791,6 +791,7 @@ class LiveStreamMonitor:
     def _merge_session_to_mp4(self, merge_job: MergeJobSpec) -> Union[MergeCompleted, MergeFailed]:
         """Merge one session's raw ts outputs into the final mp4 artifact."""
         ts_files = sorted(merge_job.output_dir.glob(f"{merge_job.session_prefix}*.ts"))
+        output_path: Optional[Path] = None
 
         try:
             if not ts_files:
@@ -806,8 +807,17 @@ class LiveStreamMonitor:
             )
             self._run_ffmpeg_merge(ts_files, output_path)
 
+            # The merge succeeded: from here the mp4 is the artifact of record.
+            # A locked .ts must neither fail the merge nor reach the except
+            # below, which would delete a perfectly good mp4 as a "partial".
             for ts_file in ts_files:
-                ts_file.unlink(missing_ok=True)
+                try:
+                    ts_file.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    self.logger.warning(
+                        f"Merged, but could not remove {ts_file.name}: "
+                        f"{cleanup_error}. The startup scan will list it."
+                    )
 
             return MergeCompleted(
                 session_key=merge_job.session_key,
@@ -815,15 +825,35 @@ class LiveStreamMonitor:
             )
 
         except subprocess.TimeoutExpired as exc:
+            self._discard_partial_merge_output(output_path)
             timeout_value = int(exc.timeout) if exc.timeout is not None else self.merge_timeout_seconds
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
             )
         except Exception as exc:
+            self._discard_partial_merge_output(output_path)
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=str(exc),
+            )
+
+    def _discard_partial_merge_output(self, output_path: Optional[Path]) -> None:
+        """
+        Drop a half-written mp4 so a failed merge cannot pass for a finished one.
+
+        The raw .ts inputs are only deleted after a successful merge, so the
+        recording stays recoverable while the broken artifact goes away.
+        """
+        if output_path is None:
+            return
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError as exc:
+            # A locked file must not turn a merge failure into a thread crash,
+            # but a broken mp4 surviving under a final name must not be silent.
+            self.logger.warning(
+                f"Could not remove partial merge output {output_path.name}: {exc}"
             )
 
     def _reserve_final_output_path(
@@ -897,6 +927,7 @@ class LiveStreamMonitor:
         self._event_queue.join()
         self._event_queue.put(_ShutdownRequested())
         self._control_thread.join()
+        self.api.close()
 
     def _make_session_download_error_callback(self, session_key: str) -> Callable[[str], None]:
         """Create a callback for a specific session download failure."""

@@ -346,14 +346,26 @@ class TestDownloadWorker:
         assert downloader._current_output_path is None
         assert downloader._download_start_time is None
 
-    def test_worker_file_not_found_logs_warning(self, mock_yt_dlp, tmp_path):
-        """Test warning logged when file not found after download."""
+    def test_worker_file_not_found_notifies_failure(self, mock_yt_dlp, tmp_path):
+        """Test a missing output file raises a failure event, not silence.
+
+        Without the failure notification the session never leaves RAW_RUNNING
+        and the creator's raw lock stays held until the process restarts.
+        """
         mock_ydl_class, mock_ydl = mock_yt_dlp
-        downloader = StreamDownloader("TestCreator")
+        failures = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:2026-07-27T02:00:00",
+            on_download_failure=failures.append,
+        )
         output_path = tmp_path / "nonexistent.mp4"
         downloader._download_start_time = datetime.now()
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
         assert downloader._current_output_path is None
+        assert len(failures) == 1
+        assert failures[0].session_key == "creator1:2026-07-27T02:00:00"
+        assert "no output file" in failures[0].error_message
 
     def test_worker_download_error_handled(self, mock_yt_dlp, tmp_path):
         """Test DownloadError is caught and logged."""

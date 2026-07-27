@@ -128,6 +128,84 @@ class TestMergeFlow:
         assert not (tmp_path / "archive" / "Creator" / "_failed").exists()
         monitor.shutdown()
 
+    def test_failed_merge_discards_partial_mp4_and_keeps_ts(self, tmp_path, monkeypatch):
+        """Test a failed merge removes partial mp4 output but keeps raw ts input."""
+        monkeypatch.chdir(tmp_path)
+        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        output_dir = tmp_path / "archive" / "Creator"
+        output_dir.mkdir(parents=True)
+        prefix = "20260306_120000_"
+        ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        partial_mp4 = output_dir / "#Creator 2026-03-06 123.mp4"
+
+        def fake_merge(ts_files, output_path):
+            output_path.write_bytes(b"partial")
+            raise RuntimeError("boom")
+
+        monitor._run_ffmpeg_merge = fake_merge
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:00:00",
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                output_dir=output_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeFailed)
+        assert event.error_message == "boom"
+        assert not partial_mp4.exists()
+        assert ts_file.exists()
+        monitor.shutdown()
+
+    def test_ts_cleanup_failure_keeps_the_merged_mp4(self, tmp_path, monkeypatch):
+        """Test a locked .ts after a successful merge never deletes the mp4.
+
+        Regression guard: the cleanup loop used to share the failure handler,
+        so a locked .ts made the discard step delete a perfectly good mp4.
+        """
+        monkeypatch.chdir(tmp_path)
+        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        output_dir = tmp_path / "archive" / "Creator"
+        output_dir.mkdir(parents=True)
+        prefix = "20260306_120000_"
+        ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+
+        def fake_merge(ts_files, output_path):
+            output_path.write_bytes(b"mp4")
+
+        monitor._run_ffmpeg_merge = fake_merge
+
+        real_unlink = Path.unlink
+
+        def deny_ts_unlink(self, missing_ok=False):
+            if self.suffix == ".ts":
+                raise OSError("locked")
+            return real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", deny_ts_unlink)
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:00:00",
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                output_dir=output_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeCompleted)
+        assert event.output_path.exists()
+        assert ts_file.exists()
+        monitor.shutdown()
+
     def test_merge_timeout_returns_failure_event(self, tmp_path, monkeypatch):
         """Test ffmpeg timeout becomes a merge failure event."""
         monkeypatch.chdir(tmp_path)
