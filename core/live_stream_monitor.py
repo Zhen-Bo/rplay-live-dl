@@ -169,7 +169,7 @@ class LiveStreamMonitor:
 
                 self._handle_monitor_event(event)
             except Exception as exc:
-                self.logger.error(f"Unexpected control-loop error: {exc}")
+                self.logger.exception(f"Unexpected control-loop error: {exc}")
                 if isinstance(event, _PollRequested):
                     event.done.set()
             finally:
@@ -206,7 +206,7 @@ class LiveStreamMonitor:
             self.logger.error(f"API error: {exc}")
             self._mark_check_failed()
         except Exception as exc:
-            self.logger.error(f"Unexpected error during monitoring: {exc}")
+            self.logger.exception(f"Unexpected error during monitoring: {exc}")
             self._mark_check_failed()
 
     def _mark_check_succeeded(self) -> None:
@@ -385,7 +385,7 @@ class LiveStreamMonitor:
             self.logger.warning(f"Failed to get stream URL for {creator_name}: {exc}")
             return
 
-        self.logger.error(f"Error starting download for {creator_name}: {exc}")
+        self.logger.error(f"Error starting download for {creator_name}: {exc}", exc_info=exc)
 
     def _log_status_summary(self, total_live: int, monitored_live: int) -> None:
         """Log a summary of the current monitoring status."""
@@ -832,6 +832,7 @@ class LiveStreamMonitor:
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
             )
         except Exception as exc:
+            self.logger.exception(f"Merge failed for session {merge_job.session_key}")
             self._discard_partial_merge_output(output_path)
             return MergeFailed(
                 session_key=merge_job.session_key,

@@ -83,14 +83,14 @@ def main() -> None:
         logger.error(f"Invalid configuration: {e}")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Unexpected error loading configuration: {e}")
+        logger.exception(f"Unexpected error loading configuration: {e}")
         sys.exit(1)
 
     # Start the scheduler
     try:
         run_scheduler(env=env, logger=logger, version=__version__)
     except Exception as e:
-        logger.error(f"Scheduler error: {e}")
+        logger.exception(f"Scheduler error: {e}")
         sys.exit(1)
 
 

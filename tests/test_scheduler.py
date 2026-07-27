@@ -86,8 +86,8 @@ class TestCheckAndDownload:
 
         # Should not raise
         scheduler.check_and_download()
-        mock_logger.error.assert_called_once()
-        assert "Test error" in str(mock_logger.error.call_args)
+        mock_logger.exception.assert_called_once()
+        assert "Test error" in str(mock_logger.exception.call_args)
 
 
 class TestStartScheduler:
