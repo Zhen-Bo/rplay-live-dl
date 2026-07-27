@@ -1,6 +1,6 @@
 services:
   rplay-live-dl:
-    image: paverz/rplay-live-dl:v2.1.1-vibe
+    image: paverz/rplay-live-dl:v2.2.0-vibe
     container_name: rplay-live-dl
     env_file: .env
     environment:
