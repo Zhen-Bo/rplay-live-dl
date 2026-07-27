@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,6 @@ from core.logger import (
     setup_logger,
     AlignedFormatter,
     ColoredAlignedFormatter,
-    LazyRotatingFileHandler,
     LOGGER_NAME_WIDTH,
     LOG_LEVEL_WIDTH,
     LOG_TEXT_MAX_COLUMNS,
@@ -257,93 +257,72 @@ class TestColoredAlignedFormatter:
         assert record.name == "OriginalName"
 
 
-class TestLazyRotatingFileHandler:
-    """Tests for LazyRotatingFileHandler class."""
+class TestRotatingFileHandlerLazyCreation:
+    """Regression tests for the file handler setup_logger constructs.
 
-    def test_no_file_created_on_init(self, tmp_path):
-        """Test that no file is created during initialization."""
-        log_file = tmp_path / "test.log"
-        handler = LazyRotatingFileHandler(
+    LazyRotatingFileHandler used to hand-roll lazy creation by skipping
+    FileHandler.__init__, which left `delay`/`errors` unset and crashed
+    stdlib's doRollover() on the first rotation. Replaced with stock
+    RotatingFileHandler(delay=True), which gives lazy creation for free.
+    """
+
+    def _make_handler(
+        self, log_file: Path, max_bytes: int = 1024, backup_count: int = 3
+    ) -> RotatingFileHandler:
+        handler = RotatingFileHandler(
             filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+            delay=True,
         )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        return handler
+
+    def test_no_file_created_until_first_emit(self, tmp_path):
+        """Test lazy creation: no file after construction, file after first emit."""
+        log_file = tmp_path / "test.log"
+        handler = self._make_handler(log_file)
         assert not log_file.exists()
+
+        handler.emit(logging.LogRecord(
+            name="Test", level=logging.INFO, pathname="", lineno=0,
+            msg="hello world", args=(), exc_info=None,
+        ))
         handler.close()
-
-    def test_file_created_on_first_emit(self, tmp_path):
-        """Test that file is created on first log emit."""
-        log_file = tmp_path / "test.log"
-        handler = LazyRotatingFileHandler(
-            filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
 
         assert log_file.exists()
-        handler.close()
+        assert "hello world" in log_file.read_text()
 
-    def test_creates_parent_directory(self, tmp_path):
-        """Test that handler creates parent directories if needed."""
-        log_file = tmp_path / "subdir" / "nested" / "test.log"
-        handler = LazyRotatingFileHandler(
-            filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
-
-        assert log_file.exists()
-        assert log_file.parent.exists()
-        handler.close()
-
-    def test_writes_log_content(self, tmp_path):
-        """Test that log content is written to file."""
+    def test_rollover_does_not_crash_or_lose_messages(self, tmp_path, capsys):
+        """Test the actual bug: rollover under delay=True must not raise/log an error."""
         log_file = tmp_path / "test.log"
-        handler = LazyRotatingFileHandler(
-            filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
+        # Tiny maxBytes forces rollover almost immediately; backupCount is
+        # generously large so no message is dropped by normal backup-count
+        # rotation (a separate, intentional behavior from the bug here).
+        handler = self._make_handler(log_file, max_bytes=50, backup_count=10)
 
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="hello world",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
+        messages = [f"message number {i}" for i in range(6)]
+        for i, msg in enumerate(messages):
+            handler.emit(logging.LogRecord(
+                name="Test", level=logging.INFO, pathname="", lineno=0,
+                msg=msg, args=(), exc_info=None,
+            ))
         handler.close()
 
-        content = log_file.read_text()
-        assert "hello world" in content
+        backup_file = tmp_path / "test.log.1"
+        assert backup_file.exists(), "rollover should have produced a backup file"
+
+        all_content = "".join(
+            f.read_text() for f in tmp_path.glob("test.log*")
+        )
+        for msg in messages:
+            assert msg in all_content
+
+        # logging.Handler.handleError() prints "--- Logging error ---" to
+        # stderr on unhandled exceptions inside emit(); its absence is the
+        # regression check for the AttributeError this bug used to raise.
+        assert "--- Logging error ---" not in capsys.readouterr().err
 
 
 class TestContextAdapter:

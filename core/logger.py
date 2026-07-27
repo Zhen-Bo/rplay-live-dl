@@ -228,72 +228,6 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
         return result
 
 
-class LazyRotatingFileHandler(RotatingFileHandler):
-    """
-    A RotatingFileHandler that delays file creation until the first log is written.
-
-    This prevents empty log files from being created for loggers that never log anything.
-    """
-
-    def __init__(
-        self,
-        filename: str,
-        maxBytes: int = 0,
-        backupCount: int = 0,
-        encoding: Optional[str] = None,
-    ) -> None:
-        """
-        Initialize the handler without creating the file.
-
-        Args:
-            filename: Path to the log file
-            maxBytes: Maximum file size before rotation
-            backupCount: Number of backup files to keep
-            encoding: File encoding
-        """
-        self._log_filename = filename
-        self._file_created = False
-        self._maxBytes = maxBytes
-        self._backupCount = backupCount
-        self._encoding = encoding
-        # Initialize base Handler only, not StreamHandler or FileHandler
-        # This avoids file creation
-        logging.Handler.__init__(self)
-        # Set attributes needed by RotatingFileHandler
-        self.mode = "a"
-        self.encoding = encoding
-        self.maxBytes = maxBytes
-        self.backupCount = backupCount
-        self.stream: Any = None
-        self.baseFilename = os.path.abspath(filename)
-
-    def emit(self, record: logging.LogRecord) -> None:
-        """
-        Emit a record, creating the file if necessary.
-
-        Args:
-            record: The log record to emit
-        """
-        if not self._file_created:
-            self._create_file()
-        super().emit(record)
-
-    def _create_file(self) -> None:
-        """Create the log file and properly initialize file handling."""
-        # Ensure directory exists
-        log_dir = os.path.dirname(self._log_filename)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-
-        # Open the stream
-        self.stream = open(
-            self._log_filename,
-            mode=self.mode,
-            encoding=self.encoding,
-        )
-        self._file_created = True
-
-
 def get_logs_dir() -> Path:
     """Get the logs directory, creating it if necessary."""
     global _logs_dir
@@ -354,11 +288,15 @@ def setup_logger(
         logs_dir = get_logs_dir()
         log_file = logs_dir / f"{name}.log"
 
-        file_handler = LazyRotatingFileHandler(
+        # ponytail: delay=True gives lazy file creation for free (stdlib);
+        # relies on setup_logger's get_logs_dir() call above to mkdir the
+        # parent, since delay=True does not create directories.
+        file_handler = RotatingFileHandler(
             filename=str(log_file),
             maxBytes=_get_log_max_bytes(),
             backupCount=_get_log_backup_count(),
             encoding="utf-8",
+            delay=True,
         )
         file_handler.setLevel(resolved_level)
         file_formatter = AlignedFormatter(
