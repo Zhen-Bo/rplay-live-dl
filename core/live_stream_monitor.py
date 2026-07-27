@@ -807,8 +807,17 @@ class LiveStreamMonitor:
             )
             self._run_ffmpeg_merge(ts_files, output_path)
 
+            # The merge succeeded: from here the mp4 is the artifact of record.
+            # A locked .ts must neither fail the merge nor reach the except
+            # below, which would delete a perfectly good mp4 as a "partial".
             for ts_file in ts_files:
-                ts_file.unlink(missing_ok=True)
+                try:
+                    ts_file.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    self.logger.warning(
+                        f"Merged, but could not remove {ts_file.name}: "
+                        f"{cleanup_error}. The startup scan will list it."
+                    )
 
             return MergeCompleted(
                 session_key=merge_job.session_key,
@@ -829,8 +838,7 @@ class LiveStreamMonitor:
                 error_message=str(exc),
             )
 
-    @staticmethod
-    def _discard_partial_merge_output(output_path: Optional[Path]) -> None:
+    def _discard_partial_merge_output(self, output_path: Optional[Path]) -> None:
         """
         Drop a half-written mp4 so a failed merge cannot pass for a finished one.
 
@@ -841,9 +849,12 @@ class LiveStreamMonitor:
             return
         try:
             output_path.unlink(missing_ok=True)
-        except OSError:
-            # A locked file must not turn a merge failure into a thread crash.
-            pass
+        except OSError as exc:
+            # A locked file must not turn a merge failure into a thread crash,
+            # but a broken mp4 surviving under a final name must not be silent.
+            self.logger.warning(
+                f"Could not remove partial merge output {output_path.name}: {exc}"
+            )
 
     def _reserve_final_output_path(
         self,
