@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,6 @@ from core.logger import (
     setup_logger,
     AlignedFormatter,
     ColoredAlignedFormatter,
-    LazyRotatingFileHandler,
     LOGGER_NAME_WIDTH,
     LOG_LEVEL_WIDTH,
     LOG_TEXT_MAX_COLUMNS,
@@ -257,93 +257,79 @@ class TestColoredAlignedFormatter:
         assert record.name == "OriginalName"
 
 
-class TestLazyRotatingFileHandler:
-    """Tests for LazyRotatingFileHandler class."""
+class TestRotatingFileHandlerLazyCreation:
+    """Regression tests for the file handler setup_logger constructs.
 
-    def test_no_file_created_on_init(self, tmp_path):
-        """Test that no file is created during initialization."""
-        log_file = tmp_path / "test.log"
-        handler = LazyRotatingFileHandler(
-            filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
-        )
-        assert not log_file.exists()
-        handler.close()
+    LazyRotatingFileHandler used to hand-roll lazy creation by skipping
+    FileHandler.__init__, which left `delay`/`errors` unset and crashed
+    stdlib's doRollover() on the first rotation. Replaced with stock
+    RotatingFileHandler(delay=True), which gives lazy creation for free.
 
-    def test_file_created_on_first_emit(self, tmp_path):
-        """Test that file is created on first log emit."""
-        log_file = tmp_path / "test.log"
-        handler = LazyRotatingFileHandler(
-            filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
+    These go through setup_logger() itself (not a hand-built handler) so a
+    regression back to the old broken class actually fails them: this test
+    module imports setup_logger at module scope, before the autouse
+    disable_file_logging fixture monkeypatches the module attribute, so the
+    real function under test runs here regardless of that fixture.
+    """
 
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
+    def test_no_file_created_until_first_emit(self, tmp_path, monkeypatch):
+        from core import logger as logger_module
 
-        assert log_file.exists()
-        handler.close()
+        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
 
-    def test_creates_parent_directory(self, tmp_path):
-        """Test that handler creates parent directories if needed."""
-        log_file = tmp_path / "subdir" / "nested" / "test.log"
-        handler = LazyRotatingFileHandler(
-            filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger_name = "test_lazy_creation_regression"
+        logger = setup_logger(logger_name, log_to_file=True, log_to_console=False)
+        try:
+            log_file = tmp_path / f"{logger_name}.log"
+            assert not log_file.exists()
 
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
+            logger.info("hello world")
 
-        assert log_file.exists()
-        assert log_file.parent.exists()
-        handler.close()
+            assert "hello world" in log_file.read_text()
+        finally:
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
 
-    def test_writes_log_content(self, tmp_path):
-        """Test that log content is written to file."""
-        log_file = tmp_path / "test.log"
-        handler = LazyRotatingFileHandler(
-            filename=str(log_file),
-            maxBytes=1024,
-            backupCount=3,
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
+    def test_rollover_does_not_crash_or_lose_messages(self, tmp_path, monkeypatch, capsys):
+        from core import logger as logger_module
 
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="hello world",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
-        handler.close()
+        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
 
-        content = log_file.read_text()
-        assert "hello world" in content
+        logger_name = "test_rollover_regression"
+        logger = setup_logger(logger_name, log_to_file=True, log_to_console=False)
+        try:
+            file_handler = next(
+                (h for h in logger.handlers if isinstance(h, RotatingFileHandler)),
+                None,
+            )
+            assert file_handler is not None
+
+            # Shrink only the rotation threshold so rollover triggers almost
+            # immediately; keep the real construction (incl. delay=True) from
+            # setup_logger so this exercises the actual bug site.
+            file_handler.maxBytes = 50
+
+            messages = ["message one", "message two", "message three"]
+            for msg in messages:
+                logger.info(msg)
+
+            assert (tmp_path / f"{logger_name}.log.1").exists()
+
+            all_content = "".join(
+                f.read_text() for f in tmp_path.glob(f"{logger_name}.log*")
+            )
+            for msg in messages:
+                assert msg in all_content
+
+            # logging.Handler.handleError() prints "--- Logging error ---" to
+            # stderr on unhandled exceptions inside emit(); its absence is the
+            # regression check for the AttributeError this bug used to raise.
+            assert "--- Logging error ---" not in capsys.readouterr().err
+        finally:
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
 
 
 class TestContextAdapter:
