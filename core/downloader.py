@@ -369,6 +369,12 @@ class StreamDownloader:
                     f"{output_path}; {self._build_output_state_details(output_path)}",
                 )
                 if not self._has_sibling_fragment_outputs(output_path):
+                    # Without this the session never leaves RAW_RUNNING: no
+                    # completion, no failure, and the creator's raw lock stays
+                    # held until the process restarts.
+                    self._notify_download_failure(
+                        "download finished but produced no output file"
+                    )
                     return
 
             self._notify_download_complete(output_path)
