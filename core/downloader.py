@@ -25,7 +25,7 @@ from core.constants import (
     DEFAULT_HTTP_HEADERS,
     DEFAULT_MAX_RETRIES,
 )
-from core.logger import setup_logger
+from core.logger import bind, setup_logger
 from core.utils import format_file_size
 from models.download import (
     RawDownloadAuthFailed,
@@ -65,7 +65,7 @@ class _YtDlpLoggerBridge:
         normalized = str(message).strip()
         if not normalized:
             return
-        self._downloader._log("debug", f"yt-dlp: {normalized}")
+        self._downloader.log.debug(f"yt-dlp: {normalized}")
 
     def debug(self, message: Any) -> None:
         self._emit(message)
@@ -137,8 +137,8 @@ class StreamDownloader:
                 Called from the download thread.
         """
         self.creator_name = creator_name
-        self._log_prefix = f"[{creator_name}]"
         self.logger = setup_logger("Downloader")
+        self.log = bind(self.logger, creator_name)
         self.download_thread: Optional[threading.Thread] = None
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
@@ -154,11 +154,6 @@ class StreamDownloader:
             self,
             enabled=_read_bool_env("LOG_YTDLP_INTERNAL", default=False),
         )
-
-    def _log(self, level: str, message: str) -> None:
-        """Log a message with creator name prefix."""
-        full_message = f"{self._log_prefix} {message}"
-        getattr(self.logger, level)(full_message)
 
     def download(self, stream_url: str, live_title: str) -> None:
         """
@@ -187,8 +182,7 @@ class StreamDownloader:
         # Configure yt-dlp options
         ydl_opts = self._build_ydl_options(output_path)
 
-        self._log(
-            "debug",
+        self.log.debug(
             f"session_key={self.session_key or 'none'}, output_path={output_path}",
         )
 
@@ -209,8 +203,7 @@ class StreamDownloader:
         # here (and again in the output filename) is what made one event span
         # three lines. The session prefix is what ties this log to a file on disk.
         session_prefix = (self.filename_prefix or "").rstrip("_")
-        self._log(
-            "info",
+        self.log.info(
             f"📥 Recording started (session {session_prefix})" if session_prefix
             else "📥 Recording started",
         )
@@ -357,14 +350,12 @@ class StreamDownloader:
             if output_path.exists():
                 file_size = output_path.stat().st_size
                 size_str = format_file_size(file_size)
-                self._log(
-                    "info",
+                self.log.info(
                     f"✅ Download completed: {output_path.name} "
                     f"({size_str}, {duration_str})",
                 )
             else:
-                self._log(
-                    "warning",
+                self.log.warning(
                     "⚠️  Download finished but file not found: "
                     f"{output_path}; {self._build_output_state_details(output_path)}",
                 )
@@ -381,8 +372,7 @@ class StreamDownloader:
 
         except yt_dlp.utils.DownloadError as e:
             error_message = str(e)
-            self._log(
-                "error",
+            self.log.exception(
                 "❌ Download error: "
                 f"{error_message}; session_key={self.session_key or 'none'}, "
                 f"{self._build_output_state_details(output_path)}",
@@ -395,8 +385,7 @@ class StreamDownloader:
                 self._notify_download_failure(error_message)
 
         except Exception as e:
-            self._log(
-                "error",
+            self.log.exception(
                 "❌ Unexpected download error: "
                 f"{e}; session_key={self.session_key or 'none'}, "
                 f"{self._build_output_state_details(output_path)}",
@@ -456,8 +445,7 @@ class StreamDownloader:
         output_state = "output_path=unknown"
         if self._current_output_path is not None:
             output_state = self._build_output_state_details(self._current_output_path)
-        self._log(
-            "warning",
+        self.log.warning(
             f"⚠️ Download attempt {retry_state.attempt_number}/"
             f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed; retrying in "
             f"{wait_seconds:.1f}s: {exception}; "
@@ -480,13 +468,11 @@ class StreamDownloader:
                     # The first attempt is already implied by "Recording started".
                     # Only a retry is worth a line of its own.
                     if attempt_number > 1:
-                        self._log(
-                            "info",
+                        self.log.info(
                             f"🔁 Retry {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
                         )
                     if self.logger.isEnabledFor(logging.DEBUG):
-                        self._log(
-                            "debug",
+                        self.log.debug(
                             f"attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}, "
                             f"session_key={self.session_key or 'none'}, "
                             f"output={output_path.name}, "
@@ -508,8 +494,7 @@ class StreamDownloader:
             raise yt_dlp.utils.DownloadError(str(exc)) from exc
 
         if attempt_number > 1:
-            self._log(
-                "info",
+            self.log.info(
                 f"✅ Download succeeded on retry attempt "
                 f"{attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
             )
@@ -528,7 +513,7 @@ class StreamDownloader:
             try:
                 self._on_download_error(error_message)
             except Exception as e:
-                self.logger.error(f"Error in download error callback: {e}")
+                self.log.exception(f"Error in download error callback: {e}")
 
     def _notify_auth_error(self, error_message: str) -> None:
         """Notify listeners that credentials appear invalid for this download."""
@@ -547,7 +532,7 @@ class StreamDownloader:
 
             self._on_download_auth_error(error_message)
         except Exception as e:
-            self.logger.error(f"Error in download auth callback: {e}")
+            self.log.exception(f"Error in download auth callback: {e}")
 
     def _notify_download_complete(self, output_path: Path) -> None:
         """Notify listeners that a raw download finished successfully."""
@@ -562,7 +547,7 @@ class StreamDownloader:
                 )
             )
         except Exception as e:
-            self.logger.error(f"Error in download complete callback: {e}")
+            self.log.exception(f"Error in download complete callback: {e}")
 
     def _notify_download_failure(self, error_message: str) -> None:
         """Notify listeners that a raw download failed for a non-blocked reason."""
@@ -577,5 +562,5 @@ class StreamDownloader:
                 )
             )
         except Exception as e:
-            self.logger.error(f"Error in download failure callback: {e}")
+            self.log.exception(f"Error in download failure callback: {e}")
 

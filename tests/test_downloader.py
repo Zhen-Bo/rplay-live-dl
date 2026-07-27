@@ -32,9 +32,9 @@ class TestStreamDownloaderInit:
         assert downloader.creator_name == "TestCreator"
 
     def test_init_sets_log_prefix(self):
-        """Test that log prefix is set with creator name."""
+        """Test that the log adapter is bound to the creator name."""
         downloader = StreamDownloader("TestCreator")
-        assert downloader._log_prefix == "[TestCreator]"
+        assert downloader.log.extra["context"] == "TestCreator"
 
     def test_init_creates_logger(self):
         """Test that a logger is created on initialization."""
@@ -192,10 +192,10 @@ class TestYtDlpLoggerBridge:
         downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
         logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
 
-        with patch.object(downloader.logger, "debug") as mock_debug:
+        with patch.object(downloader, "log") as mock_log:
             logger_bridge.debug("[generic] playlist: Downloading webpage")
 
-        assert any("yt-dlp" in str(call) for call in mock_debug.call_args_list)
+        assert any("yt-dlp" in str(call) for call in mock_log.debug.call_args_list)
 
 
 class TestBuildYdlOptions:
@@ -301,16 +301,15 @@ class TestDownloadMethod:
             session_key="creator1:1772880472",
         )
 
-        with patch.object(downloader, '_log') as mock_log:
+        with patch.object(downloader, 'log') as mock_log:
             downloader.download("http://example.com/stream.m3u8", "Test Stream")
             assert downloader.download_thread is not None
             downloader.download_thread.join(timeout=1)
 
         assert any(
-            call.args[0] == "debug"
-            and "session_key=creator1:1772880472" in call.args[1]
-            and "output_path=" in call.args[1]
-            for call in mock_log.call_args_list
+            "session_key=creator1:1772880472" in call.args[0]
+            and "output_path=" in call.args[0]
+            for call in mock_log.debug.call_args_list
         )
 
     def test_does_not_log_recording_started_when_thread_fails_to_start(
@@ -755,14 +754,14 @@ class TestDownloadErrorCallback:
         downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
 
-        with patch.object(downloader.logger, "error") as mock_error:
+        with patch.object(downloader.logger, "log") as mock_log:
             downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
 
         assert any(
             "output_path=" in str(call)
             and "part_exists=True" in str(call)
             and "part_size=6.0 B" in str(call)
-            for call in mock_error.call_args_list
+            for call in mock_log.call_args_list
         )
 
     def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
