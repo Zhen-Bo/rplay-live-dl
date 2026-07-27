@@ -332,7 +332,7 @@ docker run -d \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/archive:/app/archive \
   -v $(pwd)/logs:/app/logs \
-  paverz/rplay-live-dl:v2.2.0-vibe
+  paverz/rplay-live-dl:v2.2.1-vibe
 ```
 
 ### Directory Structure
