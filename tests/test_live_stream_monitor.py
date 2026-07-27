@@ -905,11 +905,11 @@ class TestCheckLiveStreamsErrorHandling:
             api=mock_api,
         )
 
-        with patch.object(monitor.logger, 'error') as mock_error:
+        with patch.object(monitor.logger, 'exception') as mock_exception:
             monitor.check_live_streams_and_start_download()
 
-        assert mock_error.call_count == 1
-        assert mock_error.call_args.args[0] == 'Unexpected error during monitoring: boom'
+        assert mock_exception.call_count == 1
+        assert mock_exception.call_args.args[0] == 'Unexpected error during monitoring: boom'
 
 
 class TestGetActiveDownloads:

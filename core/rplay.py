@@ -207,7 +207,7 @@ class RPlayAPI:
             raise
 
         except Exception as exc:
-            self.logger.error(f"Unexpected error while fetching livestream status: {exc}")
+            self.logger.exception(f"Unexpected error while fetching livestream status: {exc}")
             raise RPlayAPIError(f"Unexpected error: {exc}")
 
         return []

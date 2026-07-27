@@ -141,7 +141,7 @@ def read_app_config(config_path: str) -> AppConfig:
 
     except Exception as e:
         error_msg = f"Unexpected error while reading configuration: {e}"
-        _get_logger().error(error_msg)
+        _get_logger().exception(error_msg)
         raise ConfigError(error_msg) from e
 
 

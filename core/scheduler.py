@@ -72,7 +72,7 @@ class LiveStreamScheduler:
         try:
             self.monitor.check_live_streams_and_start_download()
         except Exception as e:
-            self.logger.error(f"Error while checking live streams: {e}")
+            self.logger.exception(f"Error while checking live streams: {e}")
 
     def start(self) -> None:
         """
@@ -103,7 +103,7 @@ class LiveStreamScheduler:
             self.logger.info("Monitoring system manually stopped")
             self.stop()
         except Exception as e:
-            self.logger.error(f"System runtime error: {e}")
+            self.logger.exception(f"System runtime error: {e}")
             raise
 
     def stop(self) -> None:
