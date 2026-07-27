@@ -372,7 +372,10 @@ class StreamDownloader:
 
         except yt_dlp.utils.DownloadError as e:
             error_message = str(e)
-            self.log.exception(
+            # ponytail: .error, not .exception — this handler mostly sees classified
+            # 401/403/404 access failures where the yt-dlp message says it all; the
+            # truly-unexpected path below keeps the traceback.
+            self.log.error(
                 "❌ Download error: "
                 f"{error_message}; session_key={self.session_key or 'none'}, "
                 f"{self._build_output_state_details(output_path)}",

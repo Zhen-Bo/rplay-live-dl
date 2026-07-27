@@ -181,10 +181,10 @@ class TestYtDlpLoggerBridge:
         downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
         logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
 
-        with patch.object(downloader.logger, "debug") as mock_debug:
+        with patch.object(downloader, "log") as mock_log:
             logger_bridge.debug("[generic] playlist: Downloading webpage")
 
-        mock_debug.assert_not_called()
+        mock_log.debug.assert_not_called()
 
     def test_internal_ytdlp_debug_logs_can_be_enabled(self, tmp_path, monkeypatch):
         """Test internal yt-dlp debug chatter can be surfaced for diagnosis."""
@@ -564,7 +564,7 @@ class TestDownloadErrorCallback:
         )
         output_path = tmp_path / "test.ts"
 
-        with patch.object(downloader.logger, "info") as mock_info:
+        with patch.object(downloader, "log") as mock_log:
             downloader._download_stream_with_retries(
                 "http://example.com/stream.m3u8",
                 downloader._build_ydl_options(output_path),
@@ -573,7 +573,7 @@ class TestDownloadErrorCallback:
 
         assert not any(
             "Retry" in str(call)
-            for call in mock_info.call_args_list
+            for call in mock_log.info.call_args_list
         )
 
     def test_worker_retries_transient_download_errors_within_same_task(

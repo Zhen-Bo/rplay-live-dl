@@ -832,8 +832,8 @@ class LiveStreamMonitor:
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
             )
         except Exception as exc:
-            self.logger.exception(f"Merge failed for session {merge_job.session_key}")
             self._discard_partial_merge_output(output_path)
+            self.logger.exception(f"Merge failed for session {merge_job.session_key}")
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=str(exc),
