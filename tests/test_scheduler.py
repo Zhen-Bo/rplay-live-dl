@@ -3,7 +3,7 @@
 import logging
 import os
 import signal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -200,12 +200,19 @@ class TestStopScheduler:
         mock_scheduler_class.return_value = mock_scheduler
 
         scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        order = MagicMock()
         with patch("core.scheduler.terminate_child_processes") as mock_terminate:
+            # A real int keeps `if reaped:` from recording __bool__/__str__
+            # calls on the manager mock below.
+            mock_terminate.return_value = 0
+            order.attach_mock(scheduler.monitor.shutdown, "monitor_shutdown")
+            order.attach_mock(mock_terminate, "reap")
             scheduler.stop()
             scheduler.stop()
 
-        scheduler.monitor.shutdown.assert_called_once()
-        mock_terminate.assert_called_once()
+        # Draining the monitor must come first: only once the merge queue is
+        # empty is every surviving child a recording ffmpeg that needs reaping.
+        assert order.mock_calls == [call.monitor_shutdown(), call.reap()]
 
     def test_stop_shuts_monitor_down_even_when_scheduler_never_started(
         self, patched_scheduler_deps, mock_env, mock_logger

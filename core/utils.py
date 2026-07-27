@@ -24,25 +24,34 @@ def terminate_child_processes(timeout_seconds: float = 10.0) -> int:
     Sends terminate to the whole child tree, waits, then kills whatever is
     still alive. Returns the number of children that had to be dealt with.
     """
-    try:
-        children = psutil.Process().children(recursive=True)
-    except psutil.Error:
-        return 0
-
-    for child in children:
+    total = 0
+    # Two passes: a still-running download thread can spawn a fresh ffmpeg
+    # between the snapshot and the kill (yt-dlp retry), so re-scan once.
+    for pass_timeout in (timeout_seconds, 2.0):
         try:
-            child.terminate()
-        except psutil.NoSuchProcess:
-            continue
+            children = psutil.Process().children(recursive=True)
+        except psutil.Error:
+            break
+        if not children:
+            break
 
-    _, alive = psutil.wait_procs(children, timeout=timeout_seconds)
-    for child in alive:
-        try:
-            child.kill()
-        except psutil.NoSuchProcess:
-            continue
+        for child in children:
+            try:
+                child.terminate()
+            except psutil.Error:
+                # Already gone, or access denied: neither may stop the sweep.
+                continue
 
-    return len(children)
+        _, alive = psutil.wait_procs(children, timeout=pass_timeout)
+        for child in alive:
+            try:
+                child.kill()
+            except psutil.Error:
+                continue
+
+        total += len(children)
+
+    return total
 
 
 def format_file_size(size_bytes: float) -> str:

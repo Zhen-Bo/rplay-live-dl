@@ -43,8 +43,10 @@ def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
     if not archive.is_dir():
         return
 
-    patterns = ("[0-9]*_*.ts", "*.part", "*.ytdl", "*.part-Frag*")
-    orphans = sorted({path for pattern in patterns for path in archive.glob(f"*/{pattern}")})
+    # *.part* covers .part, .part-FragN and .part-FragN.part in one pattern,
+    # so the three patterns are disjoint and need no dedup.
+    patterns = ("[0-9]*_*.ts", "*.part*", "*.ytdl")
+    orphans = sorted(path for pattern in patterns for path in archive.glob(f"*/{pattern}"))
     if not orphans:
         return
 
