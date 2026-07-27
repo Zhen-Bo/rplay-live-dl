@@ -791,6 +791,7 @@ class LiveStreamMonitor:
     def _merge_session_to_mp4(self, merge_job: MergeJobSpec) -> Union[MergeCompleted, MergeFailed]:
         """Merge one session's raw ts outputs into the final mp4 artifact."""
         ts_files = sorted(merge_job.output_dir.glob(f"{merge_job.session_prefix}*.ts"))
+        output_path: Optional[Path] = None
 
         try:
             if not ts_files:
@@ -815,16 +816,34 @@ class LiveStreamMonitor:
             )
 
         except subprocess.TimeoutExpired as exc:
+            self._discard_partial_merge_output(output_path)
             timeout_value = int(exc.timeout) if exc.timeout is not None else self.merge_timeout_seconds
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
             )
         except Exception as exc:
+            self._discard_partial_merge_output(output_path)
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=str(exc),
             )
+
+    @staticmethod
+    def _discard_partial_merge_output(output_path: Optional[Path]) -> None:
+        """
+        Drop a half-written mp4 so a failed merge cannot pass for a finished one.
+
+        The raw .ts inputs are only deleted after a successful merge, so the
+        recording stays recoverable while the broken artifact goes away.
+        """
+        if output_path is None:
+            return
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            # A locked file must not turn a merge failure into a thread crash.
+            pass
 
     def _reserve_final_output_path(
         self,
@@ -897,6 +916,7 @@ class LiveStreamMonitor:
         self._event_queue.join()
         self._event_queue.put(_ShutdownRequested())
         self._control_thread.join()
+        self.api.close()
 
     def _make_session_download_error_callback(self, session_key: str) -> Callable[[str], None]:
         """Create a callback for a specific session download failure."""

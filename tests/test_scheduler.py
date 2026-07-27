@@ -192,6 +192,36 @@ class TestStartScheduler:
 class TestStopScheduler:
     """Tests for stop method."""
 
+    def test_stop_is_idempotent(self, patched_scheduler_deps, mock_env, mock_logger):
+        """Test stop shuts down monitor and reaps children only once."""
+        mock_scheduler_class, _ = patched_scheduler_deps
+        mock_scheduler = MagicMock()
+        mock_scheduler.running = False
+        mock_scheduler_class.return_value = mock_scheduler
+
+        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        with patch("core.scheduler.terminate_child_processes") as mock_terminate:
+            scheduler.stop()
+            scheduler.stop()
+
+        scheduler.monitor.shutdown.assert_called_once()
+        mock_terminate.assert_called_once()
+
+    def test_stop_shuts_monitor_down_even_when_scheduler_never_started(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
+        """Test stop shuts down the monitor before the scheduler has started."""
+        mock_scheduler_class, _ = patched_scheduler_deps
+        mock_scheduler = MagicMock()
+        mock_scheduler.running = False
+        mock_scheduler_class.return_value = mock_scheduler
+
+        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        with patch("core.scheduler.terminate_child_processes"):
+            scheduler.stop()
+
+        scheduler.monitor.shutdown.assert_called_once()
+
     def test_stop_when_running(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test stop shuts down scheduler when running."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
