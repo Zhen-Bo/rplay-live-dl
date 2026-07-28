@@ -248,17 +248,30 @@ class StreamDownloader:
         options = {
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
+            # Honored under FFmpegFD too: yt-dlp serializes these to ffmpeg -headers.
             "http_headers": DEFAULT_HTTP_HEADERS.copy(),
             "logger": self._yt_dlp_logger,
             "quiet": True,
             "no_progress": True,
             "no_warnings": True,
-            # Retry settings for reliability
+            # Inert for live HLS (FFmpegFD fetches); only apply on native paths.
             "retries": DEFAULT_DOWNLOAD_RETRIES,
             "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
             "socket_timeout": DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
-            # Continue partial downloads
             "continuedl": True,
+            # The real mechanism for live: ffmpeg input args. -reconnect_at_eof is
+            # omitted on purpose — HLS segment reads hit EOF by design.
+            "external_downloader_args": {
+                "ffmpeg_i": [
+                    "-rw_timeout", "30000000",
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_on_network_error", "1",
+                    "-reconnect_on_http_error", "429,5xx",
+                    "-reconnect_delay_max", "30",
+                    "-seg_max_retry", "20",
+                ],
+            },
         }
 
         if self.output_extension == ".mp4":
