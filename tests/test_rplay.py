@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
-from requests.exceptions import ConnectionError, HTTPError, Timeout
+from requests.exceptions import ConnectionError, HTTPError, JSONDecodeError, Timeout
 
 from core.rplay import (
     RPlayAPI,
@@ -198,6 +198,30 @@ class TestGetStreamKey:
 
         with patch.object(api._session, "get", side_effect=Timeout()):
             with pytest.raises(RPlayConnectionError, match="timed out"):
+                api._get_stream_key()
+
+    def test_json_decode_error_raises_api_error(self):
+        """Test malformed JSON body raises RPlayAPIError, not the raw decode error."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.side_effect = JSONDecodeError(
+            "Expecting value", "doc", 0
+        )
+
+        with patch.object(api._session, "get", return_value=mock_response):
+            with pytest.raises(RPlayAPIError, match="Unexpected error"):
+                api._get_stream_key()
+
+    def test_unexpected_exception_raises_api_error(self):
+        """Test arbitrary errors inside the request loop raise RPlayAPIError."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch.object(
+            api._session, "get", side_effect=RuntimeError("boom")
+        ):
+            with pytest.raises(RPlayAPIError, match="Unexpected error"):
                 api._get_stream_key()
 
 
