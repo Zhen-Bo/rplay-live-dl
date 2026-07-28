@@ -4,6 +4,8 @@ Utility functions for rplay-live-dl.
 Provides common helper functions used across multiple modules.
 """
 
+from typing import Optional
+
 import psutil
 
 __all__ = [
@@ -12,9 +14,12 @@ __all__ = [
 ]
 
 
-def terminate_child_processes(timeout_seconds: float = 10.0) -> int:
+def terminate_child_processes(
+    timeout_seconds: float = 10.0,
+    exclude_pid: Optional[int] = None,
+) -> int:
     """
-    Terminate every child process of this process, politely then firmly.
+    Terminate child processes of this process, politely then firmly.
 
     yt-dlp downloads HLS through FFmpegFD, which spawns ffmpeg as a subprocess
     and keeps the Popen object in a local variable, so there is no handle to
@@ -23,12 +28,26 @@ def terminate_child_processes(timeout_seconds: float = 10.0) -> int:
 
     Sends terminate to the whole child tree, waits, then kills whatever is
     still alive. Returns the number of children that had to be dealt with.
+
+    Args:
+        timeout_seconds: Grace period before killing survivors of the first pass
+        exclude_pid: The one child this caller owns deliberately — the merge
+            ffmpeg, of which there is at most one because the merge executor
+            runs a single worker. It is left alone, so shutdown can reap
+            recordings without killing an active merge. ffmpeg spawns no
+            children of its own, so the pid alone is the whole exclusion.
     """
     total = 0
     # A running download may spawn a child between passes, so re-scan once.
+    # ponytail: one re-scan covers the single respawn yt-dlp does; hand the
+    # sweep tracked child handles if recordings ever outrun two passes.
     for pass_timeout in (timeout_seconds, 2.0):
         try:
-            children = psutil.Process().children(recursive=True)
+            children = [
+                child
+                for child in psutil.Process().children(recursive=True)
+                if child.pid != exclude_pid
+            ]
         except psutil.Error:
             break
         if not children:

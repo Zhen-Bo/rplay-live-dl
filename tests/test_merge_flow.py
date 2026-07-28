@@ -1,6 +1,7 @@
 """Tests for session merge flow."""
 
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -288,10 +289,30 @@ class TestMergeFlow:
         def fake_run(cmd, **kwargs):
             captured["content"] = Path(cmd[7]).read_text(encoding="utf-8")
 
-        with patch("core.live_stream_monitor.subprocess.run", side_effect=fake_run):
+        # Patched at the tracked-subprocess seam: the merge spawns ffmpeg through
+        # Popen now so shutdown can spare it by pid.
+        with patch.object(monitor, "_run_merge_subprocess", side_effect=fake_run):
             monitor._run_ffmpeg_merge([ts_file], output_path)
 
         assert r"it'\''s live.ts" in captured["content"]
+        monitor.shutdown()
+
+    def test_run_merge_subprocess_times_out_and_releases_its_pid(self, tmp_path, monkeypatch):
+        """Test a timed-out merge child raises with its timeout and leaves no tracked pid."""
+        monkeypatch.chdir(tmp_path)
+        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+
+        # _merge_session_to_mp4 reads exc.timeout, so it has to survive the
+        # switch from subprocess.run to Popen.communicate.
+        monitor.merge_timeout_seconds = 0.3
+        with pytest.raises(subprocess.TimeoutExpired) as timeout_error:
+            monitor._run_merge_subprocess(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+
+        assert timeout_error.value.timeout == 0.3
+        # A leaked pid would make a later shutdown spare a recording forever.
+        assert monitor._merge_process_pids == set()
         monitor.shutdown()
 
     def test_reserve_final_output_path_uses_local_timezone_for_date(

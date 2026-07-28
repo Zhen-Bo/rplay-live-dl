@@ -66,6 +66,27 @@ class TestTerminateChildProcesses:
         """Test no-child cleanup returns zero."""
         assert terminate_child_processes(timeout_seconds=1.0) == 0
 
+    def test_excluded_child_survives_the_sweep(self):
+        """Test a protected pid is left running while everything else is reaped."""
+        protected = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        doomed = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            reaped = terminate_child_processes(
+                timeout_seconds=5.0, exclude_pid=protected.pid
+            )
+
+            # This is the merge-vs-recording discrimination: shutdown reaps the
+            # recording ffmpeg while an active merge ffmpeg keeps running.
+            assert reaped >= 1
+            doomed.wait(timeout=5)
+            assert protected.poll() is None
+        finally:
+            for proc in (protected, doomed):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+
     def test_terminates_a_real_child_process(self):
         """Test a real child process is terminated and reaped."""
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])

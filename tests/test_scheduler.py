@@ -210,8 +210,9 @@ class TestStopScheduler:
             scheduler.stop()
             scheduler.stop()
 
-        # Draining the monitor must come first: only once the merge queue is
-        # empty is every surviving child a recording ffmpeg that needs reaping.
+        # The monitor must come first: it stops recordings while sparing merge
+        # children and closes its merge executor. Only after that is every
+        # surviving child safe to reap, because none of them can be a merge.
         assert order.mock_calls == [call.monitor_shutdown(), call.reap()]
 
     def test_stop_shuts_monitor_down_even_when_scheduler_never_started(
