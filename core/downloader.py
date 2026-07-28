@@ -6,7 +6,6 @@ with support for concurrent downloads and automatic file management.
 """
 
 import logging
-import os
 import threading
 import time
 from datetime import datetime
@@ -25,7 +24,7 @@ from core.constants import (
     DEFAULT_HTTP_HEADERS,
     DEFAULT_MAX_RETRIES,
 )
-from core.logger import bind, setup_logger
+from core.logger import bind, is_ytdlp_internal_logging_enabled, setup_logger
 from core.utils import format_file_size
 from models.download import (
     RawDownloadAuthFailed,
@@ -42,14 +41,6 @@ class _RetryableDownloadTaskError(Exception):
     """Internal exception used to retry a full yt-dlp task."""
 
     pass
-
-
-def _read_bool_env(var_name: str, default: bool = False) -> bool:
-    """Parse a boolean environment flag with common truthy values."""
-    value = os.getenv(var_name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class _YtDlpLoggerBridge:
@@ -153,7 +144,7 @@ class StreamDownloader:
         self._on_download_failure = on_download_failure
         self._yt_dlp_logger = _YtDlpLoggerBridge(
             self,
-            enabled=_read_bool_env("LOG_YTDLP_INTERNAL", default=False),
+            enabled=is_ytdlp_internal_logging_enabled(),
         )
 
     def download(self, stream_url: str, live_title: str) -> None:

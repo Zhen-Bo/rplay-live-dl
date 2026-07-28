@@ -8,6 +8,15 @@ used by the rplay-live-dl application.
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from core.constants import (
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_LOG_MAX_SIZE_MB,
+    DEFAULT_LOG_RETENTION_DAYS,
+    DEFAULT_LOG_YTDLP_INTERNAL,
+    VALID_LOG_LEVELS,
+)
+
 
 class EnvConfig(BaseSettings):
     """
@@ -39,20 +48,28 @@ class EnvConfig(BaseSettings):
         le=3600,
     )
 
+    log_level: str = Field(
+        default=DEFAULT_LOG_LEVEL,
+        description="Application log level name",
+    )
+    log_ytdlp_internal: bool = Field(
+        default=DEFAULT_LOG_YTDLP_INTERNAL,
+        description="Surface yt-dlp internal debug chatter",
+    )
     log_max_size_mb: int = Field(
-        default=5,
+        default=DEFAULT_LOG_MAX_SIZE_MB,
         description="Maximum log file size in MB before rotation",
         ge=1,
         le=100,
     )
     log_backup_count: int = Field(
-        default=5,
+        default=DEFAULT_LOG_BACKUP_COUNT,
         description="Number of backup log files to keep",
         ge=1,
         le=50,
     )
     log_retention_days: int = Field(
-        default=30,
+        default=DEFAULT_LOG_RETENTION_DAYS,
         description="Days to retain old log files",
         ge=1,
         le=365,
@@ -80,3 +97,21 @@ class EnvConfig(BaseSettings):
         if not v.strip():
             raise ValueError("USER_OID cannot be empty or whitespace")
         return v.strip()
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def validate_log_level(cls, v: object) -> str:
+        """Normalize and reject unknown LOG_LEVEL values at startup."""
+        if v is None:
+            return DEFAULT_LOG_LEVEL
+        normalized = str(v).strip().upper()
+        if not normalized:
+            raise ValueError(
+                f"LOG_LEVEL must be one of {', '.join(sorted(VALID_LOG_LEVELS))}"
+            )
+        if normalized not in VALID_LOG_LEVELS:
+            raise ValueError(
+                f"LOG_LEVEL must be one of {', '.join(sorted(VALID_LOG_LEVELS))}; "
+                f"got {v!r}"
+            )
+        return normalized

@@ -13,15 +13,19 @@ from core.logger import (
     bind,
     cleanup_old_logs,
     clip,
+    configure_logging,
     get_logs_dir,
+    is_ytdlp_internal_logging_enabled,
     setup_logger,
     AlignedFormatter,
     ColoredAlignedFormatter,
+    DEFAULT_LOG_LEVEL,
     LOGGER_NAME_WIDTH,
     LOG_LEVEL_WIDTH,
     LOG_TEXT_MAX_COLUMNS,
     LOG_COLORS,
 )
+from models.env import EnvConfig
 
 
 class TestSetupLogger:
@@ -51,23 +55,48 @@ class TestSetupLogger:
         # Should have at least one handler (console)
         assert len(logger.handlers) >= 1
 
-    def test_uses_log_level_from_environment(self, monkeypatch):
-        """Test LOG_LEVEL env var controls the default logger level."""
-        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    def test_uses_log_level_from_configure_logging(self, monkeypatch):
+        """Test configure_logging controls the default logger level."""
+        import core.logger as logger_module
 
+        monkeypatch.setattr(logger_module, "_configured_log_level", None)
+        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", None)
+
+        env = EnvConfig(
+            auth_token="token",
+            user_oid="oid",
+            log_level="DEBUG",
+        )
+        configure_logging(env)
         logger = setup_logger("test_logger_env_debug", log_to_file=False)
 
         assert logger.level == logging.DEBUG
 
-    def test_invalid_log_level_falls_back_to_info(self, monkeypatch, tmp_path):
-        """Test invalid LOG_LEVEL values fall back to INFO."""
-        monkeypatch.delenv("LOG_LEVEL", raising=False)
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / ".env").write_text("LOG_LEVEL=LOUD\n", encoding="utf-8")
+    def test_default_level_without_configure(self, monkeypatch):
+        """Test setup_logger uses constant default when not configured."""
+        import core.logger as logger_module
 
-        logger = setup_logger("test_logger_invalid_level", log_to_file=False)
+        monkeypatch.setattr(logger_module, "_configured_log_level", None)
+        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", None)
 
+        logger = setup_logger("test_logger_default_level", log_to_file=False)
+
+        assert logger.level == DEFAULT_LOG_LEVEL
         assert logger.level == logging.INFO
+
+    def test_ytdlp_internal_flag_from_configure_logging(self, monkeypatch):
+        """Test configure_logging owns LOG_YTDLP_INTERNAL for consumers."""
+        import core.logger as logger_module
+
+        monkeypatch.setattr(logger_module, "_configured_log_level", None)
+        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", None)
+
+        assert is_ytdlp_internal_logging_enabled() is False
+
+        configure_logging(
+            EnvConfig(auth_token="token", user_oid="oid", log_ytdlp_internal=True)
+        )
+        assert is_ytdlp_internal_logging_enabled() is True
 
 
 class TestGetLogsDir:
