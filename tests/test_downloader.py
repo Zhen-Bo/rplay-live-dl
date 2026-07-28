@@ -201,6 +201,30 @@ class TestYtDlpLoggerBridge:
 
         assert any("yt-dlp" in str(call) for call in mock_log.debug.call_args_list)
 
+    def test_key2_query_values_are_redacted_before_forwarding(self, tmp_path, monkeypatch):
+        import core.logger as logger_module
+
+        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", True)
+        downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
+        logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
+        message = (
+            "[generic] Extracting URL: "
+            "https://api.example/live/stream/playlist.m3u8"
+            "?creatorOid=c1&key2=SECRET"
+        )
+
+        with patch.object(downloader, "log") as mock_log:
+            logger_bridge.debug(message)
+            logger_bridge.info(message)
+            logger_bridge.warning(message)
+            logger_bridge.error(message)
+
+        assert mock_log.debug.call_count == 4
+        for call in mock_log.debug.call_args_list:
+            logged = call.args[0]
+            assert "REDACTED" in logged
+            assert "SECRET" not in logged
+
 
 class TestBuildYdlOptions:
     """Tests for _build_ydl_options method."""

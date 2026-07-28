@@ -172,6 +172,10 @@ class LiveStreamMonitor:
         self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
         # ponytail: one bool; re-armed on successful key2 (get_stream_url).
         self._auth_error_notified = False
+        # ponytail: per-cycle only, no TTL — key2 is user-scoped, not creator-scoped.
+        self._cycle_stream_key: Optional[str] = None
+        # Unrecovered key2 auth failure this cycle → mark poll unhealthy at end.
+        self._cycle_key_fetch_auth_failed = False
 
         # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
@@ -298,6 +302,9 @@ class LiveStreamMonitor:
 
     def _run_poll_cycle(self) -> None:
         """Check active streams and start new downloads on the control loop."""
+        # Unconditional: never carry key2 across poll cycles (incl. A3 retry polls).
+        self._cycle_stream_key = None
+        self._cycle_key_fetch_auth_failed = False
         try:
             self._update_downloaders()
             live_streams = self.api.get_livestream_status()
@@ -313,7 +320,11 @@ class LiveStreamMonitor:
             live_creator_oids = {stream.creator_oid for stream in live_streams}
             self._cleanup_offline_creator_states(live_creator_oids)
             self._log_status_summary(len(live_streams), monitored_live)
-            self._mark_check_succeeded()
+            # Match playlist-401 health: unrecovered key2 auth fails the cycle.
+            if self._cycle_key_fetch_auth_failed:
+                self._mark_check_failed()
+            else:
+                self._mark_check_succeeded()
         except ConfigError:
             self.logger.warning("Skipping check due to config file error")
             self._mark_check_failed()
@@ -487,9 +498,18 @@ class LiveStreamMonitor:
         bind(self.logger, creator_name).info(f'🔴 Live: "{clip(stream.title)}"')
 
         try:
-            stream_url = self.api.get_stream_url(creator_oid)
-            # Successful key2 re-arms auth-error logging for the next failure streak.
-            self._auth_error_notified = False
+            if self._cycle_stream_key is not None:
+                stream_key = self._cycle_stream_key
+            else:
+                # Real fetch: only successes are cached; failures leave the slot empty.
+                stream_key = self.api._get_stream_key()
+                self._cycle_stream_key = stream_key
+                # A later success clears an earlier unrecovered auth failure this cycle.
+                self._cycle_key_fetch_auth_failed = False
+                # Successful key2 re-arms auth-error logging for the next failure streak.
+                # Cache hits skip re-arm — they follow a success already in this cycle.
+                self._auth_error_notified = False
+            stream_url = self.api.get_stream_url(creator_oid, stream_key=stream_key)
             self._launch_session_downloader(
                 session=session,
                 stream_url=stream_url,
@@ -553,6 +573,7 @@ class LiveStreamMonitor:
         self._remove_session(session_key)
 
         if isinstance(exc, RPlayAuthError):
+            self._cycle_key_fetch_auth_failed = True
             self._log_auth_error(
                 f"Auth error for {creator_name}: {exc}. "
                 "Please verify AUTH_TOKEN and USER_OID credentials."

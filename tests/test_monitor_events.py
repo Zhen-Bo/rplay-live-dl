@@ -449,11 +449,12 @@ def test_in_flight_poll_does_not_start_recording_after_shutdown(tmp_path, monkey
     at_stream_url = ThreadEvent()
     resume_poll = ThreadEvent()
 
-    def blocking_stream_url(creator_oid):
+    def blocking_stream_url(creator_oid, stream_key):
         at_stream_url.set()
         assert resume_poll.wait(timeout=5)
         return "http://example.com/stream.m3u8"
 
+    mock_api._get_stream_key.return_value = "cycle-key"
     mock_api.get_stream_url.side_effect = blocking_stream_url
 
     with patch.object(StreamDownloader, "download") as mock_download:
