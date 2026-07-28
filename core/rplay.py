@@ -309,8 +309,10 @@ class RPlayAPI:
             raise RPlayAPIError(f"Failed to get stream key: {exc}")
 
         except Exception as exc:
-            self.logger.exception(f"Unexpected error while getting stream key: {exc}")
-            raise RPlayAPIError(f"Unexpected error: {exc}")
+            # ponytail: traceback and message suppressed - may embed the Authorization header
+            msg = f"Unexpected error while getting stream key: {type(exc).__name__}"
+            self.logger.error(msg)
+            raise RPlayAPIError(msg) from None
 
     def close(self) -> None:
         """Close the API client session."""

@@ -214,15 +214,21 @@ class TestGetStreamKey:
             with pytest.raises(RPlayAPIError, match="Unexpected error"):
                 api._get_stream_key()
 
-    def test_unexpected_exception_raises_api_error(self):
-        """Test arbitrary errors inside the request loop raise RPlayAPIError."""
+    def test_unexpected_exception_does_not_leak_secret(self, caplog):
+        """Exception messages may embed Authorization; must not reach logs or RPlayAPIError."""
         api = RPlayAPI(auth_token="test", user_oid="test")
+        secret = "Bearer sekrit-token"
 
         with patch.object(
-            api._session, "get", side_effect=RuntimeError("boom")
+            api._session, "get", side_effect=RuntimeError(secret)
         ):
-            with pytest.raises(RPlayAPIError, match="Unexpected error"):
-                api._get_stream_key()
+            with caplog.at_level("ERROR"):
+                with pytest.raises(RPlayAPIError) as exc_info:
+                    api._get_stream_key()
+
+        assert secret not in str(exc_info.value)
+        assert all(secret not in record.getMessage() for record in caplog.records)
+        assert "RuntimeError" in str(exc_info.value)
 
 
 class TestCreatorStreamState:
