@@ -22,6 +22,12 @@ __pycache__/
 # Project specific
 archive/
 logs/
+docs/
+.agent/
+.claude/
+AGENTS.md
+DASHBOARD_DESIGN.md
+images/
 
 # Development files
 *.egg-info/
