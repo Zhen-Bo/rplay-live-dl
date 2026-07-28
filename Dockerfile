@@ -1,5 +1,7 @@
+ARG PYTHON_VERSION=3.11
+
 # Build stage
-FROM python:3.11-alpine AS builder
+FROM python:${PYTHON_VERSION}-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -11,7 +13,7 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # Install Poetry
-RUN pip install --no-cache-dir poetry
+RUN pip install --no-cache-dir poetry==2.4.1
 
 # Copy dependency files
 COPY pyproject.toml poetry.lock ./
@@ -21,8 +23,9 @@ RUN poetry config virtualenvs.create false && \
     poetry install --only main --no-interaction --no-ansi
 
 # Runtime stage
-FROM python:3.11-alpine AS runtime
+FROM python:${PYTHON_VERSION}-alpine AS runtime
 
+ARG PYTHON_VERSION
 ARG APP_GIT_SHA=""
 
 # Install runtime dependencies
@@ -35,7 +38,7 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/lib/python${PYTHON_VERSION}/site-packages /usr/local/lib/python${PYTHON_VERSION}/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
