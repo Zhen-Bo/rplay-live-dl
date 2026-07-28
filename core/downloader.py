@@ -254,24 +254,13 @@ class StreamDownloader:
             "quiet": True,
             "no_progress": True,
             "no_warnings": True,
-            # A live HLS playlist is always downloaded by FFmpegFD: HlsFD.can_download
-            # rejects live playlists and hls_prefer_native is deprecated, so there is
-            # no way to reach the native downloader here. Under FFmpegFD the four
-            # options below are INERT — ffmpeg does the fetching, not yt-dlp. They are
-            # kept only for the non-live/native code paths yt-dlp may take. Tuning
-            # them will not make a live recording more resilient; tune the ffmpeg
-            # input args below instead.
+            # Inert for live HLS (FFmpegFD fetches); only apply on native paths.
             "retries": DEFAULT_DOWNLOAD_RETRIES,
             "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
             "socket_timeout": DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
             "continuedl": True,
-            # The real resilience knobs for live recordings: ffmpeg INPUT args.
-            # -rw_timeout is in microseconds (30s) and bounds a stalled read, which
-            # otherwise hangs the recording forever. The reconnect flags let ffmpeg
-            # resume the same session after a dropped connection, a network error or
-            # a 429/5xx, instead of exiting and forcing a whole-task retry.
-            # -reconnect_at_eof is deliberately absent: HLS segment reads hit EOF by
-            # design, so it would reconnect on every normal segment boundary.
+            # The real mechanism for live: ffmpeg input args. -reconnect_at_eof is
+            # omitted on purpose — HLS segment reads hit EOF by design.
             "external_downloader_args": {
                 "ffmpeg_i": [
                     "-rw_timeout", "30000000",
