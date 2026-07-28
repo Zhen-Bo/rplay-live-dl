@@ -5,7 +5,7 @@ services:
     env_file: .env
     environment:
       - PYTHONUNBUFFERED=1
-      - TZ=Asia/Taipei
+      - TZ=${TZ:-Asia/Taipei}
     volumes:
       - ./config:/app/config
       - ./archive:/app/archive

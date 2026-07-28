@@ -497,6 +497,7 @@ rplay-live-dl/
 │   ├── test_env.py
 │   ├── test_live_stream_monitor.py
 │   ├── test_logger.py
+│   ├── test_main.py
 │   ├── test_merge_flow.py
 │   ├── test_models.py
 │   ├── test_monitor_events.py
