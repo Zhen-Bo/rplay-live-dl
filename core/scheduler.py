@@ -117,11 +117,14 @@ class LiveStreamScheduler:
 
         # Always shut the monitor down, even when the scheduler never started:
         # its control thread and merge executor exist from construction.
+        # The monitor owns recording subprocess lifecycle: it stops recordings
+        # while sparing merge children, then merges what they left behind.
         self.monitor.shutdown()
 
-        # The monitor has drained the merge queue by now, so any child process
-        # still alive is a recording ffmpeg spawned by yt-dlp's FFmpegFD. Those
-        # outlive the interpreter and keep downloading unless reaped here.
+        # Safety net only. The monitor has closed its merge executor by now, so
+        # nothing here can be a merge ffmpeg; anything still alive is a
+        # recording child that escaped the monitor's sweep (a yt-dlp retry that
+        # respawned after it). Those outlive the interpreter unless reaped.
         reaped = terminate_child_processes()
         if reaped:
             self.logger.warning(

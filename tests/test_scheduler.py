@@ -210,9 +210,28 @@ class TestStopScheduler:
             scheduler.stop()
             scheduler.stop()
 
-        # Draining the monitor must come first: only once the merge queue is
-        # empty is every surviving child a recording ffmpeg that needs reaping.
+        # The monitor must come first: it stops recordings while sparing merge
+        # children and closes its merge executor. Only after that is every
+        # surviving child safe to reap, because none of them can be a merge.
         assert order.mock_calls == [call.monitor_shutdown(), call.reap()]
+
+    def test_stop_reaps_without_exclusions_after_monitor_shutdown(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
+        """Test the scheduler sweep is an unrestricted net, safe once merges are closed."""
+        mock_scheduler_class, _ = patched_scheduler_deps
+        mock_scheduler = MagicMock()
+        mock_scheduler.running = False
+        mock_scheduler_class.return_value = mock_scheduler
+
+        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        with patch("core.scheduler.terminate_child_processes") as mock_terminate:
+            mock_terminate.return_value = 0
+            scheduler.stop()
+
+        # No exclude_pids: discriminating recordings from merges is the
+        # monitor's job, and by now its merge executor is already closed.
+        mock_terminate.assert_called_once_with()
 
     def test_stop_shuts_monitor_down_even_when_scheduler_never_started(
         self, patched_scheduler_deps, mock_env, mock_logger

@@ -230,3 +230,186 @@ def test_shutdown_drains_pending_raw_completion_before_executor_shutdown(tmp_pat
         monitor._event_queue.join()
 
     assert monitor.sessions[session_key].state == SessionState.DONE
+
+
+class _FakeRecording:
+    """
+    Stand-in for a StreamDownloader whose thread is still recording.
+
+    Mirrors the parts of the real downloader that shutdown drives: it is alive
+    until asked to stop, and only then reports its terminal event.
+    """
+
+    def __init__(self, monitor, session_key, output_dir, terminal_event=None):
+        self.creator_name = "Creator1"
+        self._monitor = monitor
+        self._session_key = session_key
+        self._output_dir = output_dir
+        self._terminal_event = terminal_event
+        self._stop_requested = ThreadEvent()
+        self.stop_calls = 0
+        self.download_thread = Thread(target=self._run, daemon=True)
+        self.download_thread.start()
+
+    def request_stop(self):
+        """Record the stop request and let the recording thread finish."""
+        self.stop_calls += 1
+        self._stop_requested.set()
+
+    def is_alive(self):
+        """Report liveness the way StreamDownloader does."""
+        return self.download_thread.is_alive()
+
+    def _run(self):
+        self._stop_requested.wait(timeout=5)
+        event = self._terminal_event
+        if event is None:
+            event = RawDownloadCompleted(
+                session_key=self._session_key,
+                output_dir=self._output_dir,
+            )
+        self._monitor._on_raw_download_complete(event)
+
+
+def _make_running_session(monitor, tmp_path, session_key="creator1:2026-03-06T12:00:00"):
+    """Register a RAW_RUNNING session for shutdown tests."""
+    monitor.sessions[session_key] = DownloadSession(
+        session_key=session_key,
+        creator_oid="creator1",
+        creator_name="Creator1",
+        title="Test Stream",
+        stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+        state=SessionState.RAW_RUNNING,
+        output_dir=tmp_path,
+        session_prefix="20260306_120000_",
+    )
+    return session_key
+
+
+def test_shutdown_merges_recording_that_was_active_at_shutdown(tmp_path):
+    """Test a recording stopped by shutdown still gets its raw output merged."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    session_key = _make_running_session(monitor, tmp_path)
+    recording = _FakeRecording(monitor, session_key, tmp_path)
+    monitor._active_downloaders[session_key] = recording
+
+    with (
+        patch(
+            "core.live_stream_monitor.terminate_child_processes", return_value=1
+        ) as mock_terminate,
+        patch.object(
+            monitor,
+            "_merge_session_to_mp4",
+            return_value=MergeCompleted(
+                session_key=session_key,
+                output_path=tmp_path / "final.mp4",
+            ),
+        ),
+    ):
+        monitor.shutdown()
+
+    # The recording had to be stopped, and its merge had to reach the executor
+    # while it was still open: MERGE_QUEUED or MERGE_FAILED here would mean the
+    # session .ts was orphaned.
+    assert recording.stop_calls == 1
+    mock_terminate.assert_called_once()
+    assert monitor.sessions[session_key].state == SessionState.DONE
+
+
+def test_shutdown_spares_a_running_merge_from_the_recording_sweep(tmp_path):
+    """Test the recording sweep excludes pids of merges that are still running."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    session_key = _make_running_session(monitor, tmp_path)
+    monitor._active_downloaders[session_key] = _FakeRecording(
+        monitor, session_key, tmp_path
+    )
+    merge_pid = 424242
+    monitor._merge_process_pids.add(merge_pid)
+    captured = {}
+
+    def fake_terminate(timeout_seconds=10.0, exclude_pids=None):
+        captured["exclude_pids"] = set(exclude_pids or ())
+        return 0
+
+    with (
+        patch(
+            "core.live_stream_monitor.terminate_child_processes",
+            side_effect=fake_terminate,
+        ),
+        patch.object(
+            monitor,
+            "_merge_session_to_mp4",
+            return_value=MergeCompleted(
+                session_key=session_key,
+                output_path=tmp_path / "final.mp4",
+            ),
+        ),
+    ):
+        monitor.shutdown()
+
+    assert merge_pid in captured["exclude_pids"]
+
+
+def test_shutdown_does_not_sweep_when_no_recording_is_active(tmp_path):
+    """Test an idle monitor shuts down without reaping unrelated child processes."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    with patch("core.live_stream_monitor.terminate_child_processes") as mock_terminate:
+        monitor.shutdown()
+
+    mock_terminate.assert_not_called()
+
+
+def test_shutdown_is_idempotent(tmp_path):
+    """Test a second shutdown neither raises nor repeats the teardown."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    with patch("core.live_stream_monitor.terminate_child_processes"):
+        monitor.shutdown()
+        monitor.shutdown()
+
+    mock_api.close.assert_called_once()
+
+
+def test_shutdown_rejects_new_download_sessions(tmp_path):
+    """Test no session is started once shutdown has begun."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor.monitored_creators["creator1"] = CreatorProfile(
+        creator_name="Creator1",
+        creator_oid="creator1",
+    )
+    stream = MagicMock()
+    stream.creator_oid = "creator1"
+    stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
+    stream.title = "Test Stream"
+
+    with patch("core.live_stream_monitor.terminate_child_processes"):
+        monitor.shutdown()
+        monitor._start_download(stream)
+
+    assert monitor.sessions == {}
+    mock_api.get_stream_url.assert_not_called()
+
+
+def test_merge_submission_after_shutdown_is_refused_not_raised(tmp_path):
+    """Test a straggler raw completion is recorded instead of crashing the loop."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    with patch("core.live_stream_monitor.terminate_child_processes"):
+        monitor.shutdown()
+
+    session_key = _make_running_session(monitor, tmp_path)
+
+    # Straight through the handler: the state-lock gate must turn this into a
+    # recorded failure, not the RuntimeError the control loop used to swallow.
+    monitor._handle_raw_download_completed(
+        RawDownloadCompleted(session_key=session_key, output_dir=tmp_path)
+    )
+
+    assert monitor.sessions[session_key].state == SessionState.MERGE_FAILED

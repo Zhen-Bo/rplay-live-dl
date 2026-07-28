@@ -789,6 +789,95 @@ class TestDownloadErrorCallback:
         assert len(failed_events) == 1
         assert failed_events[0].error_message == "ERROR: ffmpeg exited with code 8"
 
+    def test_worker_stops_retrying_once_shutdown_requests_stop(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test a stopped recording gives up its retry budget instead of stalling shutdown."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        downloader._download_start_time = datetime.now()
+
+        def kill_recording_mid_download(*args, **kwargs):
+            # What shutdown actually does: reap the recording ffmpeg while
+            # yt-dlp is running, which surfaces as a retryable failure.
+            downloader.request_stop()
+            raise yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8")
+
+        mock_ydl.download.side_effect = kill_recording_mid_download
+
+        with patch("core.downloader.time.sleep") as mock_sleep:
+            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        # One attempt, no backoff: shutdown has a bounded window to collect the
+        # terminal event before the merge executor closes.
+        assert mock_ydl.download.call_count == 1
+        mock_sleep.assert_not_called()
+        assert len(failed_events) == 1
+
+    def test_worker_reports_stopped_recording_with_output_as_completed(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test a shutdown-stopped recording hands existing raw output to the merge step."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        completed_events = []
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_complete=lambda event: completed_events.append(event),
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        output_path.write_bytes(b"raw recording")
+        downloader._download_start_time = datetime.now()
+
+        def kill_recording_mid_download(*args, **kwargs):
+            downloader.request_stop()
+            raise yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8")
+
+        mock_ydl.download.side_effect = kill_recording_mid_download
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        # Reporting this as a failure would drop the session and orphan the .ts.
+        assert failed_events == []
+        assert len(completed_events) == 1
+        assert completed_events[0].session_key == "creator1:stream1"
+
+    def test_worker_reports_stopped_recording_without_output_as_failed(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test a stopped recording that left only a .part is not passed off as complete."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        completed_events = []
+        failed_events = []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            on_download_complete=lambda event: completed_events.append(event),
+            on_download_failure=lambda event: failed_events.append(event),
+        )
+        output_path = tmp_path / "test.ts"
+        Path(f"{output_path}.part").write_bytes(b"truncated")
+        downloader._download_start_time = datetime.now()
+
+        def kill_recording_mid_download(*args, **kwargs):
+            downloader.request_stop()
+            raise yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8")
+
+        mock_ydl.download.side_effect = kill_recording_mid_download
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert completed_events == []
+        assert len(failed_events) == 1
+
     def test_worker_logs_partial_output_details_on_failure(self, mock_yt_dlp, tmp_path):
         """Test final download error logs include .part output details."""
         mock_ydl_class, mock_ydl = mock_yt_dlp

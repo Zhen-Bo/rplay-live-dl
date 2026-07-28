@@ -140,6 +140,7 @@ class StreamDownloader:
         self.logger = setup_logger("Downloader")
         self.log = bind(self.logger, creator_name)
         self.download_thread: Optional[threading.Thread] = None
+        self._stop_requested = threading.Event()
         self._current_output_path: Optional[Path] = None
         self._download_start_time: Optional[datetime] = None
         self._on_download_error = on_download_error
@@ -216,6 +217,22 @@ class StreamDownloader:
             True if download is in progress, False otherwise
         """
         return self.download_thread is not None and self.download_thread.is_alive()
+
+    def request_stop(self) -> None:
+        """
+        Ask this recording to wind down instead of retrying.
+
+        Shutdown reaps the recording ffmpeg out from under yt-dlp, which looks
+        exactly like a transient failure. Without this flag the task would burn
+        its whole retry budget re-running a download nobody is waiting for, and
+        its terminal event would arrive after the merge executor had closed.
+        """
+        self._stop_requested.set()
+
+    @property
+    def stop_requested(self) -> bool:
+        """Check whether shutdown asked this recording to stop."""
+        return self._stop_requested.is_set()
 
     def _build_output_path(self, safe_title: str) -> Path:
         """
@@ -385,6 +402,14 @@ class StreamDownloader:
 
         except yt_dlp.utils.DownloadError as e:
             error_message = str(e)
+            if self._stop_requested.is_set():
+                # Shutdown pulled the recording ffmpeg out from under yt-dlp, so
+                # this "failure" is expected. Classifying it as blocked or
+                # retryable would drop the session and orphan whatever raw
+                # output already reached disk.
+                self._notify_stopped_download(output_path, error_message)
+                return
+
             # ponytail: .error, not .exception — this handler mostly sees classified
             # 401/403/404 access failures where the yt-dlp message says it all; the
             # truly-unexpected path below keeps the traceback.
@@ -447,10 +472,16 @@ class StreamDownloader:
             reraise=True,
             stop=stop_after_attempt(max(1, self.DOWNLOAD_TASK_RETRY_ATTEMPTS)),
             wait=wait_exponential(multiplier=self.DOWNLOAD_TASK_RETRY_BACKOFF_FACTOR),
-            retry=retry_if_exception_type(_RetryableDownloadTaskError),
+            retry=self._should_retry_download,
             sleep=time.sleep,
             before_sleep=self._log_before_retry,
         )
+
+    def _should_retry_download(self, retry_state) -> bool:
+        """Retry transient yt-dlp failures unless shutdown asked this task to stop."""
+        if self._stop_requested.is_set():
+            return False
+        return retry_if_exception_type(_RetryableDownloadTaskError)(retry_state)
 
     def _log_before_retry(self, retry_state) -> None:
         """Log one retry attempt before sleeping."""
@@ -481,6 +512,12 @@ class StreamDownloader:
             for attempt in self._build_download_retrying():
                 with attempt:
                     attempt_number = attempt.retry_state.attempt_number
+                    if self._stop_requested.is_set():
+                        # Set while the previous backoff was sleeping; a fresh
+                        # yt-dlp run here would only be killed again.
+                        raise yt_dlp.utils.DownloadError(
+                            "recording stopped for shutdown"
+                        )
                     # The first attempt is already implied by "Recording started".
                     # Only a retry is worth a line of its own.
                     if attempt_number > 1:
@@ -514,6 +551,26 @@ class StreamDownloader:
                 f"✅ Download succeeded on retry attempt "
                 f"{attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
             )
+
+    def _notify_stopped_download(self, output_path: Path, error_message: str) -> None:
+        """Report a shutdown-stopped recording, preferring completion over failure."""
+        session_prefix = (self.filename_prefix or "").rstrip("_")
+        if output_path.exists() or self._has_sibling_fragment_outputs(output_path):
+            self.log.info(
+                f"⏹️ Recording stopped for shutdown (session {session_prefix}); "
+                f"handing raw output to merge: {output_path.name}",
+            )
+            self._notify_download_complete(output_path)
+            return
+
+        # No finished raw file: yt-dlp leaves a truncated .part behind, which is
+        # the startup orphan scan's job to report, not the merge step's.
+        self.log.warning(
+            f"⏹️ Recording stopped for shutdown (session {session_prefix}) with no "
+            f"finished raw output: {error_message}; "
+            f"{self._build_output_state_details(output_path)}",
+        )
+        self._notify_download_failure(error_message)
 
     def _notify_download_error(self, error_message: str) -> None:
         """

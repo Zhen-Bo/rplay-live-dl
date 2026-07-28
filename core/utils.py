@@ -4,6 +4,8 @@ Utility functions for rplay-live-dl.
 Provides common helper functions used across multiple modules.
 """
 
+from typing import Iterable, Optional, Set
+
 import psutil
 
 __all__ = [
@@ -12,9 +14,25 @@ __all__ = [
 ]
 
 
-def terminate_child_processes(timeout_seconds: float = 10.0) -> int:
+def _expand_protected_pids(exclude_pids: Optional[Iterable[int]]) -> Set[int]:
+    """Expand protected pids to cover their descendants at snapshot time."""
+    protected = set(exclude_pids or ())
+    for pid in list(protected):
+        try:
+            protected.update(
+                child.pid for child in psutil.Process(pid).children(recursive=True)
+            )
+        except psutil.Error:
+            continue
+    return protected
+
+
+def terminate_child_processes(
+    timeout_seconds: float = 10.0,
+    exclude_pids: Optional[Iterable[int]] = None,
+) -> int:
     """
-    Terminate every child process of this process, politely then firmly.
+    Terminate child processes of this process, politely then firmly.
 
     yt-dlp downloads HLS through FFmpegFD, which spawns ffmpeg as a subprocess
     and keeps the Popen object in a local variable, so there is no handle to
@@ -23,12 +41,23 @@ def terminate_child_processes(timeout_seconds: float = 10.0) -> int:
 
     Sends terminate to the whole child tree, waits, then kills whatever is
     still alive. Returns the number of children that had to be dealt with.
+
+    Args:
+        timeout_seconds: Grace period before killing survivors of the first pass
+        exclude_pids: Children this caller owns deliberately (a running merge
+            ffmpeg) plus their descendants. They are left completely alone, so
+            shutdown can reap recordings without killing an active merge.
     """
+    protected = _expand_protected_pids(exclude_pids)
     total = 0
     # A running download may spawn a child between passes, so re-scan once.
     for pass_timeout in (timeout_seconds, 2.0):
         try:
-            children = psutil.Process().children(recursive=True)
+            children = [
+                child
+                for child in psutil.Process().children(recursive=True)
+                if child.pid not in protected
+            ]
         except psutil.Error:
             break
         if not children:
