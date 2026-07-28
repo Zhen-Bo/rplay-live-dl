@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.downloader import StreamDownloader
-from core.live_stream_monitor import LiveStreamMonitor
+from core.live_stream_monitor import LiveStreamMonitor, _PollRequested
 from models.config import AppConfig, CreatorProfile
 from models.env import EnvConfig
 from core.rplay import RPlayAPI
@@ -546,8 +546,8 @@ def repoll_env(tmp_path, monkeypatch):
         yield
 
 
-def test_failure_repoll_latency_is_far_below_the_poll_interval(repoll_env):
-    """V5: measure failure callback to next live-list read and pin it under INTERVAL."""
+def test_failure_while_creator_still_live_earns_one_immediate_extra_poll(repoll_env):
+    """Test a still-live failure buys exactly one extra poll, promptly, without blocking."""
     # The largest interval an operator may configure. Before this lane a
     # mid-stream failure cost that whole window; the re-poll must not scale
     # with it, so the interval only ever appears here as the bound to beat.
@@ -571,39 +571,34 @@ def test_failure_repoll_latency_is_far_below_the_poll_interval(repoll_env):
     monitor.check_live_streams_and_start_download()
     session_key = next(iter(monitor.sessions))
 
-    failed_at = monotonic()
-    monitor._on_raw_download_failed(
-        RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
-    )
+    blocking_calls = []
 
-    # Bounded wait, not a bare one: a mechanism that deadlocked hangs here
-    # instead of failing the latency assertion below.
-    assert polled_again.wait(timeout=5)
-    repoll_latency = live_list_reads[-1] - failed_at
+    # Recorded rather than raised: the control loop logs exceptions, so raising
+    # here would be swallowed and the test would pass for the wrong reason.
+    with patch.object(
+        monitor,
+        "check_live_streams_and_start_download",
+        side_effect=lambda: blocking_calls.append("called"),
+    ):
+        failed_at = monotonic()
+        monitor._on_raw_download_failed(
+            RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
+        )
+        # Bounded wait, not a bare one: a mechanism that deadlocked hangs here
+        # instead of failing the latency assertion below.
+        assert polled_again.wait(timeout=5)
+        # Quiescence barrier: the queue only empties once the failure and
+        # everything it queued have been applied, so a second extra poll counts.
+        monitor._event_queue.join()
 
-    # Absolute bound, so it cannot pass by quietly tracking INTERVAL, and it
+    # V5: absolute bound, so it cannot pass by quietly tracking INTERVAL, and it
     # sits far under even the shortest interval the app accepts.
-    assert repoll_latency < 1.0 < largest_interval
-    monitor.shutdown()
-
-
-def test_failure_while_creator_still_live_schedules_exactly_one_extra_poll(repoll_env):
-    """Test one failure on a still-live creator earns one extra poll, and only one."""
-    mock_api = MagicMock(spec=RPlayAPI)
-    mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
-
-    monitor.check_live_streams_and_start_download()
-    session_key = next(iter(monitor.sessions))
-
-    monitor._on_raw_download_failed(
-        RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
-    )
-    # Quiescence barrier: the queue only empties once the failure and
-    # everything it queued have been applied, so an extra poll would count here.
-    monitor._event_queue.join()
-
-    assert mock_api.get_livestream_status.call_count == 2
+    assert live_list_reads[1] - failed_at < 1.0 < largest_interval
+    # One re-poll re-reads the whole live list, so one failure earns one poll.
+    assert len(live_list_reads) == 2
+    # The public poll waits on the very loop that serves it: calling it from a
+    # failure handler would stall the loop for POLL_WAIT_TIMEOUT_SECONDS.
+    assert blocking_calls == []
     monitor.shutdown()
 
 
@@ -680,31 +675,148 @@ def test_concurrent_failures_merge_into_one_extra_poll(repoll_env):
     monitor.shutdown()
 
 
-def test_failure_handling_never_calls_the_blocking_public_poll(repoll_env):
-    """Test the control loop signals for its re-poll rather than blocking on itself."""
+def _signal_shutdown_begun(monitor):
+    """Wrap _drain_monitor_events so tests can see shutdown has set its flag."""
+    shutdown_begun = ThreadEvent()
+    original_drain = monitor._drain_monitor_events
+
+    def signalling_drain(timeout):
+        # Shutdown's first act after setting _shutdown_requested is this drain.
+        shutdown_begun.set()
+        return original_drain(timeout)
+
+    monitor._drain_monitor_events = signalling_drain
+    return shutdown_begun
+
+
+def _gate_poll_enqueue(monitor, shutdown_begun):
+    """
+    Hold the next poll enqueue open and invite a shutdown into that gap.
+
+    Returns the event signalling the gate was reached and the _shutdown_requested
+    readings taken at the moment of each poll's put.
+    """
+    reached = ThreadEvent()
+    shutdown_flags = []
+    real_put = monitor._event_queue.put
+
+    def gated_put(event, *args, **kwargs):
+        if isinstance(event, _PollRequested):
+            reached.set()
+            # Serialized under one lock this wait can only time out: shutdown
+            # cannot even set its flag until the put returns. Split across two
+            # lock regions it returns early, with the poll about to be queued
+            # behind the drain that was supposed to be the last one.
+            shutdown_begun.wait(timeout=1.0)
+            shutdown_flags.append(monitor._shutdown_requested)
+        return real_put(event, *args, **kwargs)
+
+    monitor._event_queue.put = gated_put
+    return reached, shutdown_flags
+
+
+def test_retry_enqueue_is_atomic_against_a_shutdown_landing_mid_request(repoll_env):
+    """Test a shutdown cannot slip between the retry request's refusal check and its enqueue."""
     mock_api = MagicMock(spec=RPlayAPI)
-    mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
+    shutdown_flag_at_read = []
+
+    def read_live_list():
+        shutdown_flag_at_read.append(monitor._shutdown_requested)
+        return [_live_stream("creator1")]
+
+    mock_api.get_livestream_status.side_effect = read_live_list
     monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    shutdown_begun = _signal_shutdown_begun(monitor)
 
     monitor.check_live_streams_and_start_download()
     session_key = next(iter(monitor.sessions))
 
-    blocking_calls = []
+    reached_enqueue, shutdown_flag_at_enqueue = _gate_poll_enqueue(monitor, shutdown_begun)
+    monitor._on_raw_download_failed(
+        RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
+    )
+    assert reached_enqueue.wait(timeout=5)
 
-    # Recorded rather than raised: the control loop logs exceptions, so raising
-    # here would be swallowed and the test would pass for the wrong reason.
-    with patch.object(
-        monitor,
-        "check_live_streams_and_start_download",
-        side_effect=lambda: blocking_calls.append("called"),
-    ):
-        monitor._on_raw_download_failed(
-            RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
-        )
-        monitor._event_queue.join()
+    shutdown_thread = Thread(target=monitor.shutdown, daemon=True)
+    shutdown_thread.start()
+    shutdown_thread.join(timeout=30)
 
-    # The public poll waits on the very loop that serves it: calling it from a
-    # failure handler would stall the loop for POLL_WAIT_TIMEOUT_SECONDS.
-    assert blocking_calls == []
-    assert mock_api.get_livestream_status.call_count == 2
-    monitor.shutdown()
+    assert not shutdown_thread.is_alive()
+    # The check that admitted this poll must still hold when it is queued;
+    # otherwise the poll lands behind a drain that was meant to be the last one.
+    assert shutdown_flag_at_enqueue == [False]
+    # And no retry poll may read the live list once shutdown has begun: that
+    # prolongs shutdown and can still be in flight when api.close() lands.
+    assert True not in shutdown_flag_at_read
+
+
+def test_scheduler_poll_enqueue_is_atomic_against_a_shutdown_landing_mid_request(repoll_env):
+    """Test the refusal window is closed for every poll requester, not just the retry."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    shutdown_begun = _signal_shutdown_begun(monitor)
+
+    monitor.check_live_streams_and_start_download()
+
+    reached_enqueue, shutdown_flag_at_enqueue = _gate_poll_enqueue(monitor, shutdown_begun)
+    # The scheduler asking for its next poll at the worst possible moment. Both
+    # requesters share one enqueue, which is where the window has to be closed:
+    # guarding only the retry path leaves this one racing api.close().
+    scheduler = Thread(target=monitor.check_live_streams_and_start_download, daemon=True)
+    scheduler.start()
+    assert reached_enqueue.wait(timeout=5)
+
+    shutdown_thread = Thread(target=monitor.shutdown, daemon=True)
+    shutdown_thread.start()
+    shutdown_thread.join(timeout=30)
+    scheduler.join(timeout=5)
+
+    assert not shutdown_thread.is_alive()
+    assert not scheduler.is_alive()
+    assert shutdown_flag_at_enqueue == [False]
+
+
+def test_retry_poll_queued_before_shutdown_is_skipped_when_dequeued(repoll_env):
+    """Test the control loop drops an already-queued retry poll once shutdown has begun."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    shutdown_begun = _signal_shutdown_begun(monitor)
+
+    monitor.check_live_streams_and_start_download()
+
+    loop_parked = ThreadEvent()
+    release_loop = ThreadEvent()
+    original_handle_monitor_event = monitor._handle_monitor_event
+
+    def gated_handle(event):
+        if not loop_parked.is_set():
+            loop_parked.set()
+            assert release_loop.wait(timeout=5)
+        return original_handle_monitor_event(event)
+
+    monitor._handle_monitor_event = gated_handle
+    # Parks the control loop on an event it will discard, so the retry poll
+    # queued below is still waiting when shutdown starts.
+    monitor._on_raw_download_failed(
+        RawDownloadFailed(session_key="no-such-session", error_message="parks the loop")
+    )
+    assert loop_parked.wait(timeout=5)
+
+    # Queued while shutdown had not begun, so the enqueue is legitimate: only
+    # the dequeue can tell that serving it is no longer wanted.
+    assert monitor._request_retry_poll("creator1")
+
+    shutdown_thread = Thread(target=monitor.shutdown, daemon=True)
+    shutdown_thread.start()
+    assert shutdown_begun.wait(timeout=5)
+    release_loop.set()
+    shutdown_thread.join(timeout=30)
+
+    assert not shutdown_thread.is_alive()
+    # Still only the poll this test asked for: the queued retry poll was
+    # dropped rather than served after shutdown began.
+    assert mock_api.get_livestream_status.call_count == 1
+    # Dropped, not wedged: the marker reopens so a live monitor could retry.
+    assert monitor._retry_poll_queued is False

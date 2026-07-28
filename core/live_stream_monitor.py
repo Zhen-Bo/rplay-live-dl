@@ -139,6 +139,10 @@ class LiveStreamMonitor:
         self._shutdown_requested = False
         # Creators the most recent poll saw actually live. A download failure
         # only earns an immediate re-poll while its creator is still in here.
+        # Not latest_stream_oid_by_creator: its cleanup checks the unfiltered
+        # live list, so a creator who moved to StreamState.TWITCH or YOUTUBE
+        # keeps their entry there and would earn a re-poll per failure for a
+        # stream this app cannot record.
         self._live_creator_oids: Set[str] = set()
         # True while a retry poll sits in the queue unstarted, so concurrent
         # failures merge into one extra poll instead of one poll each.
@@ -196,12 +200,20 @@ class LiveStreamMonitor:
 
                 if isinstance(event, _PollRequested):
                     if event.retry:
-                        # Reopened before the cycle, not after: a failure raised
-                        # while this poll runs must be able to earn the next
-                        # re-poll rather than merge into one that already read
-                        # the live list.
                         with self._state_lock:
+                            # Reopened before the cycle, not after: a failure
+                            # raised while this poll runs must be able to earn
+                            # the next re-poll rather than merge into one that
+                            # already read the live list.
                             self._retry_poll_queued = False
+                            shutdown_started = self._shutdown_requested
+                        if shutdown_started:
+                            # Queued before shutdown began. A recording it
+                            # started would be refused anyway, so serving it
+                            # only adds a live-list read to the window
+                            # api.close() is about to close.
+                            event.done.set()
+                            continue
                     try:
                         self._run_poll_cycle()
                     finally:
@@ -224,25 +236,24 @@ class LiveStreamMonitor:
 
     def _queue_monitor_event(self, event: MonitorRuntimeEvent) -> bool:
         """Enqueue work for the monitor control loop."""
-        if self._shutdown_requested and isinstance(event, _PollRequested):
-            return False
-        self._event_queue.put(event)
+        # Refusal and enqueue as one step, under the lock shutdown takes to set
+        # its flag. Checked unlocked, shutdown slips its whole drain in between
+        # and the poll is served after it: a live-list read racing api.close().
+        # Put on an unbounded Queue never blocks, so this holds the lock only
+        # for the append.
+        with self._state_lock:
+            if self._shutdown_requested and isinstance(event, _PollRequested):
+                return False
+            self._event_queue.put(event)
         return True
 
     def _request_retry_poll(self, creator_oid: str) -> bool:
-        """
-        Queue one extra poll for a creator whose raw download just failed.
-
-        Signals only. Calling the public blocking poll from here would wait on
-        the very control loop that has to serve the request, since failures are
-        handled on that loop.
-
-        Args:
-            creator_oid: Creator whose download failed
-
-        Returns:
-            True if this call queued the extra poll
-        """
+        """Queue at most one immediate retry poll."""
+        # Signals rather than polls: the public poll waits on the very loop that
+        # serves it, and failures are handled on that loop.
+        # One region for check, flag and enqueue, so a shutdown lands wholly
+        # before this (refused) or wholly after (skipped at dequeue), never in
+        # between. RLock, so the nested acquire below is free.
         with self._state_lock:
             if creator_oid not in self._live_creator_oids:
                 # Creator is offline; there is nothing left to record.
@@ -253,14 +264,13 @@ class LiveStreamMonitor:
                 return False
             self._retry_poll_queued = True
 
-        if self._queue_monitor_event(_PollRequested(done=Event(), retry=True)):
-            return True
+            if self._queue_monitor_event(_PollRequested(done=Event(), retry=True)):
+                return True
 
-        # Refused because shutdown started. Clear the marker so it cannot
-        # wedge deduplication for a monitor that keeps running.
-        with self._state_lock:
+            # Refused because shutdown started. Clear the marker so it cannot
+            # wedge deduplication for a monitor that keeps running.
             self._retry_poll_queued = False
-        return False
+            return False
 
     def _drain_monitor_events(self, timeout: float) -> bool:
         """
@@ -921,10 +931,12 @@ class LiveStreamMonitor:
         # to 3600s) of a stream that is still running. Requested only after the
         # session has been cleared above, so the extra poll sees the creator
         # free to start again rather than skipping it as already recording.
-        # ponytail: no separate retry budget here. The downloader has already
-        # spent its tenacity attempts with exponential backoff before this
-        # event exists, which is what keeps the extra poll off a hot loop. Add
-        # a budget if failures are ever seen recurring faster than that.
+        # ponytail: no separate retry budget here. Most of these arrive only
+        # after the downloader spent its tenacity attempts with exponential
+        # backoff, which keeps the extra poll off a hot loop. Not all:
+        # downloader.py's "finished but produced no output file" path reports
+        # with no backoff behind it, so that mode re-polls as fast as it fails.
+        # Add a budget if failures are seen recurring faster than the backoff.
         retried_now = self._request_retry_poll(session.creator_oid)
         next_attempt = "retrying immediately" if retried_now else "will retry on next poll"
         self.logger.warning(
