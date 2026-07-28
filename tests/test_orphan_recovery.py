@@ -138,10 +138,10 @@ class TestOrphanRecovery:
         assert final_path.read_bytes() == b"mp4"
         assert list(archive.iterdir()) == [final_path]
 
-    def test_existing_output_collision_is_skipped_and_inputs_kept(
+    def test_existing_output_gets_the_next_suffix_and_is_never_overwritten(
         self, archive, monkeypatch
     ):
-        """Test recovery never overwrites an existing mp4; it skips and keeps inputs."""
+        """Test a taken mp4 name pushes this session to _1 instead of skipping it."""
         ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
         existing = archive / "#Creator 2026-03-06 123.mp4"
@@ -150,8 +150,64 @@ class TestOrphanRecovery:
 
         recover_orphaned_sessions(LOGGER)
 
+        # The earlier recording is byte-identical afterwards: reserving a free
+        # name is what keeps the rename from overwriting it.
         assert existing.read_bytes() == b"already merged"
-        assert ts_file.exists()
+        assert (archive / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"mp4"
+        assert not ts_file.exists()
+
+    def test_a_name_taken_while_the_merge_runs_is_not_overwritten(
+        self, archive, monkeypatch
+    ):
+        """Test the final name is reserved at rename time, not before the merge.
+
+        A concat can run for hours, so a name that was free when it started may
+        be taken by the time it finishes — and the rename overwrites silently.
+        """
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        final_path = archive / "#Creator 2026-03-06 123.mp4"
+
+        def merge_then_lose_the_name(ts_files, output_path, run_command):
+            output_path.write_bytes(b"mp4")
+            # The name goes from free to taken while ffmpeg is still busy.
+            final_path.write_bytes(b"claimed mid-merge")
+
+        monkeypatch.setattr(
+            "core.orphan_recovery.merge_ts_files_to_mp4", merge_then_lose_the_name
+        )
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert final_path.read_bytes() == b"claimed mid-merge"
+        assert (archive / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"mp4"
+
+    def test_two_stranded_sessions_with_one_title_both_reach_their_own_mp4(
+        self, archive, monkeypatch
+    ):
+        """Test the stop-and-restart case: same title, two sessions, two recordings kept.
+
+        This is the shape of every docker-stop during a live stream, and the
+        case a skip-on-collision policy stranded permanently.
+        """
+        first = archive / "20260728_200507_#Creator 2026-07-28 Live.ts"
+        second = archive / "20260728_200831_#Creator 2026-07-28 Live.ts"
+        first.write_bytes(b"first session")
+        second.write_bytes(b"second session")
+
+        def fake_concat(ts_files, output_path, run_command):
+            output_path.write_bytes(b"".join(f.read_bytes() for f in ts_files))
+
+        monkeypatch.setattr("core.orphan_recovery.merge_ts_files_to_mp4", fake_concat)
+
+        recover_orphaned_sessions(LOGGER)
+
+        # Each session's payload reaches its own file, oldest session first.
+        assert (archive / "#Creator 2026-07-28 Live.mp4").read_bytes() == b"first session"
+        assert (
+            archive / "#Creator 2026-07-28 Live_1.mp4"
+        ).read_bytes() == b"second session"
+        assert list(archive.glob("*.ts")) == []
 
     def test_only_the_ts_part_is_adopted_out_of_a_mixed_artifact_directory(
         self, archive, monkeypatch

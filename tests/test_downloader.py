@@ -138,19 +138,19 @@ class TestBuildOutputPath:
 
 
 class TestGetUniquePath:
-    """Tests for _get_unique_path class method."""
+    """Tests for the get_unique_path class method."""
 
     def test_no_conflict_returns_original(self, tmp_path):
         """Test returns original path when no file exists."""
         path = tmp_path / "test.mp4"
-        result = StreamDownloader._get_unique_path(path)
+        result = StreamDownloader.get_unique_path(path)
         assert result == path
 
     def test_with_conflict_adds_counter(self, tmp_path):
         """Test adds _1 suffix when file exists."""
         path = tmp_path / "test.mp4"
         path.touch()
-        result = StreamDownloader._get_unique_path(path)
+        result = StreamDownloader.get_unique_path(path)
         assert result == tmp_path / "test_1.mp4"
 
     def test_multiple_conflicts_increments_counter(self, tmp_path):
@@ -159,7 +159,7 @@ class TestGetUniquePath:
         path.touch()
         (tmp_path / "test_1.mp4").touch()
         (tmp_path / "test_2.mp4").touch()
-        result = StreamDownloader._get_unique_path(path)
+        result = StreamDownloader.get_unique_path(path)
         assert result == tmp_path / "test_3.mp4"
 
     def test_max_duplicates_raises_error(self, tmp_path):
@@ -169,7 +169,7 @@ class TestGetUniquePath:
         for i in range(1, 1001):
             (tmp_path / f"test_{i}.mp4").touch()
         with pytest.raises(RuntimeError, match="Too many duplicate files"):
-            StreamDownloader._get_unique_path(path)
+            StreamDownloader.get_unique_path(path)
 
 
 class TestYtDlpLoggerBridge:

@@ -118,27 +118,14 @@ def _recover_one_session(
         )
         return
 
-    output_path = output_dir / f"{final_stem}.mp4"
-    if output_path.exists():
-        # Most likely this session already merged and only the .ts cleanup
-        # failed (a locked input leaves the mp4 in place by design). Re-merging
-        # would archive a duplicate of a finished recording, so the inputs are
-        # left for an operator to compare and remove.
-        logger.warning(
-            f"⚠️ Skipping orphan recovery for session {session_id}: "
-            f"{output_path.name} already exists. "
-            f"Raw .ts files left in: {output_dir}"
-        )
-        return
-
     # ffmpeg writes to a temporary name in the same directory, and only a
-    # validated result is renamed onto the final one. A process death mid-merge
-    # would otherwise leave a partial file under the final name, which the
-    # collision check above reads as a finished recording — skipping that
-    # session, and its intact inputs, on every later startup. The .mp4 suffix
-    # is kept so ffmpeg still infers the mp4 muxer; a stale temp from an
+    # validated result is renamed onto a final one. A process death mid-merge
+    # would otherwise leave a partial mp4 under a final name that nothing ever
+    # cleans up, and the suffix policy below would then treat that wreckage as
+    # a real recording and push this session's output to _1. The .mp4 suffix is
+    # kept so ffmpeg still infers the mp4 muxer; a stale temp from an
     # interrupted attempt is overwritten by the invocation's -y.
-    temp_path = output_path.with_name(f".{final_stem}.recovering.mp4")
+    temp_path = output_dir / f".{final_stem}.recovering.mp4"
     try:
         merge_ts_files_to_mp4(
             ts_files,
@@ -158,7 +145,18 @@ def _recover_one_session(
         if not temp_path.is_file() or temp_path.stat().st_size == 0:
             raise RuntimeError(f"merge produced no output at {temp_path.name}")
 
-        # Atomic within the directory: the final name never exists half-written.
+        # Same suffix policy as a live merge: a name already taken becomes
+        # NAME_1.mp4 rather than a skip. Adopting stranded .ts.part files made
+        # "same title, different session" the common collision — one stop and
+        # restart during a stream produces two sessions with identical titles
+        # in one directory. Skipping stranded the second recording forever;
+        # suffixing costs at most a visible duplicate when the rarer cause
+        # (this session already merged, only .ts cleanup failed) applies.
+        #
+        # Reserved here rather than before the merge, which can run for hours:
+        # replace() overwrites silently, so the name is claimed in the same
+        # breath as the rename that consumes it.
+        output_path = StreamDownloader.get_unique_path(output_dir / f"{final_stem}.mp4")
         temp_path.replace(output_path)
     except Exception as exc:
         # Same contract as the live merge: drop the partial output so a failure

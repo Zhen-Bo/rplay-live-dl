@@ -169,7 +169,7 @@ class StreamDownloader:
         output_path = self._build_output_path(safe_title)
 
         # Ensure unique file path and create directories
-        output_path = self._get_unique_path(output_path)
+        output_path = self.get_unique_path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Store current download info
@@ -288,9 +288,13 @@ class StreamDownloader:
         return options
 
     @classmethod
-    def _get_unique_path(cls, base_path: Path) -> Path:
+    def get_unique_path(cls, base_path: Path) -> Path:
         """
         Generate a unique file path by appending a counter if file exists.
+
+        Shared with startup orphan recovery, which reserves its merged mp4 name
+        under the same policy, so a recovered recording never overwrites an
+        earlier one and is named the way a live merge would have named it.
 
         Args:
             base_path: Initial desired file path
