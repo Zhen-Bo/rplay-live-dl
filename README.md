@@ -482,10 +482,6 @@ rplay-live-dl/
 │   ├── rplay.py
 │   ├── scheduler.py
 │   └── utils.py
-├── docs/
-│   └── plans/
-│       ├── 2026-03-09-m3u8-retry-timeout-design.md
-│       └── 2026-03-09-m3u8-retry-timeout.md
 ├── models/
 │   ├── config.py
 │   ├── download.py
