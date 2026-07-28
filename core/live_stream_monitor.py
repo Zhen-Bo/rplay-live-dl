@@ -165,6 +165,8 @@ class LiveStreamMonitor:
         self._monitored_count = 0
         self._check_count = 0
         self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
+        # ponytail: one bool; re-armed on successful key2 (get_stream_url).
+        self._auth_error_notified = False
 
         # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
@@ -311,8 +313,10 @@ class LiveStreamMonitor:
             self.logger.warning("Skipping check due to config file error")
             self._mark_check_failed()
         except RPlayAuthError as exc:
-            self.logger.error(f"Authentication error: {exc}")
-            self.logger.error("Please update your AUTH_TOKEN in .env file")
+            self._log_auth_error(
+                f"Authentication error: {exc}. "
+                "Please update your AUTH_TOKEN in .env file"
+            )
             self._mark_check_failed()
         except RPlayConnectionError as exc:
             self.logger.warning(f"Connection error (will retry): {exc}")
@@ -451,9 +455,12 @@ class LiveStreamMonitor:
         bind(self.logger, creator_name).info(f'🔴 Live: "{clip(stream.title)}"')
 
         try:
+            stream_url = self.api.get_stream_url(creator_oid)
+            # Successful key2 re-arms auth-error logging for the next failure streak.
+            self._auth_error_notified = False
             self._launch_session_downloader(
                 session=session,
-                stream_url=self.api.get_stream_url(creator_oid),
+                stream_url=stream_url,
                 title=stream.title,
             )
         except Exception as exc:
@@ -514,7 +521,7 @@ class LiveStreamMonitor:
         self._remove_session(session_key)
 
         if isinstance(exc, RPlayAuthError):
-            self.logger.error(
+            self._log_auth_error(
                 f"Auth error for {creator_name}: {exc}. "
                 "Please verify AUTH_TOKEN and USER_OID credentials."
             )
@@ -908,10 +915,16 @@ class LiveStreamMonitor:
             return
 
         self._mark_check_failed()
-        self.logger.error(
+        self._log_auth_error(
             f"🔐 Authentication error while downloading {session.creator_name}: "
             f"{event.error_message}. Please verify AUTH_TOKEN and USER_OID credentials."
         )
+
+    def _log_auth_error(self, message: str) -> None:
+        """Log auth errors once per failure streak; repeats go to DEBUG."""
+        log = self.logger.debug if self._auth_error_notified else self.logger.error
+        self._auth_error_notified = True
+        log(message)
 
     def _handle_raw_download_failed(self, event: RawDownloadFailed) -> None:
         """Clear the failed raw session and re-poll at once if the creator is still live."""

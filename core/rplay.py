@@ -235,6 +235,18 @@ class RPlayAPI:
 
         return f"{self.base_url}/live/stream/playlist.m3u8?{params}"
 
+    def validate_credentials(self) -> None:
+        """
+        Verify AUTH_TOKEN/USER_OID by fetching a stream key once.
+
+        Raises:
+            RPlayAuthError: If credentials are invalid or expired
+            RPlayConnectionError: If the request times out or loses connection
+            RPlayAPIError: If the API returns a non-retryable non-auth failure
+        """
+        # ponytail: key2 is the cheapest authenticated call; no parallel health endpoint.
+        self._get_stream_key()
+
     def _get_stream_key(self) -> str:
         """
         Retrieve the authentication key required for stream access.
@@ -270,7 +282,7 @@ class RPlayAPI:
                     status_code = getattr(response, "status_code", None)
 
                     if self._is_auth_status_code(status_code):
-                        self.logger.error("Authentication failed - token may be expired")
+                        # Caller logs expected auth failures (startup / monitor dedup).
                         raise RPlayAuthError(
                             "Authentication failed. Please check your AUTH_TOKEN."
                         )
@@ -281,7 +293,7 @@ class RPlayAPI:
                     response.raise_for_status()
                     data = response.json()
                     if "authKey" not in data:
-                        self.logger.error("Invalid response: missing authKey")
+                        # Caller logs expected auth failures (startup / monitor dedup).
                         raise RPlayAuthError("Invalid authentication response")
                     return data["authKey"]
 
@@ -302,7 +314,7 @@ class RPlayAPI:
 
         except requests.exceptions.HTTPError as exc:
             if exc.response is not None and exc.response.status_code in (401, 403):
-                self.logger.error("Authentication failed - token may be expired")
+                # Caller logs expected auth failures (startup / monitor dedup).
                 raise RPlayAuthError(
                     "Authentication failed. Please check your AUTH_TOKEN."
                 )

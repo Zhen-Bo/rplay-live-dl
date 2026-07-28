@@ -136,6 +136,36 @@ class TestGetStreamUrl:
         assert "playlist.m3u8" in url
 
 
+class TestValidateCredentials:
+    """Tests for the public credential-validation seam."""
+
+    def test_success(self):
+        """Test successful validation when key2 returns an authKey."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"authKey": "stream-key"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(api._session, "get", return_value=mock_response):
+            api.validate_credentials()
+
+    def test_auth_failure_raises_auth_error(self):
+        """Test 401 from key2 raises RPlayAuthError without API-layer ERROR log."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+
+        with patch.object(api._session, "get", return_value=mock_response):
+            with patch.object(api.logger, "error") as mock_error:
+                with pytest.raises(RPlayAuthError, match="Authentication failed"):
+                    api.validate_credentials()
+
+        mock_error.assert_not_called()
+
+
 class TestGetStreamKey:
     """Tests for _get_stream_key method."""
 

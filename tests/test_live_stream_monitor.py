@@ -1,5 +1,6 @@
 """Tests for live stream monitor module."""
 
+import logging
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -623,21 +624,41 @@ class TestStartDownload:
         messages = [record.getMessage() for record in caplog.records]
         assert '[TestCreator] 🔴 Live: "Test Stream"' in messages
 
-    def test_start_download_auth_error(self, mock_api, monitor):
-        """Test auth error is logged."""
+    def test_start_download_auth_error(self, mock_api, monitor, caplog):
+        """Test first auth error is ERROR; a repeat is DEBUG-only (dedup)."""
         mock_api.get_stream_url.side_effect = RPlayAuthError("Unauthorized")
         mock_stream = MagicMock()
         mock_stream.creator_oid = "test_oid"
         mock_stream.title = "Test Stream"
+        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
         monitor.monitored_creators["test_oid"] = CreatorProfile(
             creator_name="TestCreator",
             creator_oid="test_oid",
         )
 
-        with patch('core.live_stream_monitor.StreamDownloader.download') as mock_download:
+        with (
+            caplog.at_level(logging.DEBUG, logger="Monitor"),
+            patch("core.live_stream_monitor.StreamDownloader.download") as mock_download,
+        ):
+            monitor._start_download(mock_stream)
+            # Second attempt: clear session state so the start path runs again.
+            monitor.sessions.clear()
+            monitor._active_raw_session_by_creator.clear()
             monitor._start_download(mock_stream)
 
         mock_download.assert_not_called()
+        error_auth = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and "Auth error for" in r.getMessage()
+        ]
+        debug_auth = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG and "Auth error for" in r.getMessage()
+        ]
+        assert len(error_auth) == 1
+        assert len(debug_auth) >= 1
 
     def test_start_download_api_error(self, mock_api, monitor):
         """Test API error is logged as warning."""
@@ -911,6 +932,75 @@ class TestCheckLiveStreamsErrorHandling:
 
         assert mock_exception.call_count == 1
         assert mock_exception.call_args.args[0] == 'Unexpected error during monitoring: boom'
+
+
+class TestAuthErrorDedup:
+    """Tests for auth-error log deduplication across poll failures."""
+
+    @patch("core.live_stream_monitor.read_config")
+    def test_repeat_auth_failures_log_error_once(self, mock_read_config, caplog):
+        """Test repeated auth failures log ERROR once; repeats are DEBUG."""
+        mock_api = MagicMock(spec=RPlayAPI)
+        mock_read_config.return_value = _runtime_config([])
+        mock_api.get_livestream_status.side_effect = RPlayAuthError("Unauthorized")
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="Monitor"):
+            monitor.check_live_streams_and_start_download()
+            monitor.check_live_streams_and_start_download()
+
+        error_auth = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and "Authentication error" in r.getMessage()
+        ]
+        debug_auth = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG and "Authentication error" in r.getMessage()
+        ]
+        assert len(error_auth) == 1
+        assert len(debug_auth) >= 1
+
+    def test_successful_key2_rearms_auth_error_logging(self, mock_api, monitor, caplog):
+        """Test a successful key2 fetch re-arms the next auth-failure ERROR log."""
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "test_oid"
+        mock_stream.title = "Test Stream"
+        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
+        monitor.monitored_creators["test_oid"] = CreatorProfile(
+            creator_name="TestCreator",
+            creator_oid="test_oid",
+        )
+        mock_api.get_stream_url.side_effect = [
+            RPlayAuthError("Unauthorized"),
+            "http://example.com/stream.m3u8",
+            RPlayAuthError("Unauthorized again"),
+        ]
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="Monitor"),
+            patch("core.live_stream_monitor.StreamDownloader.download"),
+        ):
+            monitor._start_download(mock_stream)  # auth fail → ERROR
+            monitor.sessions.clear()
+            monitor._active_raw_session_by_creator.clear()
+            monitor._start_download(mock_stream)  # key2 success → re-arm
+            monitor.sessions.clear()
+            monitor._active_raw_session_by_creator.clear()
+            monitor._start_download(mock_stream)  # auth fail → ERROR again
+
+        error_auth = [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and "Auth error for" in r.getMessage()
+        ]
+        assert len(error_auth) == 2
+        assert monitor._auth_error_notified is True
 
 
 class TestGetActiveDownloads:

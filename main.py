@@ -11,9 +11,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from core.config import DEFAULT_CONFIG_PATH, ConfigError, read_app_config
+from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.downloader import StreamDownloader
-from core.env import EnvConfigError, load_env
+from core.env import EnvConfig, EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
+from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError
 from core.scheduler import run_scheduler
 
 
@@ -88,6 +91,36 @@ def main() -> None:
         logger.warning(f"Failed to cleanup old logs: {e}")
 
     _warn_about_orphaned_downloads(logger)
+
+    # Same apiBaseUrl the monitor applies from config.yaml on each poll.
+    try:
+        api_base_url = read_app_config(DEFAULT_CONFIG_PATH).api_base_url
+    except ConfigError as exc:
+        # ponytail: scheduler owns hard config failures; probe with default URL.
+        logger.warning(
+            f"Could not load config for credential check "
+            f"(using default API URL): {exc}"
+        )
+        api_base_url = DEFAULT_RPLAY_API_BASE_URL
+
+    api = RPlayAPI(env.auth_token, env.user_oid, base_url=api_base_url)
+    try:
+        api.validate_credentials()
+        logger.info("API credentials validated successfully")
+    except RPlayAuthError as exc:
+        logger.error(
+            f"Authentication failed: {exc}. "
+            "Please update AUTH_TOKEN and USER_OID in your .env file, then restart."
+        )
+        sys.exit(1)
+    except RPlayAPIError as exc:
+        # RPlayConnectionError is an RPlayAPIError; monitor owns retries.
+        logger.warning(
+            f"Could not verify credentials due to API error "
+            f"(continuing; will retry while running): {exc}"
+        )
+    finally:
+        api.close()
 
     # Start the scheduler
     try:
