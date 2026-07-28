@@ -45,9 +45,9 @@ __all__ = [
 # Default log level constant (int) derived from the shared name default.
 DEFAULT_LOG_LEVEL = logging.getLevelNamesMapping()[DEFAULT_LOG_LEVEL_NAME]
 
-# Process-wide settings applied after EnvConfig validation (via configure_logging).
-_configured_log_level: Optional[int] = None
-_configured_ytdlp_internal: Optional[bool] = None
+# Process-wide settings; start at constants defaults, overridden by configure_logging.
+_configured_log_level: int = DEFAULT_LOG_LEVEL
+_configured_ytdlp_internal: bool = DEFAULT_LOG_YTDLP_INTERNAL
 
 
 def _get_log_max_bytes() -> int:
@@ -71,18 +71,14 @@ def configure_logging(env: "EnvConfig") -> None:
 
 def is_ytdlp_internal_logging_enabled() -> bool:
     """Return whether yt-dlp internal debug chatter should be surfaced."""
-    if _configured_ytdlp_internal is not None:
-        return _configured_ytdlp_internal
-    return DEFAULT_LOG_YTDLP_INTERNAL
+    return _configured_ytdlp_internal
 
 
 def _resolve_log_level(level: Optional[int]) -> int:
-    """Resolve log level from explicit arg, configure_logging, or default."""
+    """Resolve log level from explicit arg or configure_logging defaults."""
     if level is not None:
         return level
-    if _configured_log_level is not None:
-        return _configured_log_level
-    return DEFAULT_LOG_LEVEL
+    return _configured_log_level
 
 # Logger name display width (for alignment)
 # Set to match the longest logger name: "Downloader" = 10 characters

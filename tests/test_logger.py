@@ -31,11 +31,15 @@ from models.env import EnvConfig
 class TestSetupLogger:
     """Tests for setup_logger function."""
 
-    def test_creates_logger(self):
-        """Test that setup_logger creates a logger."""
-        logger = setup_logger("test_logger_1")
+    def test_creates_logger(self, monkeypatch):
+        """Test that setup_logger creates a logger at the default level."""
+        import core.logger as logger_module
+
+        monkeypatch.setattr(logger_module, "_configured_log_level", DEFAULT_LOG_LEVEL)
+        logger = setup_logger("test_logger_1", log_to_file=False)
         assert isinstance(logger, logging.Logger)
         assert logger.name == "test_logger_1"
+        assert logger.level == logging.INFO
 
     def test_logger_level(self):
         """Test that logger has correct level."""
@@ -55,47 +59,26 @@ class TestSetupLogger:
         # Should have at least one handler (console)
         assert len(logger.handlers) >= 1
 
-    def test_uses_log_level_from_configure_logging(self, monkeypatch):
-        """Test configure_logging controls the default logger level."""
+    def test_configure_logging_applies_level_and_ytdlp_flag(self, monkeypatch):
+        """Test configure_logging sets both log level and yt-dlp internal flag."""
         import core.logger as logger_module
 
-        monkeypatch.setattr(logger_module, "_configured_log_level", None)
-        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", None)
-
-        env = EnvConfig(
-            auth_token="token",
-            user_oid="oid",
-            log_level="DEBUG",
-        )
-        configure_logging(env)
-        logger = setup_logger("test_logger_env_debug", log_to_file=False)
-
-        assert logger.level == logging.DEBUG
-
-    def test_default_level_without_configure(self, monkeypatch):
-        """Test setup_logger uses constant default when not configured."""
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_configured_log_level", None)
-        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", None)
-
-        logger = setup_logger("test_logger_default_level", log_to_file=False)
-
-        assert logger.level == DEFAULT_LOG_LEVEL
-        assert logger.level == logging.INFO
-
-    def test_ytdlp_internal_flag_from_configure_logging(self, monkeypatch):
-        """Test configure_logging owns LOG_YTDLP_INTERNAL for consumers."""
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_configured_log_level", None)
-        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", None)
+        monkeypatch.setattr(logger_module, "_configured_log_level", DEFAULT_LOG_LEVEL)
+        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", False)
 
         assert is_ytdlp_internal_logging_enabled() is False
 
         configure_logging(
-            EnvConfig(auth_token="token", user_oid="oid", log_ytdlp_internal=True)
+            EnvConfig(
+                auth_token="token",
+                user_oid="oid",
+                log_level="DEBUG",
+                log_ytdlp_internal=True,
+            )
         )
+        logger = setup_logger("test_logger_env_debug", log_to_file=False)
+
+        assert logger.level == logging.DEBUG
         assert is_ytdlp_internal_logging_enabled() is True
 
 

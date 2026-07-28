@@ -14,8 +14,12 @@ from core.constants import (
     DEFAULT_LOG_MAX_SIZE_MB,
     DEFAULT_LOG_RETENTION_DAYS,
     DEFAULT_LOG_YTDLP_INTERNAL,
-    VALID_LOG_LEVELS,
 )
+
+# Validation vocabulary lives beside the only consumer (this model).
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+_TRUTHY_BOOL_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSY_BOOL_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 
 class EnvConfig(BaseSettings):
@@ -98,20 +102,33 @@ class EnvConfig(BaseSettings):
             raise ValueError("USER_OID cannot be empty or whitespace")
         return v.strip()
 
-    @field_validator("log_level", mode="before")
+    @field_validator("log_level", mode="after")
     @classmethod
-    def validate_log_level(cls, v: object) -> str:
-        """Normalize and reject unknown LOG_LEVEL values at startup."""
-        if v is None:
-            return DEFAULT_LOG_LEVEL
-        normalized = str(v).strip().upper()
-        if not normalized:
+    def validate_log_level(cls, v: str) -> str:
+        """Reject unknown LOG_LEVEL values at startup."""
+        normalized = v.upper()
+        if normalized not in _VALID_LOG_LEVELS:
             raise ValueError(
-                f"LOG_LEVEL must be one of {', '.join(sorted(VALID_LOG_LEVELS))}"
-            )
-        if normalized not in VALID_LOG_LEVELS:
-            raise ValueError(
-                f"LOG_LEVEL must be one of {', '.join(sorted(VALID_LOG_LEVELS))}; "
+                f"LOG_LEVEL must be one of {', '.join(sorted(_VALID_LOG_LEVELS))}; "
                 f"got {v!r}"
             )
         return normalized
+
+    @field_validator("log_ytdlp_internal", mode="before")
+    @classmethod
+    def validate_log_ytdlp_internal(cls, v: object) -> bool:
+        """Parse LOG_YTDLP_INTERNAL with an explicit accepted set."""
+        if isinstance(v, bool):
+            return v
+        if v is None:
+            return DEFAULT_LOG_YTDLP_INTERNAL
+        normalized = str(v).strip().lower()
+        if normalized in _TRUTHY_BOOL_VALUES:
+            return True
+        if normalized in _FALSY_BOOL_VALUES:
+            return False
+        raise ValueError(
+            "LOG_YTDLP_INTERNAL must be one of "
+            "1, true, yes, on, 0, false, no, off (or empty); "
+            f"got {v!r}"
+        )

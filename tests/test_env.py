@@ -157,25 +157,17 @@ class TestLogConfigEnvVars:
     """Tests for log configuration environment variables."""
 
     def test_log_config_defaults(self, no_dotenv_file):
-        """Test default values for log configuration come from constants."""
-        from core.constants import (
-            DEFAULT_LOG_BACKUP_COUNT,
-            DEFAULT_LOG_LEVEL,
-            DEFAULT_LOG_MAX_SIZE_MB,
-            DEFAULT_LOG_RETENTION_DAYS,
-            DEFAULT_LOG_YTDLP_INTERNAL,
-        )
-
+        """Test public default values for log configuration."""
         no_dotenv_file.setenv("AUTH_TOKEN", "test_token")
         no_dotenv_file.setenv("USER_OID", "test_oid")
 
         config = load_env()
 
-        assert config.log_level == DEFAULT_LOG_LEVEL
-        assert config.log_ytdlp_internal is DEFAULT_LOG_YTDLP_INTERNAL
-        assert config.log_max_size_mb == DEFAULT_LOG_MAX_SIZE_MB
-        assert config.log_backup_count == DEFAULT_LOG_BACKUP_COUNT
-        assert config.log_retention_days == DEFAULT_LOG_RETENTION_DAYS
+        assert config.log_level == "INFO"
+        assert config.log_ytdlp_internal is False
+        assert config.log_max_size_mb == 5
+        assert config.log_backup_count == 5
+        assert config.log_retention_days == 30
 
     def test_log_level_valid_debug(self, monkeypatch):
         """Test valid LOG_LEVEL=DEBUG is accepted and normalized."""
@@ -199,25 +191,38 @@ class TestLogConfigEnvVars:
         assert "Invalid environment configuration" in str(exc_info.value)
         assert "LOG_LEVEL" in str(exc_info.value)
 
-    def test_log_ytdlp_internal_true_values(self, monkeypatch):
-        """Test LOG_YTDLP_INTERNAL truthy values parse to True."""
+    def test_log_ytdlp_internal_parsing(self, monkeypatch):
+        """Test LOG_YTDLP_INTERNAL truthy/falsy/invalid spellings."""
         monkeypatch.setenv("AUTH_TOKEN", "test_token")
         monkeypatch.setenv("USER_OID", "test_oid")
 
-        for value in ("1", "true", "TRUE", "yes", "on"):
+        cases = [
+            ("1", True),
+            ("true", True),
+            ("TRUE", True),
+            ("  true  ", True),
+            ("yes", True),
+            ("on", True),
+            ("0", False),
+            ("false", False),
+            ("FALSE", False),
+            ("no", False),
+            ("off", False),
+            ("", False),
+            ("  ", False),
+        ]
+        for value, expected in cases:
             monkeypatch.setenv("LOG_YTDLP_INTERNAL", value)
             config = load_env()
-            assert config.log_ytdlp_internal is True, f"expected True for {value!r}"
+            assert config.log_ytdlp_internal is expected, f"expected {expected} for {value!r}"
 
-    def test_log_ytdlp_internal_false_values(self, monkeypatch):
-        """Test LOG_YTDLP_INTERNAL falsy values parse to False."""
-        monkeypatch.setenv("AUTH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-
-        for value in ("0", "false", "FALSE", "no", "off"):
+        for value in ("y", "t", "maybe", "2"):
             monkeypatch.setenv("LOG_YTDLP_INTERNAL", value)
-            config = load_env()
-            assert config.log_ytdlp_internal is False, f"expected False for {value!r}"
+            with pytest.raises(ValueError) as exc_info:
+                load_env()
+            message = str(exc_info.value)
+            assert "Invalid environment configuration" in message
+            assert "LOG_YTDLP_INTERNAL" in message
 
     def test_log_max_size_mb_custom(self, monkeypatch):
         """Test custom LOG_MAX_SIZE_MB value."""

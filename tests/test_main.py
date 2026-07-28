@@ -1,8 +1,12 @@
 """Tests for application startup helpers."""
 
 import logging
+from unittest.mock import MagicMock
 
-from main import _warn_about_orphaned_downloads
+import pytest
+
+from main import _warn_about_orphaned_downloads, main
+from models.env import EnvConfig
 
 
 def test_warns_about_each_kind_of_leftover(tmp_path, monkeypatch, caplog):
@@ -44,3 +48,43 @@ def test_silent_when_archive_missing(tmp_path, monkeypatch, caplog):
     _warn_about_orphaned_downloads(logging.getLogger("test_main"))
 
     assert not caplog.records
+
+
+def test_main_invalid_log_level_exits_before_setup_logger(monkeypatch, capsys):
+    """Regression: invalid LOG_LEVEL fails before setup_logger is called."""
+    secret_token = "secret-auth-token-xyz"
+    secret_oid = "secret-user-oid-abc"
+
+    monkeypatch.setenv("AUTH_TOKEN", secret_token)
+    monkeypatch.setenv("USER_OID", secret_oid)
+    monkeypatch.setenv("LOG_LEVEL", "LOUD")
+    monkeypatch.setattr("main.load_dotenv", lambda: None)
+    # Avoid reading a real .env via pydantic-settings during this startup path.
+    monkeypatch.setattr(
+        EnvConfig,
+        "model_config",
+        {**EnvConfig.model_config, "env_file": None},
+    )
+
+    setup_logger_mock = MagicMock()
+    configure_logging_mock = MagicMock()
+    run_scheduler_mock = MagicMock()
+    monkeypatch.setattr("main.setup_logger", setup_logger_mock)
+    monkeypatch.setattr("main.configure_logging", configure_logging_mock)
+    monkeypatch.setattr("main.run_scheduler", run_scheduler_mock)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+    setup_logger_mock.assert_not_called()
+    configure_logging_mock.assert_not_called()
+    run_scheduler_mock.assert_not_called()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "LOG_LEVEL" in captured.err
+    assert secret_token not in captured.err
+    assert secret_oid not in captured.err
+    assert secret_token not in captured.out
+    assert secret_oid not in captured.out
