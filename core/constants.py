@@ -41,6 +41,9 @@ DEFAULT_LOG_BACKUP_COUNT = 5
 DEFAULT_LOG_RETENTION_DAYS = 30
 DEFAULT_LOG_YTDLP_INTERNAL = False
 
+# Minimum free disk space (GiB) before starting a recording; 0 disables
+DEFAULT_MIN_FREE_DISK_GB = 5.0
+
 __all__ = [
     "RPLAY_SITE_URL",
     "DEFAULT_RPLAY_API_BASE_URL",
@@ -59,4 +62,5 @@ __all__ = [
     "DEFAULT_LOG_BACKUP_COUNT",
     "DEFAULT_LOG_RETENTION_DAYS",
     "DEFAULT_LOG_YTDLP_INTERNAL",
+    "DEFAULT_MIN_FREE_DISK_GB",
 ]

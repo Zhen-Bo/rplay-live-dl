@@ -63,7 +63,11 @@ class LiveStreamScheduler:
         self.env = env
         self.version = version
         self.git_sha = os.getenv("APP_GIT_SHA", "").strip()
-        self.monitor = LiveStreamMonitor(self.env.auth_token, self.env.user_oid)
+        self.monitor = LiveStreamMonitor(
+            self.env.auth_token,
+            self.env.user_oid,
+            min_free_disk_gb=self.env.min_free_disk_gb,
+        )
         self.scheduler = BlockingScheduler()
         self._stopped = False
 

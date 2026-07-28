@@ -47,12 +47,13 @@ def load_env() -> EnvConfig:
             field = error.get("loc", [None])[0]
             error_type = error.get("type", "")
 
+            # Convert field name to env var format (e.g., auth_token -> AUTH_TOKEN)
+            env_var = str(field).upper() if field else "UNKNOWN"
             if error_type == "missing":
-                # Convert field name to env var format (e.g., auth_token -> AUTH_TOKEN)
-                env_var = field.upper() if field else "UNKNOWN"
                 missing_vars.append(env_var)
             else:
-                other_errors.append(error.get("msg", str(error)))
+                # Prefix so users can act on the offending variable name.
+                other_errors.append(f"{env_var}: {error.get('msg', str(error))}")
 
         if missing_vars:
             raise EnvConfigError(

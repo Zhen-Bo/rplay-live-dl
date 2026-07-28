@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,10 +21,19 @@ from models.download import (
 )
 from models.rplay import CreatorStreamState, StreamState
 
+_GIB = 1024 ** 3
+
 
 def _runtime_config(creators):
     """Build AppConfig test data with the default hot-reload API base URL."""
     return AppConfig(api_base_url="https://api.rplay.live", creators=creators)
+
+
+@pytest.fixture(autouse=True)
+def plenty_of_free_disk(monkeypatch):
+    """Keep this module independent of real free disk (default guard is 5 GiB)."""
+    usage = SimpleNamespace(total=100 * _GIB, used=10 * _GIB, free=90 * _GIB)
+    monkeypatch.setattr("shutil.disk_usage", lambda path: usage)
 
 
 @pytest.fixture
@@ -764,6 +774,90 @@ class TestCycleStreamKeyCache:
 
         assert monitor._auth_error_notified is True
         assert mock_api._get_stream_key.call_count == 1
+
+
+class TestMinFreeDiskGuard:
+    """Tests for the minimum free-disk guard before session creation."""
+
+    def _stream_and_profile(self, monitor):
+        mock_stream = MagicMock()
+        mock_stream.creator_oid = "test_oid"
+        mock_stream.title = "Test Stream"
+        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
+        monitor.monitored_creators["test_oid"] = CreatorProfile(
+            creator_name="TestCreator",
+            creator_oid="test_oid",
+        )
+        return mock_stream
+
+    def test_below_threshold_blocks_session_and_logs_error(self, mock_api, monitor, caplog):
+        """Below-threshold free space skips session creation and logs one error."""
+        monitor.min_free_disk_gb = 5
+        mock_stream = self._stream_and_profile(monitor)
+        free_bytes = 2 * _GIB
+        usage = MagicMock(free=free_bytes, total=100 * _GIB, used=98 * _GIB)
+
+        with (
+            patch("core.live_stream_monitor.shutil.disk_usage", return_value=usage) as mock_usage,
+            patch("core.live_stream_monitor.StreamDownloader.download") as mock_download,
+            caplog.at_level(logging.ERROR, logger="Monitor"),
+        ):
+            monitor._start_download(mock_stream)
+
+        mock_usage.assert_called_once()
+        mock_download.assert_not_called()
+        mock_api.get_stream_url.assert_not_called()
+        assert monitor.sessions == {}
+        error_msgs = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and "Insufficient free disk space" in r.getMessage()
+        ]
+        assert len(error_msgs) == 1
+        assert "path=" in error_msgs[0]
+        assert f"({free_bytes} bytes)" in error_msgs[0]
+        assert "required=5" in error_msgs[0]
+
+    def test_zero_disables_guard(self, mock_api, monitor):
+        """MIN_FREE_DISK_GB=0 skips disk_usage and still starts the session."""
+        monitor.min_free_disk_gb = 0
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_stream = self._stream_and_profile(monitor)
+
+        with (
+            patch("core.live_stream_monitor.shutil.disk_usage") as mock_usage,
+            patch("core.live_stream_monitor.StreamDownloader.download") as mock_download,
+        ):
+            monitor._start_download(mock_stream)
+
+        mock_usage.assert_not_called()
+        mock_download.assert_called_once()
+        assert len(monitor.sessions) == 1
+
+    def test_disk_usage_oserror_allows_session_with_warning(self, mock_api, monitor, caplog):
+        """OSError from disk_usage logs a warning and allows the session."""
+        monitor.min_free_disk_gb = 5
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_stream = self._stream_and_profile(monitor)
+
+        with (
+            patch(
+                "core.live_stream_monitor.shutil.disk_usage",
+                side_effect=OSError("statvfs failed"),
+            ),
+            patch("core.live_stream_monitor.StreamDownloader.download") as mock_download,
+            caplog.at_level(logging.WARNING, logger="Monitor"),
+        ):
+            monitor._start_download(mock_stream)
+
+        mock_download.assert_called_once()
+        assert len(monitor.sessions) == 1
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "Could not check free disk space" in r.getMessage()
+        ]
+        assert len(warnings) == 1
 
 
 class TestCheckLiveStreams:
@@ -1739,13 +1833,14 @@ class TestHeartbeatLogOptimization:
             api=mock_api,
         )
 
-        with patch.object(monitor.logger, 'debug') as mock_debug:
+        with patch.object(monitor.logger, 'info') as mock_info:
             # Run multiple checks
             for _ in range(10):
                 monitor.check_live_streams_and_start_download()
 
-        # Should have at least one periodic heartbeat (debug level)
-        heartbeat_logs = [c for c in mock_debug.call_args_list if "Checked" in str(c) or "heartbeat" in str(c).lower()]
+        # Should have at least one periodic heartbeat (info level, so quiet
+        # nights still show life in default INFO logs)
+        heartbeat_logs = [c for c in mock_info.call_args_list if "Checked" in str(c)]
         assert len(heartbeat_logs) >= 1
 
 
