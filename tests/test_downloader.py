@@ -177,7 +177,9 @@ class TestYtDlpLoggerBridge:
 
     def test_internal_ytdlp_debug_logs_are_suppressed_by_default(self, tmp_path, monkeypatch):
         """Test internal yt-dlp debug chatter is hidden unless explicitly enabled."""
-        monkeypatch.delenv("LOG_YTDLP_INTERNAL", raising=False)
+        import core.logger as logger_module
+
+        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", False)
         downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
         logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
 
@@ -188,7 +190,9 @@ class TestYtDlpLoggerBridge:
 
     def test_internal_ytdlp_debug_logs_can_be_enabled(self, tmp_path, monkeypatch):
         """Test internal yt-dlp debug chatter can be surfaced for diagnosis."""
-        monkeypatch.setenv("LOG_YTDLP_INTERNAL", "true")
+        import core.logger as logger_module
+
+        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", True)
         downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
         logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
 

@@ -179,7 +179,8 @@ INTERVAL=60
 # Optional: application log level
 LOG_LEVEL=INFO
 
-# Optional: surface yt-dlp internal debug chatter (`1`, `true`, `yes`, `on`)
+# Optional: surface yt-dlp internal debug chatter
+# truthy: 1/true/yes/on; falsy: 0/false/no/off/empty; other values abort startup
 LOG_YTDLP_INTERNAL=false
 
 # Optional: log rotation settings
@@ -199,8 +200,8 @@ Environment variables:
 | `AUTH_TOKEN` | yes | none | non-empty | RPlay auth token used for API and stream access |
 | `USER_OID` | yes | none | non-empty | Your RPlay user identifier |
 | `INTERVAL` | no | `60` | integer `10`-`3600` | Poll interval in seconds |
-| `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; invalid values fall back to `INFO` | Console and file log verbosity |
-| `LOG_YTDLP_INTERNAL` | no | `false` | truthy values: `1`, `true`, `yes`, `on` | Enables noisy yt-dlp internal debug lines |
+| `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; invalid values abort startup with a non-zero exit | Console and file log verbosity |
+| `LOG_YTDLP_INTERNAL` | no | `false` | truthy: `1`, `true`, `yes`, `on`; falsy: `0`, `false`, `no`, `off`, empty; other values abort startup | Enables noisy yt-dlp internal debug lines |
 | `LOG_MAX_SIZE_MB` | no | `5` | integer `1`-`100` | Maximum size of each log file before rotation |
 | `LOG_BACKUP_COUNT` | no | `5` | integer `1`-`50` | Number of rotated log files to keep |
 | `LOG_RETENTION_DAYS` | no | `30` | integer `1`-`365` | Age-based cleanup window for old logs |

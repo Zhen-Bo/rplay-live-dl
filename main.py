@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from core.downloader import StreamDownloader
 from core.env import EnvConfigError, load_env
-from core.logger import cleanup_old_logs, setup_logger
+from core.logger import cleanup_old_logs, configure_logging, setup_logger
 from core.scheduler import run_scheduler
 
 
@@ -60,7 +60,24 @@ def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
 def main() -> None:
     """Main entry point for the application."""
     load_dotenv()
+
+    # Validate env before configuring logging so invalid values fail fast
+    # without a half-configured logger or silent fallback.
+    try:
+        env = load_env()
+    except EnvConfigError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Invalid configuration: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error loading configuration: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    configure_logging(env)
     logger = setup_logger("Main")
+    logger.info("Environment configuration loaded successfully")
 
     # Cleanup old log files on startup
     try:
@@ -71,20 +88,6 @@ def main() -> None:
         logger.warning(f"Failed to cleanup old logs: {e}")
 
     _warn_about_orphaned_downloads(logger)
-
-    # Load environment configuration
-    try:
-        env = load_env()
-        logger.info("Environment configuration loaded successfully")
-    except EnvConfigError as e:
-        logger.error(f"Configuration error: {e}")
-        sys.exit(1)
-    except ValueError as e:
-        logger.error(f"Invalid configuration: {e}")
-        sys.exit(1)
-    except Exception as e:
-        logger.exception(f"Unexpected error loading configuration: {e}")
-        sys.exit(1)
 
     # Start the scheduler
     try:

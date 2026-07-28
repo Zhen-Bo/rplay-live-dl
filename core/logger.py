@@ -14,13 +14,26 @@ import os
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import colorlog
 import wcwidth
 
+from core.constants import (
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_LEVEL as DEFAULT_LOG_LEVEL_NAME,
+    DEFAULT_LOG_MAX_SIZE_MB,
+    DEFAULT_LOG_RETENTION_DAYS,
+    DEFAULT_LOG_YTDLP_INTERNAL,
+)
+
+if TYPE_CHECKING:
+    from models.env import EnvConfig
+
 __all__ = [
     "setup_logger",
+    "configure_logging",
+    "is_ytdlp_internal_logging_enabled",
     "cleanup_old_logs",
     "get_logs_dir",
     "bind",
@@ -29,47 +42,43 @@ __all__ = [
     "LOG_TEXT_MAX_COLUMNS",
 ]
 
-# Default log configuration
-DEFAULT_LOG_LEVEL = logging.INFO
-LOG_LEVEL_ENV_VAR = "LOG_LEVEL"
+# Default log level constant (int) derived from the shared name default.
+DEFAULT_LOG_LEVEL = logging.getLevelNamesMapping()[DEFAULT_LOG_LEVEL_NAME]
+
+# Process-wide settings; start at constants defaults, overridden by configure_logging.
+_configured_log_level: int = DEFAULT_LOG_LEVEL
+_configured_ytdlp_internal: bool = DEFAULT_LOG_YTDLP_INTERNAL
 
 
 def _get_log_max_bytes() -> int:
-    return int(os.getenv("LOG_MAX_SIZE_MB", "5")) * 1024 * 1024
+    return int(os.getenv("LOG_MAX_SIZE_MB", str(DEFAULT_LOG_MAX_SIZE_MB))) * 1024 * 1024
 
 
 def _get_log_backup_count() -> int:
-    return int(os.getenv("LOG_BACKUP_COUNT", "5"))
+    return int(os.getenv("LOG_BACKUP_COUNT", str(DEFAULT_LOG_BACKUP_COUNT)))
 
 
 def _get_log_retention_days() -> int:
-    return int(os.getenv("LOG_RETENTION_DAYS", "30"))
+    return int(os.getenv("LOG_RETENTION_DAYS", str(DEFAULT_LOG_RETENTION_DAYS)))
 
 
-def _parse_log_level(value: Optional[str]) -> Optional[int]:
-    """Parse a case-insensitive log level name into a logging constant."""
-    if value is None:
-        return None
+def configure_logging(env: "EnvConfig") -> None:
+    """Apply validated env log settings as process-wide logging configuration."""
+    global _configured_log_level, _configured_ytdlp_internal
+    _configured_log_level = logging.getLevelNamesMapping()[env.log_level]
+    _configured_ytdlp_internal = env.log_ytdlp_internal
 
-    normalized = value.strip().upper()
-    if not normalized:
-        return None
 
-    level = logging.getLevelNamesMapping().get(normalized)
-    return level if isinstance(level, int) else None
+def is_ytdlp_internal_logging_enabled() -> bool:
+    """Return whether yt-dlp internal debug chatter should be surfaced."""
+    return _configured_ytdlp_internal
 
 
 def _resolve_log_level(level: Optional[int]) -> int:
-    """Resolve the configured log level from explicit args or env, else INFO."""
+    """Resolve log level from explicit arg or configure_logging defaults."""
     if level is not None:
         return level
-
-    configured_value = os.getenv(LOG_LEVEL_ENV_VAR)
-    parsed_level = _parse_log_level(configured_value)
-    if parsed_level is None:
-        return DEFAULT_LOG_LEVEL
-
-    return parsed_level
+    return _configured_log_level
 
 # Logger name display width (for alignment)
 # Set to match the longest logger name: "Downloader" = 10 characters
@@ -251,7 +260,7 @@ def setup_logger(
 
     Args:
         name: Logger name (used for both identification and log filename)
-        level: Logging level. When omitted, resolves from LOG_LEVEL then falls back to INFO.
+        level: Logging level. When omitted, uses configure_logging() then DEFAULT_LOG_LEVEL.
         log_to_file: Whether to output to file (default: True)
         log_to_console: Whether to output to console (default: True)
 
