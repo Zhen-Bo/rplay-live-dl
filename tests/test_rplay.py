@@ -135,6 +135,17 @@ class TestGetStreamUrl:
 
         assert "playlist.m3u8" in url
 
+    def test_reuses_provided_stream_key_without_fetch(self):
+        """Test an explicit stream_key skips the key2 network call."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch.object(api, "_get_stream_key") as mock_get_key:
+            url = api.get_stream_url("creator123", stream_key="prefetched")
+
+        mock_get_key.assert_not_called()
+        assert "key2=prefetched" in url
+        assert "creatorOid=creator123" in url
+
 
 class TestValidateCredentials:
     """Tests for the public credential-validation seam."""

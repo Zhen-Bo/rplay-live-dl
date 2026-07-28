@@ -167,6 +167,8 @@ class LiveStreamMonitor:
         self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
         # ponytail: one bool; re-armed on successful key2 (get_stream_url).
         self._auth_error_notified = False
+        # ponytail: per-cycle only, no TTL — key2 is user-scoped, not creator-scoped.
+        self._cycle_stream_key: Optional[str] = None
 
         # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
@@ -293,6 +295,8 @@ class LiveStreamMonitor:
 
     def _run_poll_cycle(self) -> None:
         """Check active streams and start new downloads on the control loop."""
+        # Unconditional: never carry key2 across poll cycles (incl. A3 retry polls).
+        self._cycle_stream_key = None
         try:
             self._update_downloaders()
             live_streams = self.api.get_livestream_status()
@@ -455,9 +459,7 @@ class LiveStreamMonitor:
         bind(self.logger, creator_name).info(f'🔴 Live: "{clip(stream.title)}"')
 
         try:
-            stream_url = self.api.get_stream_url(creator_oid)
-            # Successful key2 re-arms auth-error logging for the next failure streak.
-            self._auth_error_notified = False
+            stream_url = self._get_cycle_stream_url(creator_oid)
             self._launch_session_downloader(
                 session=session,
                 stream_url=stream_url,
@@ -465,6 +467,22 @@ class LiveStreamMonitor:
             )
         except Exception as exc:
             self._handle_start_download_error(session.session_key, creator_name, exc)
+
+    def _get_cycle_stream_url(self, creator_oid: str) -> str:
+        """Build a stream URL, reusing this poll cycle's key2 after the first success."""
+        if self._cycle_stream_key is not None:
+            return self.api.get_stream_url(
+                creator_oid,
+                stream_key=self._cycle_stream_key,
+            )
+
+        # Real fetch: only successes are cached; failures leave the slot empty.
+        stream_key = self.api._get_stream_key()
+        self._cycle_stream_key = stream_key
+        # Successful key2 re-arms auth-error logging for the next failure streak.
+        # Cache hits skip re-arm — they follow a success already in this cycle.
+        self._auth_error_notified = False
+        return self.api.get_stream_url(creator_oid, stream_key=stream_key)
 
     def _launch_session_downloader(
         self,

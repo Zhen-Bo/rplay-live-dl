@@ -6,7 +6,7 @@ including methods for retrieving stream status and generating stream URLs.
 """
 
 import time
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlencode
 
 import requests
@@ -212,12 +212,17 @@ class RPlayAPI:
 
         return []
 
-    def get_stream_url(self, creator_oid: str) -> str:
+    def get_stream_url(
+        self,
+        creator_oid: str,
+        stream_key: Optional[str] = None,
+    ) -> str:
         """
         Generate the playback URL for a specific creator's livestream.
 
         Args:
             creator_oid: Unique identifier of the streamer
+            stream_key: Optional pre-fetched key2. When omitted, key2 is fetched.
 
         Returns:
             str: Complete M3U8 format stream URL with authentication parameters
@@ -226,7 +231,8 @@ class RPlayAPI:
             RPlayAuthError: If authentication fails
             RPlayAPIError: If stream key retrieval fails
         """
-        stream_key = self._get_stream_key()
+        if stream_key is None:
+            stream_key = self._get_stream_key()
 
         params = urlencode({
             "creatorOid": creator_oid,
