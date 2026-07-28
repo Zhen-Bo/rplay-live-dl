@@ -235,6 +235,18 @@ class RPlayAPI:
 
         return f"{self.base_url}/live/stream/playlist.m3u8?{params}"
 
+    def validate_credentials(self) -> None:
+        """
+        Verify AUTH_TOKEN/USER_OID by fetching a stream key once.
+
+        Raises:
+            RPlayAuthError: If credentials are invalid or expired
+            RPlayConnectionError: If the request times out or loses connection
+            RPlayAPIError: If the API returns a non-retryable non-auth failure
+        """
+        # ponytail: key2 is the cheapest authenticated call; no parallel health endpoint.
+        self._get_stream_key()
+
     def _get_stream_key(self) -> str:
         """
         Retrieve the authentication key required for stream access.

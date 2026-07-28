@@ -136,6 +136,39 @@ class TestGetStreamUrl:
         assert "playlist.m3u8" in url
 
 
+class TestValidateCredentials:
+    """Tests for validate_credentials method."""
+
+    def test_success_calls_get_stream_key(self):
+        """Test successful validation obtains a stream key."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch.object(api, "_get_stream_key", return_value="key") as mock_key:
+            api.validate_credentials()
+
+        mock_key.assert_called_once_with()
+
+    def test_auth_failure_raises_auth_error(self):
+        """Test auth failure propagates as RPlayAuthError."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch.object(
+            api, "_get_stream_key", side_effect=RPlayAuthError("Authentication failed")
+        ):
+            with pytest.raises(RPlayAuthError, match="Authentication failed"):
+                api.validate_credentials()
+
+    def test_network_failure_raises_connection_error(self):
+        """Test network failure propagates as RPlayConnectionError."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        with patch.object(
+            api, "_get_stream_key", side_effect=RPlayConnectionError("Request timed out")
+        ):
+            with pytest.raises(RPlayConnectionError, match="timed out"):
+                api.validate_credentials()
+
+
 class TestGetStreamKey:
     """Tests for _get_stream_key method."""
 

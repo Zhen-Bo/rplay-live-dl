@@ -12,8 +12,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from core.downloader import StreamDownloader
-from core.env import EnvConfigError, load_env
+from core.env import EnvConfig, EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
+from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from core.scheduler import run_scheduler
 
 
@@ -25,6 +26,43 @@ def _read_version() -> str:
 
 
 __version__ = _read_version()
+
+
+def _validate_startup_credentials(env: EnvConfig, logger: logging.Logger) -> bool:
+    """
+    Validate API credentials once after logging is configured.
+
+    Returns:
+        False when credentials are invalid (caller should exit non-zero).
+        True on success, or when only transient network/API errors occur so the
+        monitor's normal retry loop can own those failures.
+    """
+    api = RPlayAPI(env.auth_token, env.user_oid)
+    try:
+        api.validate_credentials()
+        logger.info("API credentials validated successfully")
+        return True
+    except RPlayAuthError as exc:
+        logger.error(f"Authentication failed: {exc}")
+        logger.error(
+            "Please update AUTH_TOKEN and USER_OID in your .env file, then restart."
+        )
+        return False
+    except RPlayConnectionError as exc:
+        # ponytail: network blips must not block startup; monitor retries.
+        logger.warning(
+            f"Could not verify credentials due to network error "
+            f"(continuing; will retry while running): {exc}"
+        )
+        return True
+    except RPlayAPIError as exc:
+        logger.warning(
+            f"Could not verify credentials due to API error "
+            f"(continuing; will retry while running): {exc}"
+        )
+        return True
+    finally:
+        api.close()
 
 
 def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
@@ -88,6 +126,9 @@ def main() -> None:
         logger.warning(f"Failed to cleanup old logs: {e}")
 
     _warn_about_orphaned_downloads(logger)
+
+    if not _validate_startup_credentials(env, logger):
+        sys.exit(1)
 
     # Start the scheduler
     try:
