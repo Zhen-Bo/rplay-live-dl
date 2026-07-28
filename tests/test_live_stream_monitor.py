@@ -12,6 +12,7 @@ from models.config import AppConfig, CreatorProfile
 from models.download import (
     DownloadSession,
     MergeCompleted,
+    RawDownloadAuthFailed,
     RawDownloadBlocked,
     RawDownloadCompleted,
     SessionState,
@@ -1335,6 +1336,88 @@ class TestSessionDownloadBlockedHandling:
         mock_api.get_stream_url.reset_mock()
         monitor.check_live_streams_and_start_download()
         mock_api.get_stream_url.assert_not_called()
+
+
+class TestPlaylistHttpAuthRouting:
+    """Pin playlist HTTP status → auth vs blocked event path and health impact.
+
+    Binding domain facts (playlist fetch):
+    - 401 → AUTH (invalid/expired key2): auth-failure path, marks unhealthy
+    - 403 / 404 → BLOCKED (paid/restricted): blocked path, does not touch health
+    Downloader worker callback routing for these statuses is covered in
+    test_downloader.py; these tests pin the monitor-side outcomes.
+    """
+
+    SESSION_KEY = "creator1:2026-01-26T12:00:00"
+
+    def _monitor_with_raw_session(self, mock_api, tmp_path):
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+        monitor.sessions[self.SESSION_KEY] = DownloadSession(
+            session_key=self.SESSION_KEY,
+            creator_oid="creator1",
+            creator_name="Creator1",
+            title="Test Stream",
+            stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
+            state=SessionState.RAW_RUNNING,
+            output_dir=tmp_path,
+            session_prefix="20260126_120000_",
+        )
+        monitor._creator_states["creator1"] = CreatorStreamState(
+            last_stream_oid="stream-1",
+        )
+        return monitor
+
+    def test_playlist_401_auth_failed_marks_unhealthy(self, mock_api, tmp_path):
+        """Playlist 401 surfaces as auth failure and marks health unhealthy."""
+        monitor = self._monitor_with_raw_session(mock_api, tmp_path)
+        assert monitor.is_healthy is True
+
+        monitor._handle_raw_download_auth_failed(
+            RawDownloadAuthFailed(
+                session_key=self.SESSION_KEY,
+                error_message="HTTP Error 401: Unauthorized",
+            )
+        )
+
+        assert self.SESSION_KEY not in monitor.sessions
+        assert monitor.is_healthy is False
+        assert monitor._creator_states["creator1"].is_current_stream_blocked is False
+
+    def test_playlist_403_blocked_does_not_touch_health(self, mock_api, tmp_path):
+        """Playlist 403 surfaces as blocked and leaves health untouched."""
+        monitor = self._monitor_with_raw_session(mock_api, tmp_path)
+        assert monitor.is_healthy is True
+
+        monitor._handle_raw_download_blocked(
+            RawDownloadBlocked(
+                session_key=self.SESSION_KEY,
+                error_message="HTTP Error 403: Forbidden",
+            )
+        )
+
+        assert monitor.sessions[self.SESSION_KEY].state == SessionState.BLOCKED
+        assert monitor._creator_states["creator1"].is_current_stream_blocked is True
+        assert monitor.is_healthy is True
+
+    def test_playlist_404_blocked_does_not_touch_health(self, mock_api, tmp_path):
+        """Playlist 404 (paid content with valid key2) is blocked, not unhealthy."""
+        monitor = self._monitor_with_raw_session(mock_api, tmp_path)
+        assert monitor.is_healthy is True
+
+        monitor._handle_raw_download_blocked(
+            RawDownloadBlocked(
+                session_key=self.SESSION_KEY,
+                error_message="HTTP Error 404: Not Found",
+            )
+        )
+
+        assert monitor.sessions[self.SESSION_KEY].state == SessionState.BLOCKED
+        assert monitor._creator_states["creator1"].is_current_stream_blocked is True
+        assert monitor.is_healthy is True
 
 
 class TestHeartbeatLogOptimization:
