@@ -9,6 +9,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.constants import (
+    DEFAULT_INTERVAL,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_LOG_MAX_SIZE_MB,
@@ -47,7 +48,7 @@ class EnvConfig(BaseSettings):
         min_length=1,
     )
     interval: int = Field(
-        default=60,
+        default=DEFAULT_INTERVAL,
         description="Check interval in seconds",
         ge=10,
         le=3600,
