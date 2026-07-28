@@ -137,36 +137,33 @@ class TestGetStreamUrl:
 
 
 class TestValidateCredentials:
-    """Tests for validate_credentials method."""
+    """Tests for the public credential-validation seam."""
 
-    def test_success_calls_get_stream_key(self):
-        """Test successful validation obtains a stream key."""
+    def test_success(self):
+        """Test successful validation when key2 returns an authKey."""
         api = RPlayAPI(auth_token="test", user_oid="test")
 
-        with patch.object(api, "_get_stream_key", return_value="key") as mock_key:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"authKey": "stream-key"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(api._session, "get", return_value=mock_response):
             api.validate_credentials()
 
-        mock_key.assert_called_once_with()
-
     def test_auth_failure_raises_auth_error(self):
-        """Test auth failure propagates as RPlayAuthError."""
+        """Test 401 from key2 raises RPlayAuthError without API-layer ERROR log."""
         api = RPlayAPI(auth_token="test", user_oid="test")
 
-        with patch.object(
-            api, "_get_stream_key", side_effect=RPlayAuthError("Authentication failed")
-        ):
-            with pytest.raises(RPlayAuthError, match="Authentication failed"):
-                api.validate_credentials()
+        mock_response = MagicMock()
+        mock_response.status_code = 401
 
-    def test_network_failure_raises_connection_error(self):
-        """Test network failure propagates as RPlayConnectionError."""
-        api = RPlayAPI(auth_token="test", user_oid="test")
+        with patch.object(api._session, "get", return_value=mock_response):
+            with patch.object(api.logger, "error") as mock_error:
+                with pytest.raises(RPlayAuthError, match="Authentication failed"):
+                    api.validate_credentials()
 
-        with patch.object(
-            api, "_get_stream_key", side_effect=RPlayConnectionError("Request timed out")
-        ):
-            with pytest.raises(RPlayConnectionError, match="timed out"):
-                api.validate_credentials()
+        mock_error.assert_not_called()
 
 
 class TestGetStreamKey:

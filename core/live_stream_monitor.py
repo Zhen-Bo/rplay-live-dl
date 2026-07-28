@@ -314,8 +314,8 @@ class LiveStreamMonitor:
             self._mark_check_failed()
         except RPlayAuthError as exc:
             self._log_auth_error(
-                f"Authentication error: {exc}",
-                "Please update your AUTH_TOKEN in .env file",
+                f"Authentication error: {exc}. "
+                "Please update your AUTH_TOKEN in .env file"
             )
             self._mark_check_failed()
         except RPlayConnectionError as exc:
@@ -920,15 +920,11 @@ class LiveStreamMonitor:
             f"{event.error_message}. Please verify AUTH_TOKEN and USER_OID credentials."
         )
 
-    def _log_auth_error(self, *messages: str) -> None:
+    def _log_auth_error(self, message: str) -> None:
         """Log auth errors once per failure streak; repeats go to DEBUG."""
-        if self._auth_error_notified:
-            for message in messages:
-                self.logger.debug(message)
-            return
+        log = self.logger.debug if self._auth_error_notified else self.logger.error
         self._auth_error_notified = True
-        for message in messages:
-            self.logger.error(message)
+        log(message)
 
     def _handle_raw_download_failed(self, event: RawDownloadFailed) -> None:
         """Clear the failed raw session and re-poll at once if the creator is still live."""

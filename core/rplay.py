@@ -282,7 +282,7 @@ class RPlayAPI:
                     status_code = getattr(response, "status_code", None)
 
                     if self._is_auth_status_code(status_code):
-                        self.logger.error("Authentication failed - token may be expired")
+                        # Caller logs expected auth failures (startup / monitor dedup).
                         raise RPlayAuthError(
                             "Authentication failed. Please check your AUTH_TOKEN."
                         )
@@ -293,7 +293,7 @@ class RPlayAPI:
                     response.raise_for_status()
                     data = response.json()
                     if "authKey" not in data:
-                        self.logger.error("Invalid response: missing authKey")
+                        # Caller logs expected auth failures (startup / monitor dedup).
                         raise RPlayAuthError("Invalid authentication response")
                     return data["authKey"]
 
@@ -314,7 +314,7 @@ class RPlayAPI:
 
         except requests.exceptions.HTTPError as exc:
             if exc.response is not None and exc.response.status_code in (401, 403):
-                self.logger.error("Authentication failed - token may be expired")
+                # Caller logs expected auth failures (startup / monitor dedup).
                 raise RPlayAuthError(
                     "Authentication failed. Please check your AUTH_TOKEN."
                 )

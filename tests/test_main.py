@@ -6,12 +6,83 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.rplay import RPlayAPIError, RPlayAuthError, RPlayConnectionError
-from main import _validate_startup_credentials, _warn_about_orphaned_downloads, main
+from main import _warn_about_orphaned_downloads, main
+from models.config import AppConfig
 from models.env import EnvConfig
 
 
-def _valid_env() -> EnvConfig:
-    return EnvConfig(auth_token="test_token", user_oid="test_oid", interval=60)
+def _patch_main_startup(monkeypatch, *, api_side_effect=None, calls=None):
+    """Patch main() deps; optionally record call order in ``calls``."""
+    monkeypatch.setenv("AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("USER_OID", "test-oid")
+    monkeypatch.setattr("main.load_dotenv", lambda: None)
+    monkeypatch.setattr(
+        EnvConfig,
+        "model_config",
+        {**EnvConfig.model_config, "env_file": None},
+    )
+
+    def _track(name, fn):
+        def wrapper(*args, **kwargs):
+            if calls is not None:
+                calls.append(name)
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(
+        "main.configure_logging",
+        _track("configure_logging", MagicMock()),
+    )
+    monkeypatch.setattr(
+        "main.setup_logger",
+        _track("setup_logger", MagicMock(return_value=MagicMock(spec=logging.Logger))),
+    )
+    monkeypatch.setattr("main.cleanup_old_logs", MagicMock(return_value=0))
+    monkeypatch.setattr("main._warn_about_orphaned_downloads", MagicMock())
+    monkeypatch.setattr(
+        "main.read_app_config",
+        MagicMock(
+            return_value=AppConfig(
+                api_base_url="https://api.example.com",
+                creators=[],
+            )
+        ),
+    )
+
+    api = MagicMock()
+    if api_side_effect is not None:
+        api.validate_credentials.side_effect = api_side_effect
+
+    def _make_api(*args, **kwargs):
+        if calls is not None:
+            calls.append("validate_credentials")
+        return api
+
+    # Track when the validation client is constructed (stands in for the probe).
+    monkeypatch.setattr("main.RPlayAPI", _make_api)
+
+    run_scheduler_mock = MagicMock()
+    if calls is not None:
+
+        def _run_scheduler(*args, **kwargs):
+            calls.append("run_scheduler")
+            return run_scheduler_mock(*args, **kwargs)
+
+        monkeypatch.setattr("main.run_scheduler", _run_scheduler)
+    else:
+        monkeypatch.setattr("main.run_scheduler", run_scheduler_mock)
+
+    # load_env runs before configure_logging; record it via a thin wrapper.
+    real_load_env = __import__("main", fromlist=["load_env"]).load_env
+
+    def _load_env():
+        if calls is not None:
+            calls.append("load_env")
+        return real_load_env()
+
+    monkeypatch.setattr("main.load_env", _load_env)
+    return api, run_scheduler_mock
 
 
 def test_warns_about_each_kind_of_leftover(tmp_path, monkeypatch, caplog):
@@ -95,107 +166,66 @@ def test_main_invalid_log_level_exits_before_setup_logger(monkeypatch, capsys):
     assert secret_oid not in captured.out
 
 
-def test_validate_startup_credentials_success(monkeypatch):
-    """Test credential validation returns True on success."""
-    logger = MagicMock(spec=logging.Logger)
-    api = MagicMock()
-    monkeypatch.setattr("main.RPlayAPI", MagicMock(return_value=api))
+def test_main_success_order(monkeypatch):
+    """Test main runs load_env → logging → credential validation → scheduler."""
+    calls: list[str] = []
+    api, _ = _patch_main_startup(monkeypatch, calls=calls)
 
-    assert _validate_startup_credentials(_valid_env(), logger) is True
+    main()
+
+    assert calls == [
+        "load_env",
+        "configure_logging",
+        "setup_logger",
+        "validate_credentials",
+        "run_scheduler",
+    ]
     api.validate_credentials.assert_called_once_with()
     api.close.assert_called_once_with()
 
 
-def test_validate_startup_credentials_auth_failure(monkeypatch):
-    """Test credential validation returns False on auth failure."""
+def test_main_auth_failure_exits_once_and_never_starts_scheduler(monkeypatch):
+    """Test auth failure exits 1 with exactly one ERROR; scheduler never starts."""
     logger = MagicMock(spec=logging.Logger)
-    api = MagicMock()
-    api.validate_credentials.side_effect = RPlayAuthError(
-        "Authentication failed. Please check your AUTH_TOKEN."
+    api, run_scheduler_mock = _patch_main_startup(
+        monkeypatch,
+        api_side_effect=RPlayAuthError(
+            "Authentication failed. Please check your AUTH_TOKEN."
+        ),
     )
-    monkeypatch.setattr("main.RPlayAPI", MagicMock(return_value=api))
-
-    assert _validate_startup_credentials(_valid_env(), logger) is False
-    assert any("Authentication failed" in str(c) for c in logger.error.call_args_list)
-    api.close.assert_called_once_with()
-
-
-def test_validate_startup_credentials_network_does_not_block(monkeypatch):
-    """Test network errors allow startup (monitor owns retries)."""
-    logger = MagicMock(spec=logging.Logger)
-    api = MagicMock()
-    api.validate_credentials.side_effect = RPlayConnectionError("Request timed out")
-    monkeypatch.setattr("main.RPlayAPI", MagicMock(return_value=api))
-
-    assert _validate_startup_credentials(_valid_env(), logger) is True
-    logger.warning.assert_called()
-    api.close.assert_called_once_with()
-
-
-def test_validate_startup_credentials_api_error_does_not_block(monkeypatch):
-    """Test non-auth API errors allow startup."""
-    logger = MagicMock(spec=logging.Logger)
-    api = MagicMock()
-    api.validate_credentials.side_effect = RPlayAPIError("HTTP error: 500")
-    monkeypatch.setattr("main.RPlayAPI", MagicMock(return_value=api))
-
-    assert _validate_startup_credentials(_valid_env(), logger) is True
-    logger.warning.assert_called()
-
-
-def test_main_exits_nonzero_on_auth_failure(monkeypatch, capsys):
-    """Test main exits before the scheduler when credentials are invalid."""
-    monkeypatch.setenv("AUTH_TOKEN", "test-token")
-    monkeypatch.setenv("USER_OID", "test-oid")
-    monkeypatch.setattr("main.load_dotenv", lambda: None)
-    monkeypatch.setattr(
-        EnvConfig,
-        "model_config",
-        {**EnvConfig.model_config, "env_file": None},
-    )
-    monkeypatch.setattr("main.configure_logging", MagicMock())
-    monkeypatch.setattr(
-        "main.setup_logger", MagicMock(return_value=MagicMock(spec=logging.Logger))
-    )
-    monkeypatch.setattr("main.cleanup_old_logs", MagicMock(return_value=0))
-    monkeypatch.setattr("main._warn_about_orphaned_downloads", MagicMock())
-    monkeypatch.setattr(
-        "main._validate_startup_credentials",
-        MagicMock(return_value=False),
-    )
-    run_scheduler_mock = MagicMock()
-    monkeypatch.setattr("main.run_scheduler", run_scheduler_mock)
+    monkeypatch.setattr("main.setup_logger", MagicMock(return_value=logger))
 
     with pytest.raises(SystemExit) as exc_info:
         main()
 
     assert exc_info.value.code == 1
     run_scheduler_mock.assert_not_called()
+    assert logger.error.call_count == 1
+    error_msg = str(logger.error.call_args.args[0])
+    assert "Authentication failed" in error_msg
+    assert "AUTH_TOKEN" in error_msg
+    api.close.assert_called_once_with()
 
 
-def test_main_starts_scheduler_when_credentials_ok(monkeypatch):
-    """Test main reaches the scheduler after successful credential validation."""
-    monkeypatch.setenv("AUTH_TOKEN", "test-token")
-    monkeypatch.setenv("USER_OID", "test-oid")
-    monkeypatch.setattr("main.load_dotenv", lambda: None)
-    monkeypatch.setattr(
-        EnvConfig,
-        "model_config",
-        {**EnvConfig.model_config, "env_file": None},
+@pytest.mark.parametrize(
+    "side_effect",
+    [
+        RPlayConnectionError("Request timed out"),
+        RPlayAPIError("HTTP error: 500"),
+    ],
+)
+def test_main_transient_api_error_continues_to_scheduler(monkeypatch, side_effect):
+    """Test network/API probe failures warn and still start the scheduler."""
+    logger = MagicMock(spec=logging.Logger)
+    api, run_scheduler_mock = _patch_main_startup(
+        monkeypatch,
+        api_side_effect=side_effect,
     )
-    monkeypatch.setattr("main.configure_logging", MagicMock())
-    monkeypatch.setattr(
-        "main.setup_logger", MagicMock(return_value=MagicMock(spec=logging.Logger))
-    )
-    monkeypatch.setattr("main.cleanup_old_logs", MagicMock(return_value=0))
-    monkeypatch.setattr("main._warn_about_orphaned_downloads", MagicMock())
-    monkeypatch.setattr(
-        "main._validate_startup_credentials",
-        MagicMock(return_value=True),
-    )
-    run_scheduler_mock = MagicMock()
-    monkeypatch.setattr("main.run_scheduler", run_scheduler_mock)
+    monkeypatch.setattr("main.setup_logger", MagicMock(return_value=logger))
 
     main()
 
     run_scheduler_mock.assert_called_once()
+    logger.warning.assert_called()
+    logger.error.assert_not_called()
+    api.close.assert_called_once_with()
