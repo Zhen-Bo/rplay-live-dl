@@ -11,76 +11,54 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
 
-from core.constants import (
-    DEFAULT_INTERVAL,
-    HEARTBEAT_FILE_PATH,
-    HEARTBEAT_STALE_MULTIPLIER,
-)
+from core.constants import DEFAULT_INTERVAL
 
 __all__ = [
+    "HEARTBEAT_FILE",
     "touch_heartbeat",
-    "check_heartbeat",
     "main",
 ]
 
+HEARTBEAT_FILE = "/tmp/rplay-live-dl-heartbeat"
 
-def touch_heartbeat(path: Optional[str] = None) -> None:
+
+def touch_heartbeat() -> None:
     """Create or update the heartbeat file mtime."""
-    Path(path if path is not None else HEARTBEAT_FILE_PATH).touch()
+    Path(HEARTBEAT_FILE).touch()
 
 
-def _interval_seconds() -> int:
+def main() -> int:
+    """CLI entry: exit 0 if healthy, non-zero with a one-line reason otherwise."""
     # ponytail: raw getenv only; wrong value skews the threshold, not app config
     raw = os.getenv("INTERVAL", str(DEFAULT_INTERVAL))
     try:
-        value = int(raw)
+        interval = int(raw)
     except (TypeError, ValueError):
-        return DEFAULT_INTERVAL
-    return value if value > 0 else DEFAULT_INTERVAL
+        interval = DEFAULT_INTERVAL
+    if interval <= 0:
+        interval = DEFAULT_INTERVAL
+    max_age = 3 * interval
 
-
-def _max_age_seconds() -> int:
-    return HEARTBEAT_STALE_MULTIPLIER * _interval_seconds()
-
-
-def check_heartbeat(
-    path: Optional[str] = None,
-    *,
-    now: Optional[float] = None,
-) -> Tuple[bool, str]:
-    """
-    Return (healthy, reason). reason is empty when healthy.
-
-    Args:
-        path: Heartbeat file path (defaults to HEARTBEAT_FILE_PATH)
-        now: Optional epoch seconds for deterministic tests
-    """
-    heartbeat_path = Path(path if path is not None else HEARTBEAT_FILE_PATH)
-    if not heartbeat_path.exists():
-        return False, f"heartbeat missing: {heartbeat_path}"
+    path = Path(HEARTBEAT_FILE)
+    if not path.exists():
+        print(f"heartbeat missing: {path}", file=sys.stderr)
+        return 1
 
     try:
-        mtime = heartbeat_path.stat().st_mtime
+        mtime = path.stat().st_mtime
     except OSError as exc:
-        return False, f"heartbeat unreadable: {exc}"
+        print(f"heartbeat unreadable: {exc}", file=sys.stderr)
+        return 1
 
-    age = (time.time() if now is None else now) - mtime
-    max_age = _max_age_seconds()
-    if age > max_age:
-        return False, f"heartbeat stale: age={age:.0f}s max={max_age}s"
-    return True, ""
-
-
-def main(argv: Optional[list[str]] = None) -> int:
-    """CLI entry: exit 0 if healthy, non-zero with a one-line reason otherwise."""
-    del argv  # reserved for future flags; probe takes no args today
-    ok, reason = check_heartbeat()
-    if ok:
-        return 0
-    print(reason, file=sys.stderr)
-    return 1
+    age = time.time() - mtime
+    if age < 0:
+        print(f"heartbeat clock skew: mtime in the future by {-age:.0f}s", file=sys.stderr)
+        return 1
+    if age >= max_age:
+        print(f"heartbeat stale: age={age:.0f}s max={max_age}s", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

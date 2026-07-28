@@ -342,16 +342,7 @@ docker run -d \
 
 #### Docker healthcheck
 
-The image defines a `HEALTHCHECK` that runs `python -m core.health`.
-
-| Detail | Behavior |
-| --- | --- |
-| Heartbeat file | `/tmp/rplay-live-dl-heartbeat` (touched once per monitor poll cycle) |
-| Healthy | file exists and mtime is fresher than `3 × INTERVAL` seconds |
-| Unhealthy | file missing or stale (probe prints a one-line reason) |
-| Probe interval | every 60s inside the container (independent of app `INTERVAL`) |
-
-Docker only *displays* unhealthy status; it does not restart the container. The staleness window scales with `INTERVAL` (default 60 → unhealthy after 180s without a successful poll-cycle touch).
+The image runs `python -m core.health` every 60s (`--retries=3`). Healthy when `/tmp/rplay-live-dl-heartbeat` exists and its mtime is strictly fresher than `3 × INTERVAL` seconds (touched once per monitor poll cycle, including failed ones). Docker only *displays* unhealthy status; it does not restart the container. With default `INTERVAL=60`, probes start failing after 180s without a heartbeat update, and Docker marks the container unhealthy ~300–360s after the last heartbeat update.
 
 ### Directory Structure
 

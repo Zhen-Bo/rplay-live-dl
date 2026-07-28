@@ -348,16 +348,12 @@ class LiveStreamMonitor:
             self._mark_check_failed()
         finally:
             # Heartbeat once per cycle so Docker can see the monitor is polling.
-            self._touch_heartbeat()
-
-    def _touch_heartbeat(self) -> None:
-        """Update the Docker healthcheck heartbeat file; never break polling."""
-        try:
-            touch_heartbeat()
-        except OSError as exc:
-            if not self._heartbeat_write_warned:
-                self._heartbeat_write_warned = True
-                self.logger.warning(f"Failed to write heartbeat file: {exc}")
+            try:
+                touch_heartbeat()
+            except OSError as exc:
+                if not self._heartbeat_write_warned:
+                    self._heartbeat_write_warned = True
+                    self.logger.warning(f"Failed to write heartbeat file: {exc}")
 
     def _mark_check_succeeded(self) -> None:
         """Record a successful monitor poll."""

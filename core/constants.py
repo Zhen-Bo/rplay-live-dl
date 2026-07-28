@@ -47,10 +47,6 @@ DEFAULT_MIN_FREE_DISK_GB = 5.0
 # Poll interval default (INTERVAL env); shared by EnvConfig and the health probe
 DEFAULT_INTERVAL = 60
 
-# Docker healthcheck heartbeat file (touched once per monitor poll cycle)
-HEARTBEAT_FILE_PATH = "/tmp/rplay-live-dl-heartbeat"
-HEARTBEAT_STALE_MULTIPLIER = 3
-
 __all__ = [
     "RPLAY_SITE_URL",
     "DEFAULT_RPLAY_API_BASE_URL",
@@ -71,6 +67,4 @@ __all__ = [
     "DEFAULT_LOG_YTDLP_INTERNAL",
     "DEFAULT_MIN_FREE_DISK_GB",
     "DEFAULT_INTERVAL",
-    "HEARTBEAT_FILE_PATH",
-    "HEARTBEAT_STALE_MULTIPLIER",
 ]
