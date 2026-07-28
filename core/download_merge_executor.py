@@ -1,9 +1,8 @@
 ﻿"""Dedicated executor for asynchronous merge jobs."""
 
-from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_for_futures
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from threading import Lock
-from time import monotonic
-from typing import Callable, Optional, Set
+from typing import Callable, Optional
 
 
 class DownloadMergeExecutor:
@@ -12,57 +11,46 @@ class DownloadMergeExecutor:
     def __init__(self, max_workers: int = 1) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="merge")
         self._lock = Lock()
-        self._shutdown = False
-        self._pending: Set[Future] = set()
+        self._closed = False
 
     def submit_merge(self, task: Callable[[], object]) -> Future:
-        """Submit a merge task for asynchronous execution."""
+        """
+        Submit a merge task for asynchronous execution.
+
+        Raises:
+            RuntimeError: If acceptance was already closed by drain/shutdown.
+                Callers must treat this as "too late to merge", not as a crash.
+        """
         with self._lock:
-            if self._shutdown:
+            if self._closed:
                 raise RuntimeError("merge executor is shut down")
-            future = self._executor.submit(task)
-            self._pending.add(future)
-
-        # Outside the lock on purpose: an already-finished task runs this
-        # callback inline, and self._lock is not reentrant.
-        future.add_done_callback(self._forget_pending)
-        return future
-
-    def _forget_pending(self, future: Future) -> None:
-        """Drop a finished merge from the pending set."""
-        with self._lock:
-            self._pending.discard(future)
+            return self._executor.submit(task)
 
     def drain(self, timeout: Optional[float] = None) -> bool:
         """
-        Wait for submitted merges to finish while staying open for new work.
+        Close acceptance, then wait for already-queued merges to finish.
 
-        Shutdown needs this: closing the executor to flush it would reject the
-        merges that recordings stopped by that same shutdown are about to
-        submit. Re-checks after each wait because a late raw completion can
-        still queue a merge while this drains.
+        The pool is FIFO with a single worker, so a no-op enqueued under the
+        same lock that closes acceptance is necessarily the last task in the
+        queue: once it runs, every merge submitted before it has finished.
+        That barrier is what makes the wait bounded — the previous pending-set
+        re-check could be extended indefinitely by late submissions.
 
         Returns:
-            True when nothing is pending anymore, False if timeout ran out.
+            True when queued merges finished, False if the timeout ran out.
         """
-        deadline = None if timeout is None else monotonic() + timeout
-        while True:
-            with self._lock:
-                pending = set(self._pending)
-            if not pending:
-                return True
-            if deadline is None:
-                wait_for_futures(pending)
-                continue
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                return False
-            wait_for_futures(pending, timeout=remaining)
+        with self._lock:
+            self._closed = True
+            barrier = self._executor.submit(lambda: None)
 
-    def shutdown(self, wait: bool = False) -> None:
+        try:
+            barrier.result(timeout=timeout)
+            return True
+        except FutureTimeoutError:
+            return False
+
+    def shutdown(self, wait: bool = False, cancel_futures: bool = False) -> None:
         """Stop accepting new work and shut down the executor."""
         with self._lock:
-            if self._shutdown:
-                return
-            self._shutdown = True
-        self._executor.shutdown(wait=wait)
+            self._closed = True
+        self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)

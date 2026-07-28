@@ -4,7 +4,7 @@ Utility functions for rplay-live-dl.
 Provides common helper functions used across multiple modules.
 """
 
-from typing import Iterable, Optional, Set
+from typing import Optional
 
 import psutil
 
@@ -14,22 +14,9 @@ __all__ = [
 ]
 
 
-def _expand_protected_pids(exclude_pids: Optional[Iterable[int]]) -> Set[int]:
-    """Expand protected pids to cover their descendants at snapshot time."""
-    protected = set(exclude_pids or ())
-    for pid in list(protected):
-        try:
-            protected.update(
-                child.pid for child in psutil.Process(pid).children(recursive=True)
-            )
-        except psutil.Error:
-            continue
-    return protected
-
-
 def terminate_child_processes(
     timeout_seconds: float = 10.0,
-    exclude_pids: Optional[Iterable[int]] = None,
+    exclude_pid: Optional[int] = None,
 ) -> int:
     """
     Terminate child processes of this process, politely then firmly.
@@ -44,19 +31,22 @@ def terminate_child_processes(
 
     Args:
         timeout_seconds: Grace period before killing survivors of the first pass
-        exclude_pids: Children this caller owns deliberately (a running merge
-            ffmpeg) plus their descendants. They are left completely alone, so
-            shutdown can reap recordings without killing an active merge.
+        exclude_pid: The one child this caller owns deliberately — the merge
+            ffmpeg, of which there is at most one because the merge executor
+            runs a single worker. It is left alone, so shutdown can reap
+            recordings without killing an active merge. ffmpeg spawns no
+            children of its own, so the pid alone is the whole exclusion.
     """
-    protected = _expand_protected_pids(exclude_pids)
     total = 0
     # A running download may spawn a child between passes, so re-scan once.
+    # ponytail: one re-scan covers the single respawn yt-dlp does; hand the
+    # sweep tracked child handles if recordings ever outrun two passes.
     for pass_timeout in (timeout_seconds, 2.0):
         try:
             children = [
                 child
                 for child in psutil.Process().children(recursive=True)
-                if child.pid not in protected
+                if child.pid != exclude_pid
             ]
         except psutil.Error:
             break

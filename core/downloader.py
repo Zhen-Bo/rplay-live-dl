@@ -229,11 +229,6 @@ class StreamDownloader:
         """
         self._stop_requested.set()
 
-    @property
-    def stop_requested(self) -> bool:
-        """Check whether shutdown asked this recording to stop."""
-        return self._stop_requested.is_set()
-
     def _build_output_path(self, safe_title: str) -> Path:
         """
         Construct the output file path.
@@ -407,7 +402,24 @@ class StreamDownloader:
                 # this "failure" is expected. Classifying it as blocked or
                 # retryable would drop the session and orphan whatever raw
                 # output already reached disk.
-                self._notify_stopped_download(output_path, error_message)
+                session_prefix = (self.filename_prefix or "").rstrip("_")
+                if output_path.exists() or self._has_sibling_fragment_outputs(output_path):
+                    self.log.info(
+                        f"⏹️ Recording stopped for shutdown (session {session_prefix}); "
+                        f"handing raw output to merge: {output_path.name}",
+                    )
+                    self._notify_download_complete(output_path)
+                    return
+
+                # No finished raw file: yt-dlp leaves a truncated .part behind,
+                # which is the startup orphan scan's job to report, not the
+                # merge step's.
+                self.log.warning(
+                    f"⏹️ Recording stopped for shutdown (session {session_prefix}) with no "
+                    f"finished raw output: {error_message}; "
+                    f"{self._build_output_state_details(output_path)}",
+                )
+                self._notify_download_failure(error_message)
                 return
 
             # ponytail: .error, not .exception — this handler mostly sees classified
@@ -551,26 +563,6 @@ class StreamDownloader:
                 f"✅ Download succeeded on retry attempt "
                 f"{attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
             )
-
-    def _notify_stopped_download(self, output_path: Path, error_message: str) -> None:
-        """Report a shutdown-stopped recording, preferring completion over failure."""
-        session_prefix = (self.filename_prefix or "").rstrip("_")
-        if output_path.exists() or self._has_sibling_fragment_outputs(output_path):
-            self.log.info(
-                f"⏹️ Recording stopped for shutdown (session {session_prefix}); "
-                f"handing raw output to merge: {output_path.name}",
-            )
-            self._notify_download_complete(output_path)
-            return
-
-        # No finished raw file: yt-dlp leaves a truncated .part behind, which is
-        # the startup orphan scan's job to report, not the merge step's.
-        self.log.warning(
-            f"⏹️ Recording stopped for shutdown (session {session_prefix}) with no "
-            f"finished raw output: {error_message}; "
-            f"{self._build_output_state_details(output_path)}",
-        )
-        self._notify_download_failure(error_message)
 
     def _notify_download_error(self, error_message: str) -> None:
         """

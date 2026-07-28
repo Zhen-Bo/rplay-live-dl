@@ -88,11 +88,15 @@ class LiveStreamMonitor:
 
     DEFAULT_MERGE_TIMEOUT_SECONDS = 7200
     POLL_WAIT_TIMEOUT_SECONDS = 30.0
-    # Shutdown budgets. Every wait below is bounded so a wedged recording or
-    # merge can never turn a SIGTERM into a hang.
-    SHUTDOWN_EVENT_DRAIN_TIMEOUT_SECONDS = 30.0
-    SHUTDOWN_RECORDING_JOIN_TIMEOUT_SECONDS = 30.0
-    SHUTDOWN_MERGE_DRAIN_TIMEOUT_SECONDS = 600.0
+    # One aggregate budget for the whole shutdown, not a per-step timeout that
+    # the next step can extend: every wait below draws from the same deadline,
+    # so SIGTERM to returned is bounded end to end. docker-compose.yaml's
+    # stop_grace_period is set from this value plus margin.
+    # ponytail: one budget for all phases; split it per phase only if a slow
+    # merge is ever seen starving the recording joins.
+    SHUTDOWN_BUDGET_SECONDS = 600.0
+    # Cap for the fast phases so they cannot eat the merge's share of the budget.
+    SHUTDOWN_PHASE_TIMEOUT_SECONDS = 30.0
     TERMINAL_SESSION_STATES = {
         SessionState.BLOCKED,
         SessionState.DONE,
@@ -136,7 +140,7 @@ class LiveStreamMonitor:
         # Pids of merge ffmpeg children this monitor owns. Reaping recordings
         # skips these, otherwise shutdown would kill a merge in progress.
         self._merge_process_pids: Set[int] = set()
-        self._merge_submission_closed = False
+        self._shutdown_deadline: Optional[float] = None
         self._control_thread = Thread(
             target=self._event_loop,
             name="monitor-control",
@@ -411,10 +415,23 @@ class LiveStreamMonitor:
 
         # Registered before the thread starts: shutdown snapshots this map, and
         # a recording it cannot see is a recording it cannot stop or merge.
-        # The control loop is the only writer here and it is the same thread
-        # that runs the in-flight poll shutdown waits for.
+        # Rechecked here rather than only at poll entry: get_stream_url blocks on
+        # the network, and shutdown can take its recording snapshot while this
+        # poll sits in that call. Starting afterwards would create a recording
+        # nobody stops and a merge nobody accepts.
         with self._state_lock:
-            self._active_downloaders[session.session_key] = active_downloader
+            shutdown_started = self._shutdown_requested
+            if not shutdown_started:
+                self._active_downloaders[session.session_key] = active_downloader
+
+        if shutdown_started:
+            self._remove_session(session.session_key)
+            self.logger.warning(
+                f"Dropped pending session for {session.creator_name} "
+                f"({session.session_key}): shutdown started while this poll was "
+                "fetching the stream URL"
+            )
+            return
 
         # The downloader logs "Recording started" itself; repeating it here added
         # a line that carried no information the previous one did not already have.
@@ -694,6 +711,21 @@ class LiveStreamMonitor:
 
     def _handle_monitor_event(self, event: SessionEvent) -> None:
         """Apply one monitor event on the control loop."""
+        if isinstance(
+            event,
+            (
+                RawDownloadCompleted,
+                RawDownloadBlocked,
+                RawDownloadAuthFailed,
+                RawDownloadFailed,
+            ),
+        ):
+            # One pop for every raw terminal outcome: whichever of the four
+            # arrived, that session's downloader is done and shutdown must not
+            # keep it in the set of recordings it waits on.
+            with self._state_lock:
+                self._active_downloaders.pop(event.session_key, None)
+
         if isinstance(event, RawDownloadCompleted):
             self._handle_raw_download_completed(event)
             return
@@ -749,7 +781,6 @@ class LiveStreamMonitor:
     def _handle_raw_download_completed(self, event: RawDownloadCompleted) -> None:
         """Queue merge work as soon as raw download completes."""
         with self._state_lock:
-            self._active_downloaders.pop(event.session_key, None)
             session = self.sessions.get(event.session_key)
             if session is None:
                 return
@@ -767,19 +798,28 @@ class LiveStreamMonitor:
                 session_prefix=session.session_prefix,
             )
 
-            # Submitted under the same lock that shutdown uses to close
-            # submission, so a merge can never be handed to an executor that is
-            # already draining towards closure.
-            if self._merge_submission_closed:
+            try:
+                self.merge_executor.submit_merge(lambda: self._run_merge_job(merge_job))
+            except RuntimeError:
+                # A recording that outlived shutdown's join budget reports here
+                # after the executor closed. Ignoring it idempotently is the
+                # contract: re-raising would crash the control loop, and
+                # re-queueing would wait on an executor that never reopens.
+                # ponytail: late (>join budget) completions stay orphaned;
+                # startup recovery lane will merge them.
                 session.state = SessionState.MERGE_FAILED
                 session.last_error = "merge submission closed by shutdown"
-                self.logger.warning(
-                    f"⚠️ Raw download for {session.creator_name} finished after shutdown "
-                    f"closed merge submission. Raw .ts files left in: {session.output_dir}"
-                )
-                return
+                late_creator_name = session.creator_name
+                late_output_dir = session.output_dir
+            else:
+                late_output_dir = None
 
-            self.merge_executor.submit_merge(lambda: self._run_merge_job(merge_job))
+        if late_output_dir is not None:
+            self.logger.warning(
+                f"⚠️ Raw download for {late_creator_name} finished after shutdown "
+                f"closed merge submission. Raw .ts files left in: {late_output_dir}"
+            )
+            return
 
         self.logger.info(
             f"🧩 Queued merge for {merge_job.creator_name}: "
@@ -789,7 +829,6 @@ class LiveStreamMonitor:
     def _handle_raw_download_auth_failed(self, event: RawDownloadAuthFailed) -> None:
         """Clear auth-failed raw sessions and surface credential guidance."""
         with self._state_lock:
-            self._active_downloaders.pop(event.session_key, None)
             session = self.sessions.pop(event.session_key, None)
             if session is not None:
                 active_session_key = self._active_raw_session_by_creator.get(
@@ -810,7 +849,6 @@ class LiveStreamMonitor:
     def _handle_raw_download_failed(self, event: RawDownloadFailed) -> None:
         """Clear failed raw sessions so the next poll can retry them."""
         with self._state_lock:
-            self._active_downloaders.pop(event.session_key, None)
             session = self.sessions.pop(event.session_key, None)
             if session is not None:
                 active_session_key = self._active_raw_session_by_creator.get(
@@ -830,7 +868,6 @@ class LiveStreamMonitor:
     def _handle_raw_download_blocked(self, event: RawDownloadBlocked) -> None:
         """Apply blocked-session state when downloader reports access failure."""
         with self._state_lock:
-            self._active_downloaders.pop(event.session_key, None)
             session = self.sessions.get(event.session_key)
             if session is None:
                 return
@@ -1028,24 +1065,38 @@ class LiveStreamMonitor:
         escaped_path = ts_file.resolve().as_posix().replace("'", r"'\''")
         return f"file '{escaped_path}'"
 
+    def _shutdown_time_left(self, cap: Optional[float] = None) -> float:
+        """Return the seconds left in the aggregate budget, capped for one phase."""
+        if self._shutdown_deadline is None:
+            return self.SHUTDOWN_BUDGET_SECONDS if cap is None else cap
+        left = max(0.0, self._shutdown_deadline - monotonic())
+        return left if cap is None else min(cap, left)
+
     def shutdown(self) -> None:
         """
         Stop monitoring, then hand every stopped recording to the merge step.
 
         Order is the whole point. Recordings are stopped and joined first so
         their terminal events can queue merge work while the executor is still
-        open; only then is the executor drained and closed. Closing it earlier
-        makes submit_merge raise for whatever was still recording, which
+        open; only then is the executor closed and its queue flushed. Closing it
+        earlier makes submit_merge raise for whatever was still recording, which
         orphans that session's raw .ts files.
+
+        Bounded end to end: every wait draws from one deadline, and a merge that
+        outlives it is abandoned rather than allowed to hold up the process.
         """
         with self._state_lock:
             if self._shutdown_requested:
                 return
             self._shutdown_requested = True
 
+        self._shutdown_deadline = monotonic() + self.SHUTDOWN_BUDGET_SECONDS
+
         # 1. No new polls. Draining also lets an in-flight poll finish, so every
         #    recording it started is registered before step 2 snapshots them.
-        self._drain_monitor_events(self.SHUTDOWN_EVENT_DRAIN_TIMEOUT_SECONDS)
+        self._drain_monitor_events(
+            self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
+        )
 
         # 2. Stop recordings: kill their ffmpeg, spare any merge ffmpeg, and
         #    wait for the downloader threads to emit their terminal events.
@@ -1053,27 +1104,40 @@ class LiveStreamMonitor:
 
         # 3. Apply those events. This is where a stopped recording's merge is
         #    submitted, and it must happen while the executor still accepts work.
-        self._drain_monitor_events(self.SHUTDOWN_EVENT_DRAIN_TIMEOUT_SECONDS)
+        self._drain_monitor_events(
+            self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
+        )
 
-        # 4. Let queued merges finish before closing anything.
-        if not self.merge_executor.drain(
-            timeout=self.SHUTDOWN_MERGE_DRAIN_TIMEOUT_SECONDS
-        ):
-            self.logger.warning(
-                "Merge work did not drain before shutdown timeout; closing executor"
-            )
+        # 4. Close acceptance and flush the merge queue with whatever budget is
+        #    left. Anything arriving after this is late by definition and is
+        #    refused in _handle_raw_download_completed.
+        self._close_merge_executor()
 
-        # 5. Refuse late submissions, then close. wait=True still lets a merge
-        #    that is already running finish rather than dying with the process.
-        with self._state_lock:
-            self._merge_submission_closed = True
-        self.merge_executor.shutdown(wait=True)
-
-        # 6. Merge result events, then the control loop and the API client.
-        self._drain_monitor_events(self.SHUTDOWN_EVENT_DRAIN_TIMEOUT_SECONDS)
+        # 5. Merge result events, then the control loop and the API client.
+        self._drain_monitor_events(
+            self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
+        )
         self._event_queue.put(_ShutdownRequested())
-        self._control_thread.join(timeout=self.SHUTDOWN_EVENT_DRAIN_TIMEOUT_SECONDS)
+        self._control_thread.join(
+            timeout=self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
+        )
         self.api.close()
+
+    def _close_merge_executor(self) -> None:
+        """Flush queued merges within the remaining budget, then close the pool."""
+        if self.merge_executor.drain(timeout=self._shutdown_time_left()):
+            # Nothing is queued behind the barrier, so this cannot block.
+            self.merge_executor.shutdown(wait=True)
+            return
+
+        # Waiting on wait=True here is what used to make the budget a lie: a
+        # wedged ffmpeg merge would hold shutdown open with no deadline at all.
+        self.logger.warning(
+            f"⚠️ A merge was still running after the {self.SHUTDOWN_BUDGET_SECONDS:.0f}s "
+            "shutdown budget; abandoning it instead of blocking exit. Its raw .ts "
+            "files stay on disk."
+        )
+        self.merge_executor.shutdown(wait=False, cancel_futures=True)
 
     def _stop_active_recordings(self) -> None:
         """Stop recording downloads and wait for their terminal events."""
@@ -1084,11 +1148,12 @@ class LiveStreamMonitor:
 
             # Reaped under the state lock: _run_merge_subprocess takes the same
             # lock around its Popen, so no merge child can appear unprotected
-            # between the pid snapshot and the sweep.
+            # between the pid snapshot and the sweep. One merge worker means at
+            # most one pid to spare.
             reaped = 0
             if any(downloader.is_alive() for downloader in downloaders):
                 reaped = terminate_child_processes(
-                    exclude_pids=set(self._merge_process_pids)
+                    exclude_pid=next(iter(self._merge_process_pids), None)
                 )
 
         if reaped:
@@ -1100,7 +1165,8 @@ class LiveStreamMonitor:
 
     def _join_recording_threads(self, downloaders: List[StreamDownloader]) -> None:
         """Give stopped downloader threads a bounded window to report their outcome."""
-        deadline = monotonic() + self.SHUTDOWN_RECORDING_JOIN_TIMEOUT_SECONDS
+        join_budget = self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
+        deadline = monotonic() + join_budget
         unfinished: List[str] = []
 
         for downloader in downloaders:
@@ -1112,10 +1178,11 @@ class LiveStreamMonitor:
                 unfinished.append(downloader.creator_name)
 
         if unfinished:
+            # Whatever these report later is past the join budget: the merge
+            # executor will refuse it and their raw .ts stay on disk.
             self.logger.warning(
                 f"{len(unfinished)} recording(s) did not stop within "
-                f"{self.SHUTDOWN_RECORDING_JOIN_TIMEOUT_SECONDS:.0f}s: "
-                f"{', '.join(unfinished)}"
+                f"{join_budget:.0f}s: {', '.join(unfinished)}"
             )
 
     def _make_session_download_error_callback(self, session_key: str) -> Callable[[str], None]:

@@ -11,3 +11,7 @@ services:
       - ./archive:/app/archive
       - ./logs:/app/logs
     restart: unless-stopped
+    # LiveStreamMonitor.SHUTDOWN_BUDGET_SECONDS (600s) plus margin for the
+    # child-process sweep. Docker's 10s default would SIGKILL mid-merge and
+    # leave the raw .ts unmerged.
+    stop_grace_period: 11m

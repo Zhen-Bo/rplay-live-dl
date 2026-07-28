@@ -72,7 +72,7 @@ class TestTerminateChildProcesses:
         doomed = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         try:
             reaped = terminate_child_processes(
-                timeout_seconds=5.0, exclude_pids=[protected.pid]
+                timeout_seconds=5.0, exclude_pid=protected.pid
             )
 
             # This is the merge-vs-recording discrimination: shutdown reaps the

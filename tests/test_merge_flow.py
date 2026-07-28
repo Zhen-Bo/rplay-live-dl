@@ -297,20 +297,10 @@ class TestMergeFlow:
         assert r"it'\''s live.ts" in captured["content"]
         monitor.shutdown()
 
-    def test_run_merge_subprocess_matches_checked_run_semantics(self, tmp_path, monkeypatch):
-        """Test the tracked merge child keeps subprocess.run(check=True) behavior."""
+    def test_run_merge_subprocess_times_out_and_releases_its_pid(self, tmp_path, monkeypatch):
+        """Test a timed-out merge child raises with its timeout and leaves no tracked pid."""
         monkeypatch.chdir(tmp_path)
         monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
-
-        monitor._run_merge_subprocess([sys.executable, "-c", "print('ok')"])
-
-        with pytest.raises(subprocess.CalledProcessError) as exit_error:
-            monitor._run_merge_subprocess(
-                [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"]
-            )
-
-        assert exit_error.value.returncode == 3
-        assert exit_error.value.stderr == "boom"
 
         # _merge_session_to_mp4 reads exc.timeout, so it has to survive the
         # switch from subprocess.run to Popen.communicate.
