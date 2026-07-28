@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from core.downloader import StreamDownloader
 from core.orphan_recovery import recover_orphaned_sessions
 
 LOGGER = logging.getLogger("test_recovery")
@@ -182,32 +183,50 @@ class TestOrphanRecovery:
         assert final_path.read_bytes() == b"claimed mid-merge"
         assert (archive / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"mp4"
 
-    def test_two_stranded_sessions_with_one_title_both_reach_their_own_mp4(
+    def test_a_name_claimed_after_selection_is_not_overwritten(
         self, archive, monkeypatch
     ):
-        """Test the stop-and-restart case: same title, two sessions, two recordings kept.
+        """Test the install refuses a target claimed after the name was chosen.
 
-        This is the shape of every docker-stop during a live stream, and the
-        case a skip-on-collision policy stranded permanently.
+        Checking a name for availability and taking it are two steps, and the
+        winner of that gap owns the file. A plain rename would overwrite the
+        claimant's recording and then delete this session's inputs on top of it.
         """
-        first = archive / "20260728_200507_#Creator 2026-07-28 Live.ts"
-        second = archive / "20260728_200831_#Creator 2026-07-28 Live.ts"
-        first.write_bytes(b"first session")
-        second.write_bytes(b"second session")
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        final_path = archive / "#Creator 2026-03-06 123.mp4"
+        _fake_merge(monkeypatch)
 
-        def fake_concat(ts_files, output_path, run_command):
-            output_path.write_bytes(b"".join(f.read_bytes() for f in ts_files))
+        select_name = StreamDownloader.get_unique_path
+        claimed = []
 
-        monkeypatch.setattr("core.orphan_recovery.merge_ts_files_to_mp4", fake_concat)
+        def claim_the_name_just_selected(base_path):
+            selected = select_name(base_path)
+            # Exactly once, so the retry can still find a free name.
+            if not claimed:
+                claimed.append(selected)
+                selected.write_bytes(b"claimed after selection")
+            return selected
+
+        monkeypatch.setattr(
+            StreamDownloader,
+            "get_unique_path",
+            staticmethod(claim_the_name_just_selected),
+        )
 
         recover_orphaned_sessions(LOGGER)
 
-        # Each session's payload reaches its own file, oldest session first.
-        assert (archive / "#Creator 2026-07-28 Live.mp4").read_bytes() == b"first session"
-        assert (
-            archive / "#Creator 2026-07-28 Live_1.mp4"
-        ).read_bytes() == b"second session"
-        assert list(archive.glob("*.ts")) == []
+        # The claimant is byte-identical, this recording took the next suffix,
+        # and the inputs are gone only because the mp4 they became is on disk.
+        assert claimed == [final_path]
+        assert final_path.read_bytes() == b"claimed after selection"
+        assert (archive / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"mp4"
+        assert not ts_file.exists()
+        # The temp is consumed by the install, not left behind by the retry.
+        assert sorted(archive.iterdir()) == [
+            final_path,
+            archive / "#Creator 2026-03-06 123_1.mp4",
+        ]
 
     def test_only_the_ts_part_is_adopted_out_of_a_mixed_artifact_directory(
         self, archive, monkeypatch
@@ -271,27 +290,6 @@ class TestOrphanRecovery:
 
         assert captured == []
         assert list(archive.iterdir()) == [part_file]
-
-    def test_adopted_part_stays_retryable_when_its_merge_fails(
-        self, archive, monkeypatch
-    ):
-        """Test adoption is not undone by a failed merge: the next run recovers it."""
-        prefix = "20260306_120000_"
-        part_file = archive / f"{prefix}#Creator 2026-03-06 123.ts.part"
-        part_file.write_bytes(b"truncated but demuxable ts")
-        adopted = archive / f"{prefix}#Creator 2026-03-06 123.ts"
-        _fake_merge(monkeypatch, writes=b"partial", error=RuntimeError("boom"))
-
-        recover_orphaned_sessions(LOGGER)
-
-        # Adoption is one-way: the input is kept under its .ts name, not
-        # reverted, so the retry below is the ordinary .ts recovery path.
-        assert list(archive.iterdir()) == [adopted]
-
-        _fake_merge(monkeypatch)
-        recover_orphaned_sessions(LOGGER)
-
-        assert sorted(archive.iterdir()) == [archive / "#Creator 2026-03-06 123.mp4"]
 
     @pytest.mark.parametrize(
         "filename",

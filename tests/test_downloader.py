@@ -878,8 +878,12 @@ class TestDownloadErrorCallback:
         assert len(completed_events) == 1
         assert completed_events[0].session_key == "creator1:stream1"
 
-    def _stopped_downloader(self, tmp_path, mock_ydl, completed, failed, **kwargs):
-        """Build a downloader whose recording ffmpeg is reaped mid-download."""
+    def _stopped_downloader(self, tmp_path, mock_ydl, **kwargs):
+        """Build a downloader whose recording ffmpeg is reaped mid-download.
+
+        Returns the downloader with the event lists its callbacks append to.
+        """
+        completed, failed = [], []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
@@ -897,16 +901,15 @@ class TestDownloadErrorCallback:
             raise yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 255")
 
         mock_ydl.download.side_effect = kill_recording_mid_download
-        return downloader
+        return downloader, completed, failed
 
     def test_worker_adopts_the_partial_download_left_by_a_reaped_recording(
         self, mock_yt_dlp, tmp_path
     ):
         """Test the stranded .ts.part becomes the raw output and reaches the merge step."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed, failed = [], []
-        downloader = self._stopped_downloader(
-            tmp_path, mock_ydl, completed, failed, output_extension=".ts"
+        downloader, completed, failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
         )
         output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
         part_path = Path(f"{output_path}.part")
@@ -927,9 +930,8 @@ class TestDownloadErrorCallback:
     ):
         """Test a fragmented recording keeps its .part and the old completion path."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed, failed = [], []
-        downloader = self._stopped_downloader(
-            tmp_path, mock_ydl, completed, failed, output_extension=".ts"
+        downloader, completed, _failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
         )
         output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
         part_path = Path(f"{output_path}.part")
@@ -948,9 +950,8 @@ class TestDownloadErrorCallback:
     def test_worker_does_not_adopt_an_empty_partial_download(self, mock_yt_dlp, tmp_path):
         """Test a zero-byte part is not turned into an empty merge input."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed, failed = [], []
-        downloader = self._stopped_downloader(
-            tmp_path, mock_ydl, completed, failed, output_extension=".ts"
+        downloader, completed, failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
         )
         output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
         part_path = Path(f"{output_path}.part")
@@ -966,8 +967,7 @@ class TestDownloadErrorCallback:
     def test_worker_does_not_adopt_a_partial_mp4_download(self, mock_yt_dlp, tmp_path):
         """Test a truncated mp4, which has no moov atom yet, is never adopted."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed, failed = [], []
-        downloader = self._stopped_downloader(tmp_path, mock_ydl, completed, failed)
+        downloader, completed, failed = self._stopped_downloader(tmp_path, mock_ydl)
         output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.mp4"
         part_path = Path(f"{output_path}.part")
         part_path.write_bytes(b"truncated mp4 without a moov atom")
@@ -984,9 +984,8 @@ class TestDownloadErrorCallback:
     ):
         """Test a failed rename falls back to reporting the recording as failed."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed, failed = [], []
-        downloader = self._stopped_downloader(
-            tmp_path, mock_ydl, completed, failed, output_extension=".ts"
+        downloader, completed, failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
         )
         output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
         part_path = Path(f"{output_path}.part")
