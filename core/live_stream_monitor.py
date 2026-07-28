@@ -43,6 +43,9 @@ class _PollRequested:
     """Internal control-loop event requesting one monitor poll."""
 
     done: Event
+    # Marks the extra poll queued after a download failure. The control loop
+    # uses it to reopen retry deduplication; nobody waits on its done event.
+    retry: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,12 @@ class LiveStreamMonitor:
         self._state_lock = RLock()
         self._event_queue: Queue[MonitorRuntimeEvent] = Queue()
         self._shutdown_requested = False
+        # Creators the most recent poll saw actually live. A download failure
+        # only earns an immediate re-poll while its creator is still in here.
+        self._live_creator_oids: Set[str] = set()
+        # True while a retry poll sits in the queue unstarted, so concurrent
+        # failures merge into one extra poll instead of one poll each.
+        self._retry_poll_queued = False
         # Recording downloaders, so shutdown can stop them and wait for their
         # terminal events instead of discovering them as orphaned ffmpeg pids.
         self._active_downloaders: Dict[str, StreamDownloader] = {}
@@ -186,6 +195,13 @@ class LiveStreamMonitor:
                     return
 
                 if isinstance(event, _PollRequested):
+                    if event.retry:
+                        # Reopened before the cycle, not after: a failure raised
+                        # while this poll runs must be able to earn the next
+                        # re-poll rather than merge into one that already read
+                        # the live list.
+                        with self._state_lock:
+                            self._retry_poll_queued = False
                     try:
                         self._run_poll_cycle()
                     finally:
@@ -213,6 +229,39 @@ class LiveStreamMonitor:
         self._event_queue.put(event)
         return True
 
+    def _request_retry_poll(self, creator_oid: str) -> bool:
+        """
+        Queue one extra poll for a creator whose raw download just failed.
+
+        Signals only. Calling the public blocking poll from here would wait on
+        the very control loop that has to serve the request, since failures are
+        handled on that loop.
+
+        Args:
+            creator_oid: Creator whose download failed
+
+        Returns:
+            True if this call queued the extra poll
+        """
+        with self._state_lock:
+            if creator_oid not in self._live_creator_oids:
+                # Creator is offline; there is nothing left to record.
+                return False
+            if self._retry_poll_queued:
+                # Concurrent failures merge: one poll re-reads the whole live
+                # list, so a second request would find the same work done.
+                return False
+            self._retry_poll_queued = True
+
+        if self._queue_monitor_event(_PollRequested(done=Event(), retry=True)):
+            return True
+
+        # Refused because shutdown started. Clear the marker so it cannot
+        # wedge deduplication for a monitor that keeps running.
+        with self._state_lock:
+            self._retry_poll_queued = False
+        return False
+
     def _drain_monitor_events(self, timeout: float) -> bool:
         """
         Wait until events queued so far have been applied by the control loop.
@@ -235,6 +284,14 @@ class LiveStreamMonitor:
         try:
             self._update_downloaders()
             live_streams = self.api.get_livestream_status()
+            # Recorded before any download starts, so a session that fails fast
+            # is judged against the list this very poll read.
+            with self._state_lock:
+                self._live_creator_oids = {
+                    stream.creator_oid
+                    for stream in live_streams
+                    if stream.stream_state == StreamState.LIVE
+                }
             monitored_live = self._process_live_streams(live_streams)
             live_creator_oids = {stream.creator_oid for stream in live_streams}
             self._cleanup_offline_creator_states(live_creator_oids)
@@ -847,7 +904,7 @@ class LiveStreamMonitor:
         )
 
     def _handle_raw_download_failed(self, event: RawDownloadFailed) -> None:
-        """Clear failed raw sessions so the next poll can retry them."""
+        """Clear the failed raw session and re-poll at once if the creator is still live."""
         with self._state_lock:
             session = self.sessions.pop(event.session_key, None)
             if session is not None:
@@ -860,8 +917,18 @@ class LiveStreamMonitor:
         if session is None:
             return
 
+        # Waiting for the next scheduled poll costs up to a whole INTERVAL (up
+        # to 3600s) of a stream that is still running. Requested only after the
+        # session has been cleared above, so the extra poll sees the creator
+        # free to start again rather than skipping it as already recording.
+        # ponytail: no separate retry budget here. The downloader has already
+        # spent its tenacity attempts with exponential backoff before this
+        # event exists, which is what keeps the extra poll off a hot loop. Add
+        # a budget if failures are ever seen recurring faster than that.
+        retried_now = self._request_retry_poll(session.creator_oid)
+        next_attempt = "retrying immediately" if retried_now else "will retry on next poll"
         self.logger.warning(
-            f"⚠️ Raw download failed for {session.creator_name}; will retry on next poll: "
+            f"⚠️ Raw download failed for {session.creator_name}; {next_attempt}: "
             f"{event.error_message}"
         )
 

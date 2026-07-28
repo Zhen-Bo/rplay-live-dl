@@ -10,9 +10,12 @@ from models.download import MergeCompleted
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from core.downloader import StreamDownloader
 from core.live_stream_monitor import LiveStreamMonitor
-from models.config import CreatorProfile
+from models.config import AppConfig, CreatorProfile
+from models.env import EnvConfig
 from core.rplay import RPlayAPI
 from models.download import (
     DownloadSession,
@@ -20,6 +23,7 @@ from models.download import (
     RawDownloadFailed,
     SessionState,
 )
+from models.rplay import StreamState
 
 
 def test_raw_completion_event_immediately_submits_merge(tmp_path):
@@ -511,3 +515,196 @@ def test_shutdown_returns_within_budget_when_merge_never_finishes(tmp_path):
     # wait=True here would hand the wedged merge veto power over process exit.
     assert stuck_executor.shutdown_calls == [(False, True)]
     mock_api.close.assert_called_once()
+
+
+def _live_stream(creator_oid, stream_oid="stream-1"):
+    """Build a live-stream stand-in the monitor will accept as recordable."""
+    stream = MagicMock()
+    stream.oid = stream_oid
+    stream.creator_oid = creator_oid
+    stream.stream_state = StreamState.LIVE
+    stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
+    stream.title = f"Stream {creator_oid}"
+    return stream
+
+
+@pytest.fixture
+def repoll_env(tmp_path, monkeypatch):
+    """Serve a fixed creator config and keep the real downloader off the network."""
+    monkeypatch.chdir(tmp_path)
+    with (
+        patch("core.live_stream_monitor.read_config") as mock_read_config,
+        patch.object(StreamDownloader, "download"),
+    ):
+        mock_read_config.return_value = AppConfig(
+            api_base_url="https://api.rplay.live",
+            creators=[
+                CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
+                CreatorProfile(creator_name="Creator2", creator_oid="creator2"),
+            ],
+        )
+        yield
+
+
+def test_failure_repoll_latency_is_far_below_the_poll_interval(repoll_env):
+    """V5: measure failure callback to next live-list read and pin it under INTERVAL."""
+    # The largest interval an operator may configure. Before this lane a
+    # mid-stream failure cost that whole window; the re-poll must not scale
+    # with it, so the interval only ever appears here as the bound to beat.
+    largest_interval = EnvConfig(
+        auth_token="token", user_oid="oid", interval=3600
+    ).interval
+
+    mock_api = MagicMock(spec=RPlayAPI)
+    live_list_reads = []
+    polled_again = ThreadEvent()
+
+    def read_live_list():
+        live_list_reads.append(monotonic())
+        if len(live_list_reads) > 1:
+            polled_again.set()
+        return [_live_stream("creator1")]
+
+    mock_api.get_livestream_status.side_effect = read_live_list
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    monitor.check_live_streams_and_start_download()
+    session_key = next(iter(monitor.sessions))
+
+    failed_at = monotonic()
+    monitor._on_raw_download_failed(
+        RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
+    )
+
+    # Bounded wait, not a bare one: a mechanism that deadlocked hangs here
+    # instead of failing the latency assertion below.
+    assert polled_again.wait(timeout=5)
+    repoll_latency = live_list_reads[-1] - failed_at
+
+    # Absolute bound, so it cannot pass by quietly tracking INTERVAL, and it
+    # sits far under even the shortest interval the app accepts.
+    assert repoll_latency < 1.0 < largest_interval
+    monitor.shutdown()
+
+
+def test_failure_while_creator_still_live_schedules_exactly_one_extra_poll(repoll_env):
+    """Test one failure on a still-live creator earns one extra poll, and only one."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    monitor.check_live_streams_and_start_download()
+    session_key = next(iter(monitor.sessions))
+
+    monitor._on_raw_download_failed(
+        RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
+    )
+    # Quiescence barrier: the queue only empties once the failure and
+    # everything it queued have been applied, so an extra poll would count here.
+    monitor._event_queue.join()
+
+    assert mock_api.get_livestream_status.call_count == 2
+    monitor.shutdown()
+
+
+def test_failure_after_creator_went_offline_schedules_no_extra_poll(repoll_env):
+    """Test a failure for a creator no longer in the live list re-polls nothing."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    mock_api.get_livestream_status.side_effect = [[_live_stream("creator1")], []]
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    monitor.check_live_streams_and_start_download()
+    session_key = next(iter(monitor.sessions))
+    # The stream ended: the second poll sees an empty live list.
+    monitor.check_live_streams_and_start_download()
+
+    monitor._on_raw_download_failed(
+        RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
+    )
+    monitor._event_queue.join()
+
+    # Still the two polls this test asked for. A third would also exhaust the
+    # side_effect list, so a stray re-poll cannot hide here.
+    assert mock_api.get_livestream_status.call_count == 2
+    monitor.shutdown()
+
+
+def test_concurrent_failures_merge_into_one_extra_poll(repoll_env):
+    """Test failures landing together share a single extra poll instead of one each."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    mock_api.get_livestream_status.return_value = [
+        _live_stream("creator1", "stream-1"),
+        _live_stream("creator2", "stream-2"),
+    ]
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    monitor.check_live_streams_and_start_download()
+    session_key_by_creator = {
+        session.creator_oid: key for key, session in monitor.sessions.items()
+    }
+    assert len(session_key_by_creator) == 2
+
+    reached_first_failure = ThreadEvent()
+    release_first_failure = ThreadEvent()
+    original_handle_monitor_event = monitor._handle_monitor_event
+
+    def gated_handle(event):
+        if isinstance(event, RawDownloadFailed) and not reached_first_failure.is_set():
+            reached_first_failure.set()
+            # Hold the control loop so the second failure is already queued
+            # before the first one gets to request its re-poll.
+            assert release_first_failure.wait(timeout=5)
+        return original_handle_monitor_event(event)
+
+    monitor._handle_monitor_event = gated_handle
+
+    monitor._on_raw_download_failed(
+        RawDownloadFailed(
+            session_key=session_key_by_creator["creator1"],
+            error_message="ffmpeg exited 1",
+        )
+    )
+    assert reached_first_failure.wait(timeout=5)
+    monitor._on_raw_download_failed(
+        RawDownloadFailed(
+            session_key=session_key_by_creator["creator2"],
+            error_message="ffmpeg exited 1",
+        )
+    )
+    release_first_failure.set()
+    monitor._event_queue.join()
+
+    # One re-poll re-reads the whole live list, so two failures must not buy
+    # two polls on top of the initial one.
+    assert mock_api.get_livestream_status.call_count == 2
+    monitor.shutdown()
+
+
+def test_failure_handling_never_calls_the_blocking_public_poll(repoll_env):
+    """Test the control loop signals for its re-poll rather than blocking on itself."""
+    mock_api = MagicMock(spec=RPlayAPI)
+    mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
+    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+
+    monitor.check_live_streams_and_start_download()
+    session_key = next(iter(monitor.sessions))
+
+    blocking_calls = []
+
+    # Recorded rather than raised: the control loop logs exceptions, so raising
+    # here would be swallowed and the test would pass for the wrong reason.
+    with patch.object(
+        monitor,
+        "check_live_streams_and_start_download",
+        side_effect=lambda: blocking_calls.append("called"),
+    ):
+        monitor._on_raw_download_failed(
+            RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
+        )
+        monitor._event_queue.join()
+
+    # The public poll waits on the very loop that serves it: calling it from a
+    # failure handler would stall the loop for POLL_WAIT_TIMEOUT_SECONDS.
+    assert blocking_calls == []
+    assert mock_api.get_livestream_status.call_count == 2
+    monitor.shutdown()
