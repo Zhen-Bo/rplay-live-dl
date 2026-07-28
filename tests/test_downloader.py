@@ -1005,31 +1005,86 @@ class TestDownloadErrorCallback:
         assert len(failed) == 1
 
     def test_worker_logs_partial_output_details_on_failure(self, mock_yt_dlp, tmp_path):
-        """Test final download error logs include .part output details."""
+        """Test failure logs: short WARNING/ERROR + full dump only at DEBUG."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
         )
-        output_path = tmp_path / "test.ts"
+        # Path shaped like production so WARNING/ERROR must not leak it.
+        archive_dir = tmp_path / "app" / "archive" / "TestCreator"
+        archive_dir.mkdir(parents=True)
+        output_path = archive_dir / "test.ts"
         part_path = Path(f"{output_path}.part")
         part_path.write_bytes(b"abcdef")
         downloader._download_start_time = datetime.now()
-        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
+        downloader._current_output_path = output_path
+        # Retryable so we exercise both short WARNING retries and final ERROR.
+        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
+            "ERROR: Unable to download webpage: HTTP Error 500: Internal Server Error"
+        )
 
-        with patch.object(downloader.logger, "log") as mock_log:
+        with patch("core.downloader.time.sleep"), patch.object(
+            downloader, "log"
+        ) as mock_log:
             downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
 
+        warning_msgs = [str(call.args[0]) for call in mock_log.warning.call_args_list]
+        error_msgs = [str(call.args[0]) for call in mock_log.error.call_args_list]
+        debug_msgs = [str(call.args[0]) for call in mock_log.debug.call_args_list]
+
+        assert warning_msgs, "expected short WARNING lines per failed attempt"
+        for msg in warning_msgs:
+            assert "Attempt" in msg and "failed" in msg and "retrying in" in msg
+            assert "HTTP Error 500" in msg
+            assert "session_key=" not in msg
+            assert "/app/archive" not in msg
+            assert "output_path=" not in msg
+            assert "part_path=" not in msg
+
         assert any(
-            "output_path=" in str(call)
-            and "part_exists=True" in str(call)
-            and "part_size=6.0 B" in str(call)
-            for call in mock_log.call_args_list
+            "Download failed after" in msg
+            and "HTTP Error 500" in msg
+            and "output=missing" in msg
+            and "part=present (6.0 B)" in msg
+            and "fragments=no" in msg
+            and "session_key=" not in msg
+            and "output_path=" not in msg
+            and "/app/archive" not in msg
+            for msg in error_msgs
+        )
+
+        assert any(
+            "session_key=creator1:stream1" in msg
+            and "output_path=" in msg
+            and "part_path=" in msg
+            and "part_exists=True" in msg
+            and "part_size=6.0 B" in msg
+            and "sibling_fragments=False" in msg
+            for msg in debug_msgs
         )
         # Adoption belongs to the shutdown path alone: yt-dlp may still resume
         # into this .part on a later attempt, so nothing may claim it here.
         assert part_path.read_bytes() == b"abcdef"
         assert not output_path.exists()
+
+    def test_extract_short_error_reason_prefers_http_error(self):
+        """Test short-reason helper keeps the HTTP Error token."""
+        reason = StreamDownloader._extract_short_error_reason(
+            "ERROR: Unable to download webpage: HTTP Error 404: Not Found; "
+            "please report this issue"
+        )
+        assert reason == "HTTP Error 404: Not Found"
+
+    def test_extract_short_error_reason_truncates_generic_text(self):
+        """Test short-reason helper falls back to a truncated first line."""
+        long_line = "x" * 150
+        reason = StreamDownloader._extract_short_error_reason(f"{long_line}\nsecond")
+        assert reason == f"{'x' * 117}..."
+        assert len(reason) == 120
+
+        short = StreamDownloader._extract_short_error_reason("Some other error")
+        assert short == "Some other error"
 
     def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
         """Test non-blocked download errors emit a raw failure event."""
