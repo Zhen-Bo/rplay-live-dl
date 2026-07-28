@@ -85,6 +85,7 @@ Startup protection:
 - failed merge leaves raw `.ts` files in place for manual recovery
 - fail-fast startup validation for legacy config path upgrades
 - Docker-first deployment for long-running operation
+- Docker `HEALTHCHECK` via a poll-cycle heartbeat file (`python -m core.health`)
 
 ---
 
@@ -339,6 +340,10 @@ docker run -d \
   paverz/rplay-live-dl:v2.2.1-vibe
 ```
 
+#### Docker healthcheck
+
+The image runs `python -m core.health` every 60s (`--retries=3`). Healthy when `/tmp/rplay-live-dl-heartbeat` exists and its mtime is strictly fresher than `3 × INTERVAL` seconds (touched once per monitor poll cycle, including failed ones). Docker only *displays* unhealthy status; it does not restart the container. With default `INTERVAL=60`, probes start failing after 180s without a heartbeat update, and Docker marks the container unhealthy ~300–360s after the last heartbeat update.
+
 ### Directory Structure
 
 Typical runtime layout:
@@ -480,6 +485,7 @@ rplay-live-dl/
 │   ├── download_merge_executor.py
 │   ├── downloader.py
 │   ├── env.py
+│   ├── health.py
 │   ├── live_stream_monitor.py
 │   ├── logger.py
 │   ├── rplay.py
@@ -498,6 +504,7 @@ rplay-live-dl/
 │   ├── test_download_models.py
 │   ├── test_downloader.py
 │   ├── test_env.py
+│   ├── test_health.py
 │   ├── test_live_stream_monitor.py
 │   ├── test_logger.py
 │   ├── test_main.py

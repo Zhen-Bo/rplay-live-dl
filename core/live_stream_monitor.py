@@ -31,6 +31,7 @@ from models.rplay import CreatorStreamState, LiveStream, StreamState
 from .config import ConfigError, DEFAULT_CONFIG_PATH, read_app_config as read_config
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
+from .health import touch_heartbeat
 from .logger import bind, clip, setup_logger
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from .utils import terminate_child_processes
@@ -176,6 +177,8 @@ class LiveStreamMonitor:
         self._cycle_stream_key: Optional[str] = None
         # Unrecovered key2 auth failure this cycle → mark poll unhealthy at end.
         self._cycle_key_fetch_auth_failed = False
+        # One warning if the heartbeat file cannot be written; never spam logs.
+        self._heartbeat_write_warned = False
 
         # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
@@ -343,6 +346,14 @@ class LiveStreamMonitor:
         except Exception as exc:
             self.logger.exception(f"Unexpected error during monitoring: {exc}")
             self._mark_check_failed()
+        finally:
+            # Heartbeat once per cycle so Docker can see the monitor is polling.
+            try:
+                touch_heartbeat()
+            except OSError as exc:
+                if not self._heartbeat_write_warned:
+                    self._heartbeat_write_warned = True
+                    self.logger.warning(f"Failed to write heartbeat file: {exc}")
 
     def _mark_check_succeeded(self) -> None:
         """Record a successful monitor poll."""

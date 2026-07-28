@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from core import health
 from core.config import ConfigError
 from core.live_stream_monitor import LiveStreamMonitor
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
@@ -1987,3 +1988,60 @@ class TestSessionLifecycleLogging:
             )
 
         assert any("Merge completed" in str(call) for call in mock_info.call_args_list)
+
+
+class TestMonitorHeartbeatFile:
+    """Poll-cycle Docker heartbeat file: touch, OSError guard, finally on raise."""
+
+    @patch("core.live_stream_monitor.read_config")
+    def test_poll_cycle_touches_heartbeat(
+        self, mock_read_config, monitor, mock_api, tmp_path, monkeypatch
+    ):
+        """A completed poll cycle creates/updates the heartbeat file."""
+        path = tmp_path / "heartbeat"
+        monkeypatch.setattr(health, "HEARTBEAT_FILE", str(path))
+        mock_api.get_livestream_status.return_value = []
+        mock_read_config.return_value = _runtime_config([])
+
+        assert not path.exists()
+        monitor.check_live_streams_and_start_download()
+        assert path.exists()
+
+    @patch("core.live_stream_monitor.read_config")
+    def test_oserror_on_touch_does_not_break_cycle(
+        self, mock_read_config, monitor, mock_api, monkeypatch, caplog
+    ):
+        """OSError writing the heartbeat is logged once and does not fail the poll."""
+        mock_api.get_livestream_status.return_value = []
+        mock_read_config.return_value = _runtime_config([])
+
+        def boom() -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr("core.live_stream_monitor.touch_heartbeat", boom)
+
+        with caplog.at_level("WARNING"):
+            monitor.check_live_streams_and_start_download()
+            monitor.check_live_streams_and_start_download()
+
+        assert monitor.is_healthy is True
+        warnings = [
+            r for r in caplog.records if "Failed to write heartbeat file" in r.message
+        ]
+        assert len(warnings) == 1
+
+    @patch("core.live_stream_monitor.read_config")
+    def test_raising_cycle_still_touches_heartbeat(
+        self, mock_read_config, monitor, mock_api, tmp_path, monkeypatch
+    ):
+        """A poll body that raises still updates the heartbeat in finally."""
+        path = tmp_path / "heartbeat"
+        monkeypatch.setattr(health, "HEARTBEAT_FILE", str(path))
+        mock_read_config.return_value = _runtime_config([])
+        mock_api.get_livestream_status.side_effect = RPlayAPIError("API down")
+
+        assert not path.exists()
+        monitor.check_live_streams_and_start_download()
+        assert path.exists()
+        assert monitor.is_healthy is False
+

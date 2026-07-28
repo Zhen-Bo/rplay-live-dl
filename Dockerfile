@@ -48,5 +48,9 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 ENV APP_GIT_SHA=${APP_GIT_SHA}
 
+# Heartbeat file touched each poll cycle; stale after 3×INTERVAL (see core/health.py)
+HEALTHCHECK --interval=60s --timeout=5s --start-period=90s --retries=3 \
+    CMD python -m core.health
+
 # Run the application
 CMD ["python", "main.py"]
