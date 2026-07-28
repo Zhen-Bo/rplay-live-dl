@@ -1,5 +1,6 @@
 """Live stream monitoring module."""
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
 
+from core.constants import DEFAULT_MIN_FREE_DISK_GB
 from models.config import CreatorProfile
 from models.download import (
     DownloadSession,
@@ -113,6 +115,7 @@ class LiveStreamMonitor:
         config_path: str = DEFAULT_CONFIG_PATH,
         api: Optional[RPlayAPI] = None,
         merge_timeout_seconds: int = DEFAULT_MERGE_TIMEOUT_SECONDS,
+        min_free_disk_gb: float = DEFAULT_MIN_FREE_DISK_GB,
     ) -> None:
         """
         Initialize monitor with authentication and configuration.
@@ -123,10 +126,12 @@ class LiveStreamMonitor:
             config_path: Path to creator profiles YAML config
             api: Optional RPlayAPI instance for dependency injection (testing)
             merge_timeout_seconds: Timeout for ffmpeg merge commands
+            min_free_disk_gb: Minimum free disk space in GiB before recording; 0 disables
         """
         self.api = api if api is not None else RPlayAPI(auth_token, user_oid)
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
+        self.min_free_disk_gb = min_free_disk_gb
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
         self.latest_stream_oid_by_creator: Dict[str, str] = {}
@@ -444,6 +449,10 @@ class LiveStreamMonitor:
 
         creator_name = creator_profile.creator_name
         creator_oid = stream.creator_oid
+        output_dir = self._build_session_output_dir(creator_name)
+        if not self._has_enough_free_disk(output_dir):
+            return
+
         recording_started_at = datetime.now(timezone.utc)
 
         self._update_creator_stream_state(stream)
@@ -465,6 +474,38 @@ class LiveStreamMonitor:
             )
         except Exception as exc:
             self._handle_start_download_error(session.session_key, creator_name, exc)
+
+    def _has_enough_free_disk(self, output_dir: Path) -> bool:
+        """Return False when free space is below the configured threshold."""
+        if self.min_free_disk_gb <= 0:
+            return True
+
+        check_path = output_dir
+        while not check_path.exists():
+            parent = check_path.parent
+            if parent == check_path:
+                break
+            check_path = parent
+
+        try:
+            free_bytes = shutil.disk_usage(check_path).free
+        except OSError as exc:
+            # ponytail: availability beats blocking recordings on a broken statvfs
+            self.logger.warning(
+                f"Could not check free disk space for {output_dir} "
+                f"(via {check_path}): {exc}; allowing session"
+            )
+            return True
+
+        free_gb = free_bytes / (1024 ** 3)
+        if free_gb < self.min_free_disk_gb:
+            self.logger.error(
+                f"Insufficient free disk space to start recording: "
+                f"path={output_dir}, free={free_gb:.2f} GiB, "
+                f"required={self.min_free_disk_gb:g} GiB"
+            )
+            return False
+        return True
 
     def _launch_session_downloader(
         self,

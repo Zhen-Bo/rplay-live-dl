@@ -14,6 +14,7 @@ from core.constants import (
     DEFAULT_LOG_MAX_SIZE_MB,
     DEFAULT_LOG_RETENTION_DAYS,
     DEFAULT_LOG_YTDLP_INTERNAL,
+    DEFAULT_MIN_FREE_DISK_GB,
 )
 
 # Validation vocabulary lives beside the only consumer (this model).
@@ -78,6 +79,10 @@ class EnvConfig(BaseSettings):
         ge=1,
         le=365,
     )
+    min_free_disk_gb: float = Field(
+        default=DEFAULT_MIN_FREE_DISK_GB,
+        description="Minimum free disk space in GiB before starting a recording; 0 disables",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -132,3 +137,21 @@ class EnvConfig(BaseSettings):
             "1, true, yes, on, 0, false, no, off (or empty); "
             f"got {v!r}"
         )
+
+    @field_validator("min_free_disk_gb", mode="before")
+    @classmethod
+    def validate_min_free_disk_gb(cls, v: object) -> float:
+        """Reject negative or non-numeric MIN_FREE_DISK_GB at startup."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_MIN_FREE_DISK_GB
+        try:
+            value = float(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"MIN_FREE_DISK_GB must be a non-negative number; got {v!r}"
+            ) from exc
+        if value < 0:
+            raise ValueError(
+                f"MIN_FREE_DISK_GB must be a non-negative number; got {v!r}"
+            )
+        return value

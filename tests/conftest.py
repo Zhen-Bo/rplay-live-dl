@@ -1,8 +1,21 @@
 """Pytest configuration and fixtures."""
 
 import logging
+from types import SimpleNamespace
 
 import pytest
+
+_GIB = 1024 ** 3
+
+
+@pytest.fixture(autouse=True)
+def plenty_of_free_disk(monkeypatch):
+    """Keep suite independent of real free disk (MIN_FREE_DISK_GB default is 5).
+
+    Guard-specific tests override this by patching disk_usage themselves.
+    """
+    usage = SimpleNamespace(total=100 * _GIB, used=10 * _GIB, free=90 * _GIB)
+    monkeypatch.setattr("shutil.disk_usage", lambda path: usage)
 
 
 @pytest.fixture(autouse=True)

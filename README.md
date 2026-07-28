@@ -176,6 +176,10 @@ USER_OID=your_user_oid
 # Optional: monitor poll interval in seconds (10-3600)
 INTERVAL=60
 
+# Optional: minimum free disk space in GiB before starting a recording
+# 0 disables the guard; negative or non-numeric values abort startup
+MIN_FREE_DISK_GB=5
+
 # Optional: application log level
 LOG_LEVEL=INFO
 
@@ -200,6 +204,7 @@ Environment variables:
 | `AUTH_TOKEN` | yes | none | non-empty | RPlay auth token used for API and stream access |
 | `USER_OID` | yes | none | non-empty | Your RPlay user identifier |
 | `INTERVAL` | no | `60` | integer `10`-`3600` | Poll interval in seconds |
+| `MIN_FREE_DISK_GB` | no | `5` | non-negative number; `0` disables the guard; invalid/negative values abort startup | Skip starting a new recording when free space on the output volume is below this many GiB |
 | `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; invalid values abort startup with a non-zero exit | Console and file log verbosity |
 | `LOG_YTDLP_INTERNAL` | no | `false` | truthy: `1`, `true`, `yes`, `on`; falsy: `0`, `false`, `no`, `off`, empty; other values abort startup | Enables noisy yt-dlp internal debug lines |
 | `LOG_MAX_SIZE_MB` | no | `5` | integer `1`-`100` | Maximum size of each log file before rotation |
