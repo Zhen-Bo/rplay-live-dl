@@ -138,19 +138,19 @@ class TestBuildOutputPath:
 
 
 class TestGetUniquePath:
-    """Tests for _get_unique_path class method."""
+    """Tests for the get_unique_path class method."""
 
     def test_no_conflict_returns_original(self, tmp_path):
         """Test returns original path when no file exists."""
         path = tmp_path / "test.mp4"
-        result = StreamDownloader._get_unique_path(path)
+        result = StreamDownloader.get_unique_path(path)
         assert result == path
 
     def test_with_conflict_adds_counter(self, tmp_path):
         """Test adds _1 suffix when file exists."""
         path = tmp_path / "test.mp4"
         path.touch()
-        result = StreamDownloader._get_unique_path(path)
+        result = StreamDownloader.get_unique_path(path)
         assert result == tmp_path / "test_1.mp4"
 
     def test_multiple_conflicts_increments_counter(self, tmp_path):
@@ -159,7 +159,7 @@ class TestGetUniquePath:
         path.touch()
         (tmp_path / "test_1.mp4").touch()
         (tmp_path / "test_2.mp4").touch()
-        result = StreamDownloader._get_unique_path(path)
+        result = StreamDownloader.get_unique_path(path)
         assert result == tmp_path / "test_3.mp4"
 
     def test_max_duplicates_raises_error(self, tmp_path):
@@ -169,7 +169,7 @@ class TestGetUniquePath:
         for i in range(1, 1001):
             (tmp_path / f"test_{i}.mp4").touch()
         with pytest.raises(RuntimeError, match="Too many duplicate files"):
-            StreamDownloader._get_unique_path(path)
+            StreamDownloader.get_unique_path(path)
 
 
 class TestYtDlpLoggerBridge:
@@ -878,6 +878,132 @@ class TestDownloadErrorCallback:
         assert len(completed_events) == 1
         assert completed_events[0].session_key == "creator1:stream1"
 
+    def _stopped_downloader(self, tmp_path, mock_ydl, **kwargs):
+        """Build a downloader whose recording ffmpeg is reaped mid-download.
+
+        Returns the downloader with the event lists its callbacks append to.
+        """
+        completed, failed = [], []
+        downloader = StreamDownloader(
+            "TestCreator",
+            session_key="creator1:stream1",
+            output_dir=tmp_path,
+            on_download_complete=lambda event: completed.append(event),
+            on_download_failure=lambda event: failed.append(event),
+            **kwargs,
+        )
+        downloader._download_start_time = datetime.now()
+
+        def kill_recording_mid_download(*args, **kwargs):
+            downloader.request_stop()
+            # ffmpeg exits 255 when terminated, so yt-dlp calls the download
+            # failed and never renames the .part it was writing.
+            raise yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 255")
+
+        mock_ydl.download.side_effect = kill_recording_mid_download
+        return downloader, completed, failed
+
+    def test_worker_adopts_the_partial_download_left_by_a_reaped_recording(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test the stranded .ts.part becomes the raw output and reaches the merge step."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        downloader, completed, failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
+        )
+        output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
+        part_path = Path(f"{output_path}.part")
+        part_path.write_bytes(b"\x47" * 188)
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        # The whole recording moves under the name the merge step globs for.
+        assert output_path.read_bytes() == b"\x47" * 188
+        assert not part_path.exists()
+        assert failed == []
+        assert len(completed) == 1
+        assert completed[0].session_key == "creator1:stream1"
+        assert completed[0].output_dir == tmp_path
+
+    def test_worker_does_not_adopt_a_part_with_sibling_fragments(
+        self, mock_yt_dlp, tmp_path
+    ):
+        """Test a fragmented recording keeps its .part and the old completion path."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        downloader, completed, _failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
+        )
+        output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
+        part_path = Path(f"{output_path}.part")
+        part_path.write_bytes(b"\x47" * 188)
+        sibling = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live_1.ts"
+        sibling.write_bytes(b"fragment")
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        # Which pieces are complete is not knowable here, so the part is left
+        # exactly as it was and only the finished fragments go to the merge.
+        assert part_path.read_bytes() == b"\x47" * 188
+        assert not output_path.exists()
+        assert len(completed) == 1
+
+    def test_worker_does_not_adopt_an_empty_partial_download(self, mock_yt_dlp, tmp_path):
+        """Test a zero-byte part is not turned into an empty merge input."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        downloader, completed, failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
+        )
+        output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
+        part_path = Path(f"{output_path}.part")
+        part_path.write_bytes(b"")
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert part_path.exists()
+        assert not output_path.exists()
+        assert completed == []
+        assert len(failed) == 1
+
+    def test_worker_does_not_adopt_a_partial_mp4_download(self, mock_yt_dlp, tmp_path):
+        """Test a truncated mp4, which has no moov atom yet, is never adopted."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        downloader, completed, failed = self._stopped_downloader(tmp_path, mock_ydl)
+        output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.mp4"
+        part_path = Path(f"{output_path}.part")
+        part_path.write_bytes(b"truncated mp4 without a moov atom")
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        assert part_path.exists()
+        assert not output_path.exists()
+        assert completed == []
+        assert len(failed) == 1
+
+    def test_worker_keeps_the_part_when_adoption_cannot_rename_it(
+        self, mock_yt_dlp, tmp_path, monkeypatch
+    ):
+        """Test a failed rename falls back to reporting the recording as failed."""
+        mock_ydl_class, mock_ydl = mock_yt_dlp
+        downloader, completed, failed = self._stopped_downloader(
+            tmp_path, mock_ydl, output_extension=".ts"
+        )
+        output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.ts"
+        part_path = Path(f"{output_path}.part")
+        part_path.write_bytes(b"\x47" * 188)
+
+        def deny_rename(self, target):
+            raise OSError("cross-device link")
+
+        monkeypatch.setattr(Path, "rename", deny_rename)
+
+        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+
+        # The session still has to reach a terminal state, or its raw lock is
+        # held until the process restarts.
+        assert part_path.read_bytes() == b"\x47" * 188
+        assert completed == []
+        assert len(failed) == 1
+
     def test_worker_logs_partial_output_details_on_failure(self, mock_yt_dlp, tmp_path):
         """Test final download error logs include .part output details."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
@@ -886,7 +1012,8 @@ class TestDownloadErrorCallback:
             session_key="creator1:stream1",
         )
         output_path = tmp_path / "test.ts"
-        Path(f"{output_path}.part").write_bytes(b"abcdef")
+        part_path = Path(f"{output_path}.part")
+        part_path.write_bytes(b"abcdef")
         downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
 
@@ -899,6 +1026,10 @@ class TestDownloadErrorCallback:
             and "part_size=6.0 B" in str(call)
             for call in mock_log.call_args_list
         )
+        # Adoption belongs to the shutdown path alone: yt-dlp may still resume
+        # into this .part on a later attempt, so nothing may claim it here.
+        assert part_path.read_bytes() == b"abcdef"
+        assert not output_path.exists()
 
     def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
         """Test non-blocked download errors emit a raw failure event."""

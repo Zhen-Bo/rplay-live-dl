@@ -169,7 +169,7 @@ class StreamDownloader:
         output_path = self._build_output_path(safe_title)
 
         # Ensure unique file path and create directories
-        output_path = self._get_unique_path(output_path)
+        output_path = self.get_unique_path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Store current download info
@@ -288,7 +288,7 @@ class StreamDownloader:
         return options
 
     @classmethod
-    def _get_unique_path(cls, base_path: Path) -> Path:
+    def get_unique_path(cls, base_path: Path) -> Path:
         """
         Generate a unique file path by appending a counter if file exists.
 
@@ -323,6 +323,30 @@ class StreamDownloader:
         """Return True when yt-dlp left numbered sibling fragments for this output."""
         fragment_pattern = f"{output_path.stem}_*{output_path.suffix}"
         return any(output_path.parent.glob(fragment_pattern))
+
+    def _adopt_part_output(self, output_path: Path) -> bool:
+        """Rename a dead recording's .ts.part onto its raw output name."""
+        # Only .ts: a truncated MPEG-TS is still demuxable, which is what makes
+        # concat safe on it, while a truncated mp4 has no moov atom yet and
+        # would be unplayable.
+        if output_path.suffix != ".ts":
+            return False
+
+        part_path = Path(f"{output_path}.part")
+        try:
+            if not part_path.is_file() or part_path.stat().st_size == 0:
+                return False
+
+            part_path.rename(output_path)
+        except OSError as exc:
+            # Must not escape: this runs inside the shutdown error handler, and
+            # raising here would leave the session without a terminal event.
+            self.log.warning(
+                f"⚠️ Could not adopt partial download {part_path.name}: {exc}",
+            )
+            return False
+
+        return True
 
     def _build_output_state_details(self, output_path: Path) -> str:
         """Build a compact output-state summary for downloader logs."""
@@ -407,9 +431,17 @@ class StreamDownloader:
                     self._notify_download_complete(output_path)
                     return
 
-                # No finished raw file: yt-dlp leaves a truncated .part behind,
-                # which is the startup orphan scan's job to report, not the
-                # merge step's.
+                # The recording itself may be sitting in the .part yt-dlp
+                # abandoned, and adopting it keeps the merge inside shutdown's
+                # existing budget instead of waiting for a restart.
+                if self._adopt_part_output(output_path):
+                    self.log.info(
+                        f"⏹️ Recording stopped for shutdown (session {session_prefix}); "
+                        f"adopted partial download as raw output: {output_path.name}",
+                    )
+                    self._notify_download_complete(output_path)
+                    return
+
                 self.log.warning(
                     f"⏹️ Recording stopped for shutdown (session {session_prefix}) with no "
                     f"finished raw output: {error_message}; "

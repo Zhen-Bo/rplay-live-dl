@@ -41,9 +41,9 @@ def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
     when a merge fails or the process dies first.
     """
     # Runs after recovery, so what it lists is what recovery could not fix:
-    # sessions it skipped or failed to merge, plus the yt-dlp artifacts it
-    # never touches. ponytail: report-only for .part fragments, which may be
-    # truncated mid-write, so merging those would produce broken video.
+    # sessions it skipped or failed to merge, the .ts.part files it refused to
+    # adopt, plus the .part-FragN and .ytdl artifacts it never touches, which
+    # may be torn mid-write and would merge into broken video.
     archive = Path.cwd() / StreamDownloader.ARCHIVE_DIR
     if not archive.is_dir():
         return
