@@ -12,7 +12,10 @@ from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
 
-from core.constants import DEFAULT_MIN_FREE_DISK_GB
+from core.constants import (
+    DEFAULT_MERGE_TIMEOUT_SECONDS as _DEFAULT_MERGE_TIMEOUT_SECONDS,
+    DEFAULT_MIN_FREE_DISK_GB,
+)
 from models.config import CreatorProfile
 from models.download import (
     DownloadSession,
@@ -34,7 +37,7 @@ from .downloader import StreamDownloader
 from .health import touch_heartbeat
 from .logger import bind, clip, setup_logger
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
-from .utils import terminate_child_processes
+from .utils import merge_ts_files_to_mp4, terminate_child_processes
 
 __all__ = [
     "LiveStreamMonitor",
@@ -92,7 +95,7 @@ class LiveStreamMonitor:
     - Automatic cleanup of inactive downloaders which are not monitored
     """
 
-    DEFAULT_MERGE_TIMEOUT_SECONDS = 7200
+    DEFAULT_MERGE_TIMEOUT_SECONDS = _DEFAULT_MERGE_TIMEOUT_SECONDS
     POLL_WAIT_TIMEOUT_SECONDS = 30.0
     # One aggregate budget for the whole shutdown, not a per-step timeout that
     # the next step can extend: every wait below draws from the same deadline,
@@ -1148,31 +1151,7 @@ class LiveStreamMonitor:
 
     def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
         """Merge ts fragments into one mp4 file using ffmpeg concat."""
-        list_path = ts_files[0].parent / "merge-inputs.txt"
-        list_content = "\n".join(
-            self._format_ffconcat_input_path(ts_file) for ts_file in ts_files
-        )
-        list_path.write_text(list_content, encoding="utf-8")
-
-        try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            self._run_merge_subprocess(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    str(list_path),
-                    "-c",
-                    "copy",
-                    str(output_path),
-                ]
-            )
-        finally:
-            list_path.unlink(missing_ok=True)
+        merge_ts_files_to_mp4(ts_files, output_path, self._run_merge_subprocess)
 
     def _run_merge_subprocess(self, command: List[str]) -> None:
         """
@@ -1215,11 +1194,6 @@ class LiveStreamMonitor:
         finally:
             with self._state_lock:
                 self._merge_process_pids.discard(process.pid)
-
-    def _format_ffconcat_input_path(self, ts_file: Path) -> str:
-        """Format one concat-demuxer input line with apostrophe-safe escaping."""
-        escaped_path = ts_file.resolve().as_posix().replace("'", r"'\''")
-        return f"file '{escaped_path}'"
 
     def _shutdown_time_left(self, cap: Optional[float] = None) -> float:
         """Return the seconds left in the aggregate budget, capped for one phase."""

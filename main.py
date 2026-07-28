@@ -16,6 +16,7 @@ from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.downloader import StreamDownloader
 from core.env import EnvConfig, EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
+from core.orphan_recovery import recover_orphaned_sessions
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError
 from core.scheduler import run_scheduler
 
@@ -39,9 +40,10 @@ def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
     *.ytdl and *.part-Frag* behind on a kill; unmerged session .ts files stay
     when a merge fails or the process dies first.
     """
-    # ponytail: report-only. Auto-merging .ts is deferred until shutdown is
-    # trustworthy, and .part fragments may be truncated mid-write, so merging
-    # those would produce broken video.
+    # Runs after recovery, so what it lists is what recovery could not fix:
+    # sessions it skipped or failed to merge, plus the yt-dlp artifacts it
+    # never touches. ponytail: report-only for .part fragments, which may be
+    # truncated mid-write, so merging those would produce broken video.
     archive = Path.cwd() / StreamDownloader.ARCHIVE_DIR
     if not archive.is_dir():
         return
@@ -89,6 +91,15 @@ def main() -> None:
             logger.info(f"Cleaned up {removed} old log file(s)")
     except Exception as e:
         logger.warning(f"Failed to cleanup old logs: {e}")
+
+    # Before the scheduler polls: nothing else is writing the archive yet, so
+    # merging here cannot race a fresh recording into the same directory.
+    try:
+        recover_orphaned_sessions(logger)
+    except Exception as e:
+        # Recovery is best-effort housekeeping; it must never block startup.
+        # Every input it touches is kept on failure, so the next run retries.
+        logger.warning(f"Failed to recover orphaned recordings: {e}")
 
     _warn_about_orphaned_downloads(logger)
 

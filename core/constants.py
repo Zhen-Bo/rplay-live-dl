@@ -44,6 +44,10 @@ DEFAULT_LOG_YTDLP_INTERNAL = False
 # Minimum free disk space (GiB) before starting a recording; 0 disables
 DEFAULT_MIN_FREE_DISK_GB = 5.0
 
+# Wall-clock ceiling for one ffmpeg concat merge, shared by the live merge
+# executor and startup orphan recovery so both bound the same work identically.
+DEFAULT_MERGE_TIMEOUT_SECONDS = 7200
+
 # Poll interval default (INTERVAL env); shared by EnvConfig and the health probe
 DEFAULT_INTERVAL = 60
 
@@ -66,5 +70,6 @@ __all__ = [
     "DEFAULT_LOG_RETENTION_DAYS",
     "DEFAULT_LOG_YTDLP_INTERNAL",
     "DEFAULT_MIN_FREE_DISK_GB",
+    "DEFAULT_MERGE_TIMEOUT_SECONDS",
     "DEFAULT_INTERVAL",
 ]

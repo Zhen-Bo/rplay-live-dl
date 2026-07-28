@@ -4,12 +4,14 @@ Utility functions for rplay-live-dl.
 Provides common helper functions used across multiple modules.
 """
 
-from typing import Optional
+from pathlib import Path
+from typing import Callable, List, Optional
 
 import psutil
 
 __all__ = [
     "format_file_size",
+    "merge_ts_files_to_mp4",
     "terminate_child_processes",
 ]
 
@@ -70,6 +72,59 @@ def terminate_child_processes(
         total += len(children)
 
     return total
+
+
+def _format_ffconcat_input_path(ts_file: Path) -> str:
+    """Format one concat-demuxer input line with apostrophe-safe escaping."""
+    escaped_path = ts_file.resolve().as_posix().replace("'", r"'\''")
+    return f"file '{escaped_path}'"
+
+
+def merge_ts_files_to_mp4(
+    ts_files: List[Path],
+    output_path: Path,
+    run_command: Callable[[List[str]], None],
+) -> None:
+    """
+    Merge ts fragments into one mp4 file using ffmpeg concat.
+
+    Shared by the live merge executor and startup orphan recovery so a
+    recovered recording is produced by exactly the same ffmpeg invocation as
+    one merged in-process. Only process supervision differs between the two,
+    which is why the caller supplies ``run_command``: the monitor registers the
+    child pid under its state lock so shutdown can spare an active merge, while
+    startup recovery has no sweep to protect against and just waits.
+
+    Args:
+        ts_files: Raw inputs, already ordered; the first one's parent holds the
+            temporary concat list.
+        output_path: Destination mp4. Callers own collision policy.
+        run_command: Executes the ffmpeg command. Must raise on non-zero exit
+            (``CalledProcessError``) and on timeout (``TimeoutExpired``).
+    """
+    list_path = ts_files[0].parent / "merge-inputs.txt"
+    list_content = "\n".join(_format_ffconcat_input_path(ts_file) for ts_file in ts_files)
+    list_path.write_text(list_content, encoding="utf-8")
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        run_command(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_path),
+                "-c",
+                "copy",
+                str(output_path),
+            ]
+        )
+    finally:
+        list_path.unlink(missing_ok=True)
 
 
 def format_file_size(size_bytes: float) -> str:

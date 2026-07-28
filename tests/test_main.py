@@ -40,6 +40,11 @@ def _patch_main_startup(monkeypatch, *, api_side_effect=None, calls=None):
     )
     monkeypatch.setattr("main.cleanup_old_logs", MagicMock(return_value=0))
     monkeypatch.setattr("main._warn_about_orphaned_downloads", MagicMock())
+    # Never let a main() test merge whatever sits in the real ./archive.
+    monkeypatch.setattr(
+        "main.recover_orphaned_sessions",
+        _track("recover_orphaned_sessions", MagicMock(return_value=0)),
+    )
     monkeypatch.setattr(
         "main.read_app_config",
         MagicMock(
@@ -167,16 +172,20 @@ def test_main_invalid_log_level_exits_before_setup_logger(monkeypatch, capsys):
 
 
 def test_main_success_order(monkeypatch):
-    """Test main runs load_env → logging → credential validation → scheduler."""
+    """Test main runs load_env → logging → orphan recovery → credentials → scheduler."""
     calls: list[str] = []
     api, _ = _patch_main_startup(monkeypatch, calls=calls)
 
     main()
 
+    # Recovery must sit after logging is configured (so its per-session lines
+    # are captured) and before run_scheduler (so no poll can start a recording
+    # into a directory recovery is still merging).
     assert calls == [
         "load_env",
         "configure_logging",
         "setup_logger",
+        "recover_orphaned_sessions",
         "validate_credentials",
         "run_scheduler",
     ]
