@@ -54,7 +54,11 @@ class TestLiveStreamSchedulerInit:
         """Test that LiveStreamMonitor is created."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
         scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
-        mock_monitor_class.assert_called_once_with("test_token", "test_oid")
+        mock_monitor_class.assert_called_once_with(
+            "test_token",
+            "test_oid",
+            min_free_disk_gb=5.0,
+        )
         assert scheduler.monitor is mock_monitor_class.return_value
 
     def test_init_creates_scheduler(self, patched_scheduler_deps, mock_env, mock_logger):

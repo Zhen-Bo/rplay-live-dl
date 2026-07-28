@@ -4,6 +4,7 @@ import inspect
 
 from threading import Event as ThreadEvent, Thread
 from time import monotonic
+from types import SimpleNamespace
 
 from models.download import MergeCompleted
 
@@ -24,6 +25,15 @@ from models.download import (
     SessionState,
 )
 from models.rplay import StreamState
+
+_GIB = 1024 ** 3
+
+
+@pytest.fixture(autouse=True)
+def plenty_of_free_disk(monkeypatch):
+    """Keep this module independent of real free disk (default guard is 5 GiB)."""
+    usage = SimpleNamespace(total=100 * _GIB, used=10 * _GIB, free=90 * _GIB)
+    monkeypatch.setattr("shutil.disk_usage", lambda path: usage)
 
 
 def test_raw_completion_event_immediately_submits_merge(tmp_path):

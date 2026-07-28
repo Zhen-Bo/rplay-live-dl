@@ -14,6 +14,7 @@ from core.constants import (
     DEFAULT_LOG_MAX_SIZE_MB,
     DEFAULT_LOG_RETENTION_DAYS,
     DEFAULT_LOG_YTDLP_INTERNAL,
+    DEFAULT_MIN_FREE_DISK_GB,
 )
 
 # Validation vocabulary lives beside the only consumer (this model).
@@ -77,6 +78,12 @@ class EnvConfig(BaseSettings):
         description="Days to retain old log files",
         ge=1,
         le=365,
+    )
+    min_free_disk_gb: float = Field(
+        default=DEFAULT_MIN_FREE_DISK_GB,
+        description="Minimum free disk space in GiB before starting a recording; 0 disables",
+        ge=0,
+        allow_inf_nan=False,
     )
 
     model_config = SettingsConfigDict(

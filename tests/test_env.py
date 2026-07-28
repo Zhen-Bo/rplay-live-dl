@@ -292,3 +292,44 @@ class TestLogConfigEnvVars:
         config = load_env()
 
         assert config.log_retention_days == 365
+
+
+class TestMinFreeDiskGbEnv:
+    """Tests for MIN_FREE_DISK_GB environment variable."""
+
+    def test_custom_value(self, monkeypatch):
+        """Test custom MIN_FREE_DISK_GB value."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("MIN_FREE_DISK_GB", "10.5")
+
+        config = load_env()
+
+        assert config.min_free_disk_gb == 10.5
+
+    def test_zero_accepted(self, monkeypatch):
+        """Test MIN_FREE_DISK_GB=0 is accepted (disables the guard)."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("MIN_FREE_DISK_GB", "0")
+
+        config = load_env()
+
+        assert config.min_free_disk_gb == 0.0
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["", "nan", "inf", "-inf", "-1"],
+    )
+    def test_invalid_values_raise_actionable_error(self, monkeypatch, raw):
+        """Blank, non-finite, and negative values fail startup with field name."""
+        monkeypatch.setenv("AUTH_TOKEN", "test_token")
+        monkeypatch.setenv("USER_OID", "test_oid")
+        monkeypatch.setenv("MIN_FREE_DISK_GB", raw)
+
+        with pytest.raises(ValueError) as exc_info:
+            load_env()
+
+        message = str(exc_info.value)
+        assert "Invalid environment configuration" in message
+        assert "MIN_FREE_DISK_GB" in message
