@@ -147,6 +147,7 @@ class StreamDownloader:
         self.filename_prefix = filename_prefix
         self._on_download_complete = on_download_complete
         self._on_download_failure = on_download_failure
+        self._last_download_attempt = 0
         self._yt_dlp_logger = _YtDlpLoggerBridge(
             self,
             enabled=is_ytdlp_internal_logging_enabled(),
@@ -348,8 +349,19 @@ class StreamDownloader:
 
         return True
 
-    def _build_output_state_details(self, output_path: Path) -> str:
-        """Build a compact output-state summary for downloader logs."""
+    @staticmethod
+    def _extract_short_error_reason(error_text: str) -> str:
+        """Prefer an HTTP Error token; else first line, truncated to ~120 chars."""
+        match = re.search(r"HTTP Error \d+[^;,)]*", error_text)
+        if match:
+            return match.group(0).strip()
+        first_line = (error_text.splitlines() or ["unknown error"])[0].strip()
+        if len(first_line) > 120:
+            return f"{first_line[:117]}..."
+        return first_line or "unknown error"
+
+    def _inspect_output_state(self, output_path: Path) -> Dict[str, Any]:
+        """Collect output/part/fragment facts once for dual-level log formatting."""
         part_path = Path(f"{output_path}.part")
         output_exists = output_path.exists()
         part_exists = part_path.exists()
@@ -358,11 +370,57 @@ class StreamDownloader:
             format_file_size(output_path.stat().st_size) if output_exists else "0 B"
         )
         part_size = format_file_size(part_path.stat().st_size) if part_exists else "0 B"
+        return {
+            "output_path": output_path,
+            "part_path": part_path,
+            "output_exists": output_exists,
+            "part_exists": part_exists,
+            "sibling_fragments": sibling_fragments,
+            "output_size": output_size,
+            "part_size": part_size,
+        }
+
+    def _build_output_state_details(self, output_path: Path) -> str:
+        """Full diagnostic dump for DEBUG logs (includes paths and session fields)."""
+        state = self._inspect_output_state(output_path)
         return (
-            f"output_path={output_path}, "
-            f"output_exists={output_exists}, output_size={output_size}, "
-            f"part_path={part_path}, part_exists={part_exists}, part_size={part_size}, "
-            f"sibling_fragments={sibling_fragments}"
+            f"output_path={state['output_path']}, "
+            f"output_exists={state['output_exists']}, output_size={state['output_size']}, "
+            f"part_path={state['part_path']}, part_exists={state['part_exists']}, "
+            f"part_size={state['part_size']}, "
+            f"sibling_fragments={state['sibling_fragments']}"
+        )
+
+    def _build_compact_output_state_summary(self, output_path: Path) -> str:
+        """Path-free human summary for WARNING/ERROR logs."""
+        state = self._inspect_output_state(output_path)
+        output = (
+            f"present ({state['output_size']})"
+            if state["output_exists"]
+            else "missing"
+        )
+        part = (
+            f"present ({state['part_size']})"
+            if state["part_exists"]
+            else "missing"
+        )
+        fragments = "yes" if state["sibling_fragments"] else "no"
+        return f"output={output}, part={part}, fragments={fragments}"
+
+    def _log_output_state_debug(
+        self,
+        prefix: str,
+        error_message: str,
+        output_path: Optional[Path],
+    ) -> None:
+        """Emit the legacy full dump at DEBUG only (session_key + paths)."""
+        if output_path is None:
+            details = "output_path=unknown"
+        else:
+            details = self._build_output_state_details(output_path)
+        self.log.debug(
+            f"{prefix}{error_message}; "
+            f"session_key={self.session_key or 'none'}, {details}",
         )
 
     def _download_worker(
@@ -400,9 +458,15 @@ class StreamDownloader:
                     f"({size_str}, {duration_str})",
                 )
             else:
+                compact = self._build_compact_output_state_summary(output_path)
                 self.log.warning(
                     "⚠️  Download finished but file not found: "
-                    f"{output_path}; {self._build_output_state_details(output_path)}",
+                    f"{output_path.name}; {compact}",
+                )
+                self._log_output_state_debug(
+                    "Download finished but file not found: ",
+                    str(output_path),
+                    output_path,
                 )
                 if not self._has_sibling_fragment_outputs(output_path):
                     # Without this the session never leaves RAW_RUNNING: no
@@ -442,10 +506,16 @@ class StreamDownloader:
                     self._notify_download_complete(output_path)
                     return
 
+                short_reason = self._extract_short_error_reason(error_message)
+                compact = self._build_compact_output_state_summary(output_path)
                 self.log.warning(
                     f"⏹️ Recording stopped for shutdown (session {session_prefix}) with no "
-                    f"finished raw output: {error_message}; "
-                    f"{self._build_output_state_details(output_path)}",
+                    f"finished raw output: {short_reason}; {compact}",
+                )
+                self._log_output_state_debug(
+                    "Recording stopped for shutdown with no finished raw output: ",
+                    error_message,
+                    output_path,
                 )
                 self._notify_download_failure(error_message)
                 return
@@ -453,11 +523,14 @@ class StreamDownloader:
             # ponytail: .error, not .exception — this handler mostly sees classified
             # 401/403/404 access failures where the yt-dlp message says it all; the
             # truly-unexpected path below keeps the traceback.
+            attempts = max(1, self._last_download_attempt)
+            short_reason = self._extract_short_error_reason(error_message)
+            compact = self._build_compact_output_state_summary(output_path)
             self.log.error(
-                "❌ Download error: "
-                f"{error_message}; session_key={self.session_key or 'none'}, "
-                f"{self._build_output_state_details(output_path)}",
+                f"❌ Download failed after {attempts} attempts: "
+                f"{short_reason}; {compact}",
             )
+            self._log_output_state_debug("Download failed: ", error_message, output_path)
             if self._is_auth_error(error_message):
                 self._notify_auth_error(error_message)
             elif self._is_m3u8_access_error(error_message):
@@ -466,10 +539,17 @@ class StreamDownloader:
                 self._notify_download_failure(error_message)
 
         except Exception as e:
+            attempts = max(1, self._last_download_attempt)
+            short_reason = self._extract_short_error_reason(str(e))
+            compact = self._build_compact_output_state_summary(output_path)
             self.log.exception(
-                "❌ Unexpected download error: "
-                f"{e}; session_key={self.session_key or 'none'}, "
-                f"{self._build_output_state_details(output_path)}",
+                f"❌ Download failed after {attempts} attempts: "
+                f"{short_reason}; {compact}",
+            )
+            self._log_output_state_debug(
+                "Unexpected download error: ",
+                str(e),
+                output_path,
             )
             self._notify_download_failure(str(e))
 
@@ -529,14 +609,17 @@ class StreamDownloader:
         wait_seconds = 0.0
         if retry_state.next_action is not None:
             wait_seconds = retry_state.next_action.sleep
-        output_state = "output_path=unknown"
-        if self._current_output_path is not None:
-            output_state = self._build_output_state_details(self._current_output_path)
+        short_reason = self._extract_short_error_reason(str(exception))
         self.log.warning(
-            f"⚠️ Download attempt {retry_state.attempt_number}/"
-            f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed; retrying in "
-            f"{wait_seconds:.1f}s: {exception}; "
-            f"session_key={self.session_key or 'none'}, {output_state}",
+            f"⚠️ Attempt {retry_state.attempt_number}/"
+            f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed ({short_reason}); "
+            f"retrying in {wait_seconds:.1f}s",
+        )
+        self._log_output_state_debug(
+            f"Attempt {retry_state.attempt_number}/"
+            f"{self.DOWNLOAD_TASK_RETRY_ATTEMPTS} failed: ",
+            str(exception),
+            self._current_output_path,
         )
 
     def _download_stream_with_retries(
@@ -547,11 +630,13 @@ class StreamDownloader:
     ) -> None:
         """Run yt-dlp and retry the full task for transient download failures."""
         attempt_number = 0
+        self._last_download_attempt = 0
 
         try:
             for attempt in self._build_download_retrying():
                 with attempt:
                     attempt_number = attempt.retry_state.attempt_number
+                    self._last_download_attempt = attempt_number
                     if self._stop_requested.is_set():
                         # Set while the previous backoff was sleeping; a fresh
                         # yt-dlp run here would only be killed again.
