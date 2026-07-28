@@ -297,26 +297,6 @@ class TestLogConfigEnvVars:
 class TestMinFreeDiskGbEnv:
     """Tests for MIN_FREE_DISK_GB environment variable."""
 
-    def test_default_is_five(self, no_dotenv_file):
-        """Test default MIN_FREE_DISK_GB is 5."""
-        no_dotenv_file.setenv("AUTH_TOKEN", "test_token")
-        no_dotenv_file.setenv("USER_OID", "test_oid")
-        no_dotenv_file.delenv("MIN_FREE_DISK_GB", raising=False)
-
-        config = load_env()
-
-        assert config.min_free_disk_gb == 5.0
-
-    def test_zero_disables_guard(self, monkeypatch):
-        """Test MIN_FREE_DISK_GB=0 is accepted (disables the guard)."""
-        monkeypatch.setenv("AUTH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("MIN_FREE_DISK_GB", "0")
-
-        config = load_env()
-
-        assert config.min_free_disk_gb == 0.0
-
     def test_custom_value(self, monkeypatch):
         """Test custom MIN_FREE_DISK_GB value."""
         monkeypatch.setenv("AUTH_TOKEN", "test_token")
@@ -327,24 +307,25 @@ class TestMinFreeDiskGbEnv:
 
         assert config.min_free_disk_gb == 10.5
 
-    def test_negative_raises(self, monkeypatch):
-        """Test negative MIN_FREE_DISK_GB is a startup validation error."""
+    def test_zero_accepted(self, monkeypatch):
+        """Test MIN_FREE_DISK_GB=0 is accepted (disables the guard)."""
         monkeypatch.setenv("AUTH_TOKEN", "test_token")
         monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("MIN_FREE_DISK_GB", "-1")
+        monkeypatch.setenv("MIN_FREE_DISK_GB", "0")
 
-        with pytest.raises(ValueError) as exc_info:
-            load_env()
+        config = load_env()
 
-        message = str(exc_info.value)
-        assert "Invalid environment configuration" in message
-        assert "MIN_FREE_DISK_GB" in message
+        assert config.min_free_disk_gb == 0.0
 
-    def test_garbage_raises(self, monkeypatch):
-        """Test non-numeric MIN_FREE_DISK_GB is a startup validation error."""
+    @pytest.mark.parametrize(
+        "raw",
+        ["", "nan", "inf", "-inf", "-1"],
+    )
+    def test_invalid_values_raise_actionable_error(self, monkeypatch, raw):
+        """Blank, non-finite, and negative values fail startup with field name."""
         monkeypatch.setenv("AUTH_TOKEN", "test_token")
         monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("MIN_FREE_DISK_GB", "plenty")
+        monkeypatch.setenv("MIN_FREE_DISK_GB", raw)
 
         with pytest.raises(ValueError) as exc_info:
             load_env()

@@ -176,8 +176,6 @@ USER_OID=your_user_oid
 # Optional: monitor poll interval in seconds (10-3600)
 INTERVAL=60
 
-# Optional: minimum free disk space in GiB before starting a recording
-# 0 disables the guard; negative or non-numeric values abort startup
 MIN_FREE_DISK_GB=5
 
 # Optional: application log level

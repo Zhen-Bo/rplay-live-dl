@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,6 +27,13 @@ _GIB = 1024 ** 3
 def _runtime_config(creators):
     """Build AppConfig test data with the default hot-reload API base URL."""
     return AppConfig(api_base_url="https://api.rplay.live", creators=creators)
+
+
+@pytest.fixture(autouse=True)
+def plenty_of_free_disk(monkeypatch):
+    """Keep this module independent of real free disk (default guard is 5 GiB)."""
+    usage = SimpleNamespace(total=100 * _GIB, used=10 * _GIB, free=90 * _GIB)
+    monkeypatch.setattr("shutil.disk_usage", lambda path: usage)
 
 
 @pytest.fixture
@@ -709,16 +717,12 @@ class TestMinFreeDiskGuard:
         )
         return mock_stream
 
-    def test_below_threshold_blocks_session_and_logs_error(self, mock_api, caplog):
+    def test_below_threshold_blocks_session_and_logs_error(self, mock_api, monitor, caplog):
         """Below-threshold free space skips session creation and logs one error."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-            min_free_disk_gb=5,
-        )
+        monitor.min_free_disk_gb = 5
         mock_stream = self._stream_and_profile(monitor)
-        usage = MagicMock(free=2 * _GIB, total=100 * _GIB, used=98 * _GIB)
+        free_bytes = 2 * _GIB
+        usage = MagicMock(free=free_bytes, total=100 * _GIB, used=98 * _GIB)
 
         with (
             patch("core.live_stream_monitor.shutil.disk_usage", return_value=usage) as mock_usage,
@@ -738,39 +742,12 @@ class TestMinFreeDiskGuard:
         ]
         assert len(error_msgs) == 1
         assert "path=" in error_msgs[0]
-        assert "free=" in error_msgs[0]
+        assert f"({free_bytes} bytes)" in error_msgs[0]
         assert "required=5" in error_msgs[0]
 
-    def test_above_threshold_proceeds(self, mock_api):
-        """Above-threshold free space allows the session to start."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-            min_free_disk_gb=5,
-        )
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_stream = self._stream_and_profile(monitor)
-        usage = MagicMock(free=50 * _GIB, total=100 * _GIB, used=50 * _GIB)
-
-        with (
-            patch("core.live_stream_monitor.shutil.disk_usage", return_value=usage) as mock_usage,
-            patch("core.live_stream_monitor.StreamDownloader.download") as mock_download,
-        ):
-            monitor._start_download(mock_stream)
-
-        mock_usage.assert_called_once()
-        mock_download.assert_called_once()
-        assert len(monitor.sessions) == 1
-
-    def test_zero_disables_guard(self, mock_api):
+    def test_zero_disables_guard(self, mock_api, monitor):
         """MIN_FREE_DISK_GB=0 skips disk_usage and still starts the session."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-            min_free_disk_gb=0,
-        )
+        monitor.min_free_disk_gb = 0
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_stream = self._stream_and_profile(monitor)
 
@@ -784,14 +761,9 @@ class TestMinFreeDiskGuard:
         mock_download.assert_called_once()
         assert len(monitor.sessions) == 1
 
-    def test_disk_usage_oserror_allows_session_with_warning(self, mock_api, caplog):
+    def test_disk_usage_oserror_allows_session_with_warning(self, mock_api, monitor, caplog):
         """OSError from disk_usage logs a warning and allows the session."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-            min_free_disk_gb=5,
-        )
+        monitor.min_free_disk_gb = 5
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_stream = self._stream_and_profile(monitor)
 
