@@ -324,6 +324,52 @@ class StreamDownloader:
         fragment_pattern = f"{output_path.stem}_*{output_path.suffix}"
         return any(output_path.parent.glob(fragment_pattern))
 
+    def _adopt_part_output(self, output_path: Path) -> Optional[int]:
+        """
+        Rename a dead recording's .ts.part onto its raw output name.
+
+        When shutdown reaps the recording ffmpeg it exits non-zero, so yt-dlp
+        calls the download failed and never renames .part to .ts — the entire
+        recording stays in a file nothing downstream looks at. The child is
+        provably dead here (this process terminated it and yt-dlp has already
+        returned), so claiming its .part races nobody.
+
+        Only .ts is adopted. A truncated MPEG-TS is still demuxable, which is
+        what makes concat safe on it; a truncated .mp4 has no moov atom yet and
+        would be unplayable, so that case keeps the old report-only behavior.
+
+        Called only when the finished output is missing and no numbered sibling
+        fragments exist: with several pieces in flight, which of them are
+        complete is not knowable from here.
+
+        Returns:
+            The adopted size in bytes, or None when there was nothing to adopt.
+        """
+        if output_path.suffix != ".ts":
+            return None
+
+        part_path = Path(f"{output_path}.part")
+        try:
+            if not part_path.is_file():
+                return None
+
+            # A zero-byte part holds no recording; renaming it would only turn
+            # an empty artifact into an empty merge input.
+            part_size = part_path.stat().st_size
+            if part_size == 0:
+                return None
+
+            part_path.rename(output_path)
+        except OSError as exc:
+            # Must not escape: this runs inside the shutdown error handler, and
+            # raising here would leave the session without a terminal event.
+            self.log.warning(
+                f"⚠️ Could not adopt partial download {part_path.name}: {exc}",
+            )
+            return None
+
+        return part_size
+
     def _build_output_state_details(self, output_path: Path) -> str:
         """Build a compact output-state summary for downloader logs."""
         part_path = Path(f"{output_path}.part")
@@ -407,9 +453,22 @@ class StreamDownloader:
                     self._notify_download_complete(output_path)
                     return
 
-                # No finished raw file: yt-dlp leaves a truncated .part behind,
-                # which is the startup orphan scan's job to report, not the
-                # merge step's.
+                # No finished raw file, but the recording itself may be sitting
+                # in the .part yt-dlp abandoned. Adopting it here is what lets
+                # the normal completion path run, so the merge happens inside
+                # shutdown's existing budget instead of waiting for a restart.
+                adopted_size = self._adopt_part_output(output_path)
+                if adopted_size is not None:
+                    self.log.info(
+                        f"⏹️ Recording stopped for shutdown (session {session_prefix}); "
+                        f"adopted partial download ({format_file_size(adopted_size)}) "
+                        f"as raw output: {output_path.name}",
+                    )
+                    self._notify_download_complete(output_path)
+                    return
+
+                # Nothing adoptable: a fragmented or empty .part is reported by
+                # the startup orphan scan, not merged.
                 self.log.warning(
                     f"⏹️ Recording stopped for shutdown (session {session_prefix}) with no "
                     f"finished raw output: {error_message}; "

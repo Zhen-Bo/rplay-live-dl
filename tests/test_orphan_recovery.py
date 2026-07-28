@@ -153,15 +153,22 @@ class TestOrphanRecovery:
         assert existing.read_bytes() == b"already merged"
         assert ts_file.exists()
 
-    def test_part_and_ytdl_files_are_never_touched(self, archive, monkeypatch):
-        """Test in-flight yt-dlp artifacts are ignored and survive a mixed recovery."""
+    def test_only_the_ts_part_is_adopted_out_of_a_mixed_artifact_directory(
+        self, archive, monkeypatch
+    ):
+        """Test a stranded .ts.part is adopted and merged while .part-FragN and .ytdl are not.
+
+        Pins the adoption invariant by suffix: exactly NAME.ts.part qualifies.
+        Fragments and .ytdl may be torn mid-write, and a bare .part is not a
+        recording this application can name a session from.
+        """
         prefix = "20260306_120000_"
-        ts_file = archive / f"{prefix}#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        adoptable = archive / f"{prefix}#Creator 2026-03-06 123.ts.part"
+        adoptable.write_bytes(b"truncated but demuxable ts")
         untouchable = {
-            archive / f"{prefix}#Creator 2026-03-06 123.ts.part": b"part",
             archive / f"{prefix}#Creator 2026-03-06 123.ts.ytdl": b"ytdl",
             archive / f"{prefix}#Creator 2026-03-06 123.ts.part-Frag3": b"frag",
+            archive / f"{prefix}#Creator 2026-03-06 456.part": b"bare part",
         }
         for path, payload in untouchable.items():
             path.write_bytes(payload)
@@ -171,10 +178,64 @@ class TestOrphanRecovery:
 
         recover_orphaned_sessions(LOGGER)
 
-        # Only the .ts payload may ever reach the merge inputs.
-        assert [ts_files for ts_files, _ in captured] == [[ts_file]]
+        # The part is now the session's raw input, under its .ts name.
+        adopted = archive / f"{prefix}#Creator 2026-03-06 123.ts"
+        assert [ts_files for ts_files, _ in captured] == [[adopted]]
+        assert (archive / "#Creator 2026-03-06 123.mp4").read_bytes() == b"mp4"
+        assert not adoptable.exists()
         for path, payload in untouchable.items():
             assert path.read_bytes() == payload
+
+    def test_part_is_left_alone_when_its_ts_name_is_already_taken(
+        self, archive, monkeypatch
+    ):
+        """Test adoption never overwrites existing raw output for the same session."""
+        prefix = "20260306_120000_"
+        ts_file = archive / f"{prefix}#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"finished raw output")
+        part_file = archive / f"{prefix}#Creator 2026-03-06 123.ts.part"
+        part_file.write_bytes(b"a different attempt")
+        captured = []
+        _fake_merge(monkeypatch, captured=captured)
+
+        recover_orphaned_sessions(LOGGER)
+
+        # Only the existing .ts is merged; the part survives for an operator.
+        assert [ts_files for ts_files, _ in captured] == [[ts_file]]
+        assert part_file.read_bytes() == b"a different attempt"
+
+    def test_empty_part_is_not_adopted(self, archive, monkeypatch):
+        """Test a zero-byte part holds no recording, so it is left as it is."""
+        part_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts.part"
+        part_file.write_bytes(b"")
+        captured = []
+        _fake_merge(monkeypatch, captured=captured)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert captured == []
+        assert list(archive.iterdir()) == [part_file]
+
+    def test_adopted_part_stays_retryable_when_its_merge_fails(
+        self, archive, monkeypatch
+    ):
+        """Test adoption is not undone by a failed merge: the next run recovers it."""
+        prefix = "20260306_120000_"
+        part_file = archive / f"{prefix}#Creator 2026-03-06 123.ts.part"
+        part_file.write_bytes(b"truncated but demuxable ts")
+        adopted = archive / f"{prefix}#Creator 2026-03-06 123.ts"
+        _fake_merge(monkeypatch, writes=b"partial", error=RuntimeError("boom"))
+
+        recover_orphaned_sessions(LOGGER)
+
+        # Adoption is one-way: the input is kept under its .ts name, not
+        # reverted, so the retry below is the ordinary .ts recovery path.
+        assert list(archive.iterdir()) == [adopted]
+
+        _fake_merge(monkeypatch)
+        recover_orphaned_sessions(LOGGER)
+
+        assert sorted(archive.iterdir()) == [archive / "#Creator 2026-03-06 123.mp4"]
 
     @pytest.mark.parametrize(
         "filename",
@@ -184,6 +245,8 @@ class TestOrphanRecovery:
             "20260306_1200_#Creator short time.ts",
             "20260306120000_#Creator no separators.ts",
             "x20260306_120000_#Creator leading junk.ts",
+            "no-session-prefix.ts.part",
+            "x20260306_120000_#Creator leading junk.ts.part",
         ],
     )
     def test_non_canonical_names_are_ignored(self, archive, monkeypatch, filename, caplog):

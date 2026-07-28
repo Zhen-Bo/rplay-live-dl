@@ -1,10 +1,17 @@
 """
-Startup recovery for raw .ts recordings whose merge never completed.
+Startup recovery for raw recordings whose merge never completed.
 
-A merge abandoned when shutdown's aggregate budget ran out, or a raw download
-whose completion arrived after the merge executor had closed, leaves a finished
-recording on disk as .ts files that no later run would look at again. This
-merges them through the same ffmpeg concat invocation the live merge uses.
+A merge abandoned when shutdown's aggregate budget ran out, a raw download
+whose completion arrived after the merge executor had closed, or a recording
+whose ffmpeg was reaped before yt-dlp could rename its .ts.part, all leave a
+recording on disk that no later run would look at again. This merges them
+through the same ffmpeg concat invocation the live merge uses.
+
+A canonical NAME.ts.part is adopted first: at startup nothing is writing it,
+and truncated MPEG-TS is still demuxable, so it becomes NAME.ts and joins the
+normal pipeline. Numbered .part-FragN fragments and .ytdl files are never
+touched — they may be torn mid-write, and merging them would produce broken
+video.
 """
 
 import logging
@@ -38,10 +45,14 @@ def recover_orphaned_sessions(logger: logging.Logger) -> None:
     """
     archive = Path.cwd() / StreamDownloader.ARCHIVE_DIR
 
-    # Globbing *.ts alone is what keeps yt-dlp's in-flight artifacts out of
-    # recovery entirely: .part, .part-FragN and .ytdl all end in another
-    # suffix, so they can enter neither a concat list nor a cleanup loop. Those
-    # may be truncated mid-write, and merging them would produce broken video.
+    # Adoption runs first, so a claimed part is just another .ts input to the
+    # grouping below. Only the exact *.ts.part suffix is globbed: .part-FragN
+    # and .ytdl end differently and stay out of recovery entirely.
+    for part_file in sorted(archive.glob("*/*.ts.part")):
+        _adopt_orphaned_part(logger, part_file)
+
+    # Globbing *.ts alone keeps every remaining in-flight artifact out of the
+    # concat list and the cleanup loop that follows it.
     sessions: Dict[Tuple[Path, str], List[Path]] = {}
     for ts_file in sorted(archive.glob("*/*.ts")):
         match = _SESSION_PREFIX_RE.match(ts_file.name)
@@ -51,6 +62,39 @@ def recover_orphaned_sessions(logger: logging.Logger) -> None:
 
     for (output_dir, session_prefix), ts_files in sorted(sessions.items()):
         _recover_one_session(logger, output_dir, session_prefix, ts_files)
+
+
+def _adopt_orphaned_part(logger: logging.Logger, part_file: Path) -> None:
+    """
+    Rename one stranded NAME.ts.part onto NAME.ts so it can be merged.
+
+    Safe only because of the startup single-instance assumption above: no
+    recording is running, so this part belongs to a process that is gone.
+    """
+    if _SESSION_PREFIX_RE.match(part_file.name) is None:
+        return
+
+    output_path = part_file.with_suffix("")
+    if output_path.exists():
+        # The session already has raw output under that name, so this part is
+        # from a different attempt whose content cannot be reconciled here.
+        # Overwriting would destroy a finished recording; the operator decides.
+        logger.warning(
+            f"⚠️ Not adopting {part_file.name}: {output_path.name} already exists"
+        )
+        return
+
+    try:
+        if part_file.stat().st_size == 0:
+            logger.warning(f"⚠️ Not adopting {part_file.name}: it is empty")
+            return
+
+        part_file.rename(output_path)
+    except OSError as exc:
+        logger.warning(f"⚠️ Could not adopt {part_file.name}: {exc}")
+        return
+
+    logger.info(f"🛟 Adopted interrupted download as raw output: {output_path.name}")
 
 
 def _recover_one_session(
