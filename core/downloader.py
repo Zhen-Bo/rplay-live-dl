@@ -248,17 +248,41 @@ class StreamDownloader:
         options = {
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
+            # Honored under FFmpegFD too: yt-dlp serializes these to ffmpeg -headers.
             "http_headers": DEFAULT_HTTP_HEADERS.copy(),
             "logger": self._yt_dlp_logger,
             "quiet": True,
             "no_progress": True,
             "no_warnings": True,
-            # Retry settings for reliability
+            # A live HLS playlist is always downloaded by FFmpegFD: HlsFD.can_download
+            # rejects live playlists and hls_prefer_native is deprecated, so there is
+            # no way to reach the native downloader here. Under FFmpegFD the four
+            # options below are INERT — ffmpeg does the fetching, not yt-dlp. They are
+            # kept only for the non-live/native code paths yt-dlp may take. Tuning
+            # them will not make a live recording more resilient; tune the ffmpeg
+            # input args below instead.
             "retries": DEFAULT_DOWNLOAD_RETRIES,
             "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
             "socket_timeout": DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
-            # Continue partial downloads
             "continuedl": True,
+            # The real resilience knobs for live recordings: ffmpeg INPUT args.
+            # -rw_timeout is in microseconds (30s) and bounds a stalled read, which
+            # otherwise hangs the recording forever. The reconnect flags let ffmpeg
+            # resume the same session after a dropped connection, a network error or
+            # a 429/5xx, instead of exiting and forcing a whole-task retry.
+            # -reconnect_at_eof is deliberately absent: HLS segment reads hit EOF by
+            # design, so it would reconnect on every normal segment boundary.
+            "external_downloader_args": {
+                "ffmpeg_i": [
+                    "-rw_timeout", "30000000",
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_on_network_error", "1",
+                    "-reconnect_on_http_error", "429,5xx",
+                    "-reconnect_delay_max", "30",
+                    "-seg_max_retry", "20",
+                ],
+            },
         }
 
         if self.output_extension == ".mp4":

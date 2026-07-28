@@ -26,7 +26,9 @@ def terminate_child_processes(timeout_seconds: float = 10.0) -> int:
     """
     total = 0
     # Two passes: a still-running download thread can spawn a fresh ffmpeg
-    # between the snapshot and the kill (yt-dlp retry), so re-scan once.
+    # between the snapshot and the kill (the downloader's full-task retry starts
+    # a new FFmpegFD process; yt-dlp's own retries do not apply here), so
+    # re-scan once.
     for pass_timeout in (timeout_seconds, 2.0):
         try:
             children = psutil.Process().children(recursive=True)

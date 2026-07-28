@@ -9,6 +9,7 @@ import pytest
 import yt_dlp
 from freezegun import freeze_time
 
+from core.constants import DEFAULT_HTTP_HEADERS
 from core.downloader import StreamDownloader
 from models.download import RawDownloadCompleted, RawDownloadFailed
 
@@ -232,7 +233,11 @@ class TestBuildYdlOptions:
         assert options["no_warnings"] is True
 
     def test_options_retry_settings(self, tmp_path):
-        """Test ydl options has retry settings and a short socket timeout."""
+        """Test ydl options keeps native-downloader retry settings.
+
+        These are inert for live HLS (FFmpegFD does the fetching); they only
+        matter on yt-dlp's native code paths.
+        """
         downloader = StreamDownloader("TestCreator")
         path = tmp_path / "test.mp4"
         options = downloader._build_ydl_options(path)
@@ -240,6 +245,70 @@ class TestBuildYdlOptions:
         assert "fragment_retries" in options
         assert options["continuedl"] is True
         assert options["socket_timeout"] == 10
+
+    def test_options_ffmpeg_input_args_for_live_resilience(self, tmp_path):
+        """Test ydl options passes reconnect/timeout args to the ffmpeg input.
+
+        Live HLS is always downloaded by FFmpegFD, so these input args are the
+        only resilience settings that actually reach the network layer.
+        """
+        downloader = StreamDownloader("TestCreator")
+        path = tmp_path / "test.ts"
+        options = downloader._build_ydl_options(path)
+        assert options["external_downloader_args"] == {
+            "ffmpeg_i": [
+                "-rw_timeout", "30000000",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_on_network_error", "1",
+                "-reconnect_on_http_error", "429,5xx",
+                "-reconnect_delay_max", "30",
+                "-seg_max_retry", "20",
+            ],
+        }
+
+    def test_options_omit_reconnect_at_eof(self, tmp_path):
+        """Test ffmpeg input args never enable reconnect_at_eof.
+
+        HLS segment reads hit EOF by design, so it would reconnect on every
+        normal segment boundary.
+        """
+        downloader = StreamDownloader("TestCreator")
+        options = downloader._build_ydl_options(tmp_path / "test.ts")
+        assert "-reconnect_at_eof" not in options["external_downloader_args"]["ffmpeg_i"]
+
+    def test_options_preserve_http_headers(self, tmp_path):
+        """Test ydl options keeps RPlay headers, which FFmpegFD forwards to ffmpeg."""
+        downloader = StreamDownloader("TestCreator")
+        options = downloader._build_ydl_options(tmp_path / "test.ts")
+        assert options["http_headers"] == DEFAULT_HTTP_HEADERS
+
+    def test_options_http_headers_are_isolated_per_call(self, tmp_path):
+        """Test mutating built headers cannot leak into the shared defaults."""
+        downloader = StreamDownloader("TestCreator")
+        options = downloader._build_ydl_options(tmp_path / "test.ts")
+        options["http_headers"]["Referer"] = "https://example.invalid"
+        assert DEFAULT_HTTP_HEADERS["Referer"] != "https://example.invalid"
+        assert downloader._build_ydl_options(tmp_path / "test.ts")["http_headers"] == (
+            DEFAULT_HTTP_HEADERS
+        )
+
+
+class TestLiveHlsDownloaderSelection:
+    """Premise check for the options above: live HLS always uses FFmpegFD."""
+
+    def test_live_m3u8_selects_ffmpeg_downloader(self):
+        """Test yt-dlp picks FFmpegFD for a live m3u8, making ffmpeg args the knob."""
+        from yt_dlp.downloader import get_suitable_downloader
+        from yt_dlp.downloader.external import FFmpegFD
+
+        info_dict = {
+            "url": "https://example.invalid/live.m3u8",
+            "protocol": "m3u8",
+            "is_live": True,
+        }
+
+        assert get_suitable_downloader(info_dict, params={}) is FFmpegFD
 
 
 class TestDownloadMethod:
