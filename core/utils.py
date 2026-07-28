@@ -88,17 +88,17 @@ def merge_ts_files_to_mp4(
     """
     Merge ts fragments into one mp4 file using ffmpeg concat.
 
-    Shared by the live merge executor and startup orphan recovery so a
-    recovered recording is produced by exactly the same ffmpeg invocation as
-    one merged in-process. Only process supervision differs between the two,
-    which is why the caller supplies ``run_command``: the monitor registers the
-    child pid under its state lock so shutdown can spare an active merge, while
-    startup recovery has no sweep to protect against and just waits.
+    Shared by the live merge executor and startup orphan recovery so both
+    produce a recording through the same invocation. Only process supervision
+    differs, which is why the caller supplies ``run_command``: the monitor
+    registers the child pid under its state lock so shutdown can spare an
+    active merge, while startup recovery has no sweep to protect against.
 
     Args:
         ts_files: Raw inputs, already ordered; the first one's parent holds the
             temporary concat list.
-        output_path: Destination mp4. Callers own collision policy.
+        output_path: Destination mp4, in an existing directory. Callers own
+            collision policy and validation of the result.
         run_command: Executes the ffmpeg command. Must raise on non-zero exit
             (``CalledProcessError``) and on timeout (``TimeoutExpired``).
     """
@@ -107,7 +107,6 @@ def merge_ts_files_to_mp4(
     list_path.write_text(list_content, encoding="utf-8")
 
     try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         run_command(
             [
                 "ffmpeg",

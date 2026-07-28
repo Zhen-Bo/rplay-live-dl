@@ -43,7 +43,7 @@ def _patch_main_startup(monkeypatch, *, api_side_effect=None, calls=None):
     # Never let a main() test merge whatever sits in the real ./archive.
     monkeypatch.setattr(
         "main.recover_orphaned_sessions",
-        _track("recover_orphaned_sessions", MagicMock(return_value=0)),
+        _track("recover_orphaned_sessions", MagicMock()),
     )
     monkeypatch.setattr(
         "main.read_app_config",

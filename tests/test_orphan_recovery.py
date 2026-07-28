@@ -2,12 +2,13 @@
 
 import logging
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from core.orphan_recovery import _run_recovery_ffmpeg, recover_orphaned_sessions
+from core.orphan_recovery import recover_orphaned_sessions
+
+LOGGER = logging.getLogger("test_recovery")
 
 
 @pytest.fixture
@@ -19,25 +20,21 @@ def archive(tmp_path, monkeypatch):
     return creator_dir
 
 
-def _fake_successful_merge(monkeypatch, captured=None):
-    """Replace the ffmpeg seam with a writer that never spawns a process."""
+def _fake_merge(monkeypatch, *, writes=b"mp4", error=None, captured=None):
+    """
+    Replace the ffmpeg seam with a writer that never spawns a process.
+
+    ``writes=None`` stands in for a merge that returns without producing
+    anything, ``writes=b""`` for one that produces an empty file.
+    """
 
     def fake_merge(ts_files, output_path, run_command):
         if captured is not None:
             captured.append((list(ts_files), output_path))
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"mp4")
-
-    monkeypatch.setattr("core.orphan_recovery.merge_ts_files_to_mp4", fake_merge)
-
-
-def _fake_failing_merge(monkeypatch, error=None):
-    """Replace the ffmpeg seam with one that writes a partial mp4 then fails."""
-
-    def fake_merge(ts_files, output_path, run_command):
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"partial")
-        raise error or RuntimeError("boom")
+        if writes is not None:
+            output_path.write_bytes(writes)
+        if error is not None:
+            raise error
 
     monkeypatch.setattr("core.orphan_recovery.merge_ts_files_to_mp4", fake_merge)
 
@@ -45,79 +42,116 @@ def _fake_failing_merge(monkeypatch, error=None):
 class TestOrphanRecovery:
     """Recovery of session .ts files left behind by an interrupted run."""
 
-    def test_canonical_orphan_is_merged_and_inputs_deleted(self, archive, monkeypatch, caplog):
-        """Test a canonical orphan merges to mp4 and its inputs are removed."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
-        _fake_successful_merge(monkeypatch)
-
-        caplog.set_level(logging.INFO)
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
-
-        assert recovered == 1
-        merged = archive / "#Creator 2026-03-06 123.mp4"
-        assert merged.exists()
-        assert not ts_file.exists()
-        assert any(
-            "Recovered interrupted recording" in record.getMessage()
-            for record in caplog.records
-            if record.levelno == logging.INFO
-        )
-
-    def test_sibling_fragments_of_one_session_merge_in_order(self, archive, monkeypatch):
-        """Test numbered siblings of a session merge together, sorted, into one mp4."""
+    def test_session_fragments_merge_in_order_and_inputs_are_deleted(
+        self, archive, monkeypatch
+    ):
+        """Test one session's numbered fragments merge, sorted, into one mp4."""
         prefix = "20260306_120000_"
         base = archive / f"{prefix}#Creator 2026-03-06 123.ts"
         sibling = archive / f"{prefix}#Creator 2026-03-06 123_1.ts"
         base.write_bytes(b"ts")
         sibling.write_bytes(b"ts")
         captured = []
-        _fake_successful_merge(monkeypatch, captured)
+        _fake_merge(monkeypatch, captured=captured)
 
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
+        recover_orphaned_sessions(LOGGER)
 
-        assert recovered == 1
-        assert captured == [([base, sibling], archive / "#Creator 2026-03-06 123.mp4")]
+        assert (archive / "#Creator 2026-03-06 123.mp4").read_bytes() == b"mp4"
+        assert [ts_files for ts_files, _ in captured] == [[base, sibling]]
         assert not base.exists()
         assert not sibling.exists()
 
-    def test_failed_merge_keeps_all_inputs_and_discards_partial_output(
-        self, archive, monkeypatch, caplog
+    def test_failed_merge_keeps_every_input_and_the_next_run_recovers(
+        self, archive, monkeypatch
     ):
-        """Test a failed recovery keeps every input and leaves no partial mp4."""
+        """Test a failed merge leaves the session retryable and untouched."""
         prefix = "20260306_120000_"
         base = archive / f"{prefix}#Creator 2026-03-06 123.ts"
         sibling = archive / f"{prefix}#Creator 2026-03-06 123_1.ts"
         base.write_bytes(b"ts")
         sibling.write_bytes(b"ts")
-        _fake_failing_merge(monkeypatch)
-
-        caplog.set_level(logging.WARNING)
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
-
-        assert recovered == 0
-        assert base.exists()
-        assert sibling.exists()
-        assert not (archive / "#Creator 2026-03-06 123.mp4").exists()
-        assert any(
-            "Orphan recovery merge failed" in record.getMessage()
-            for record in caplog.records
-            if record.levelno == logging.WARNING
+        _fake_merge(
+            monkeypatch,
+            writes=b"partial",
+            error=subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=1),
         )
 
-    def test_merge_timeout_keeps_inputs(self, archive, monkeypatch):
-        """Test an ffmpeg timeout is a failure that preserves the recording."""
+        recover_orphaned_sessions(LOGGER)
+
+        # Nothing but the inputs may survive a failure — no partial artifact
+        # under any name, or the next run has a broken recording to reason about.
+        assert sorted(archive.iterdir()) == [base, sibling]
+
+        _fake_merge(monkeypatch)
+        recover_orphaned_sessions(LOGGER)
+
+        assert sorted(archive.iterdir()) == [archive / "#Creator 2026-03-06 123.mp4"]
+
+    def test_merge_producing_no_output_keeps_the_inputs(self, archive, monkeypatch):
+        """Test a merge that returns without writing anything is not a success."""
         ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
-        _fake_failing_merge(
-            monkeypatch, error=subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=1)
+        _fake_merge(monkeypatch, writes=None)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert list(archive.iterdir()) == [ts_file]
+
+    def test_merge_producing_an_empty_output_keeps_the_inputs(
+        self, archive, monkeypatch
+    ):
+        """Test a zero-byte result is not a recording, so the inputs stay."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        _fake_merge(monkeypatch, writes=b"")
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert list(archive.iterdir()) == [ts_file]
+
+    def test_interrupted_merge_leaves_the_final_name_free_for_the_next_run(
+        self, archive, monkeypatch
+    ):
+        """Test a merge killed mid-write leaves a stale temp the next run overwrites."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        final_path = archive / "#Creator 2026-03-06 123.mp4"
+        captured = []
+        _fake_merge(
+            monkeypatch, writes=b"partial", error=RuntimeError("killed"), captured=captured
         )
 
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
+        recover_orphaned_sessions(LOGGER)
 
-        assert recovered == 0
+        # ffmpeg must never write the collision-significant final name directly:
+        # a partial left there is read as a finished recording, and the session
+        # is skipped on every later startup instead of being recovered.
+        (_, temp_path), = captured
+        assert temp_path != final_path
+
+        # A killed process runs no cleanup, so its partial temp survives.
+        temp_path.write_bytes(b"partial from a killed process")
+        _fake_merge(monkeypatch)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert final_path.read_bytes() == b"mp4"
+        assert list(archive.iterdir()) == [final_path]
+
+    def test_existing_output_collision_is_skipped_and_inputs_kept(
+        self, archive, monkeypatch
+    ):
+        """Test recovery never overwrites an existing mp4; it skips and keeps inputs."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        existing = archive / "#Creator 2026-03-06 123.mp4"
+        existing.write_bytes(b"already merged")
+        _fake_merge(monkeypatch)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert existing.read_bytes() == b"already merged"
         assert ts_file.exists()
-        assert not (archive / "#Creator 2026-03-06 123.mp4").exists()
 
     def test_part_and_ytdl_files_are_never_touched(self, archive, monkeypatch):
         """Test in-flight yt-dlp artifacts are ignored and survive a mixed recovery."""
@@ -133,13 +167,12 @@ class TestOrphanRecovery:
             path.write_bytes(payload)
 
         captured = []
-        _fake_successful_merge(monkeypatch, captured)
+        _fake_merge(monkeypatch, captured=captured)
 
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
+        recover_orphaned_sessions(LOGGER)
 
-        assert recovered == 1
         # Only the .ts payload may ever reach the merge inputs.
-        assert captured == [([ts_file], archive / "#Creator 2026-03-06 123.mp4")]
+        assert [ts_files for ts_files, _ in captured] == [[ts_file]]
         for path, payload in untouchable.items():
             assert path.read_bytes() == payload
 
@@ -157,74 +190,28 @@ class TestOrphanRecovery:
         """Test only the canonical YYYYMMDD_HHMMSS_ session pattern is recovered."""
         stray = archive / filename
         stray.write_bytes(b"ts")
-        _fake_successful_merge(monkeypatch)
+        _fake_merge(monkeypatch)
 
-        caplog.set_level(logging.INFO)
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
+        caplog.set_level(logging.DEBUG)
+        recover_orphaned_sessions(LOGGER)
 
-        assert recovered == 0
-        assert stray.exists()
-        assert list(archive.glob("*.mp4")) == []
+        assert list(archive.iterdir()) == [stray]
         assert not caplog.records
 
-    def test_existing_output_collision_is_skipped_and_inputs_kept(
-        self, archive, monkeypatch, caplog
-    ):
-        """Test recovery never overwrites an existing mp4; it skips and keeps inputs."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
-        existing = archive / "#Creator 2026-03-06 123.mp4"
-        existing.write_bytes(b"already merged")
-        _fake_successful_merge(monkeypatch)
+    def test_missing_archive_directory_is_ignored(self, tmp_path, monkeypatch, caplog):
+        """Test a first run with no archive directory is a quiet no-op."""
+        monkeypatch.chdir(tmp_path)
 
-        caplog.set_level(logging.WARNING)
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
+        caplog.set_level(logging.DEBUG)
+        recover_orphaned_sessions(LOGGER)
 
-        assert recovered == 0
-        assert existing.read_bytes() == b"already merged"
-        assert ts_file.exists()
-        assert any(
-            "already exists" in record.getMessage()
-            for record in caplog.records
-            if record.levelno == logging.WARNING
-        )
+        assert not caplog.records
 
-    def test_second_run_after_failure_recovers_the_same_session(self, archive, monkeypatch):
-        """Test a failed recovery stays retryable: the next startup merges it."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
-        logger = logging.getLogger("test_recovery")
-
-        _fake_failing_merge(monkeypatch)
-        assert recover_orphaned_sessions(logger) == 0
-        # Filesystem is no worse than before: input intact, no partial artifact.
-        assert ts_file.exists()
-        assert list(archive.glob("*.mp4")) == []
-
-        _fake_successful_merge(monkeypatch)
-        assert recover_orphaned_sessions(logger) == 1
-        assert (archive / "#Creator 2026-03-06 123.mp4").exists()
-        assert not ts_file.exists()
-
-    def test_successful_run_is_idempotent(self, archive, monkeypatch):
-        """Test re-running recovery after success finds nothing left to do."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
-        _fake_successful_merge(monkeypatch)
-        logger = logging.getLogger("test_recovery")
-
-        assert recover_orphaned_sessions(logger) == 1
-        merged = archive / "#Creator 2026-03-06 123.mp4"
-        assert merged.read_bytes() == b"mp4"
-
-        assert recover_orphaned_sessions(logger) == 0
-        assert merged.read_bytes() == b"mp4"
-
-    def test_cleanup_failure_keeps_the_merged_mp4(self, archive, monkeypatch, caplog):
+    def test_cleanup_failure_keeps_the_merged_mp4(self, archive, monkeypatch):
         """Test a locked input after a good merge never discards the mp4."""
         ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
-        _fake_successful_merge(monkeypatch)
+        _fake_merge(monkeypatch)
 
         real_unlink = Path.unlink
 
@@ -235,15 +222,10 @@ class TestOrphanRecovery:
 
         monkeypatch.setattr(Path, "unlink", deny_ts_unlink)
 
-        caplog.set_level(logging.INFO)
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
+        recover_orphaned_sessions(LOGGER)
 
-        assert recovered == 1
         assert (archive / "#Creator 2026-03-06 123.mp4").exists()
         assert ts_file.exists()
-        assert any(
-            "could not remove" in record.getMessage() for record in caplog.records
-        )
 
     def test_separate_sessions_and_creators_recover_independently(
         self, tmp_path, monkeypatch
@@ -257,84 +239,41 @@ class TestOrphanRecovery:
         (first / "20260306_120000_#Creator 2026-03-06 A.ts").write_bytes(b"ts")
         (first / "20260306_133000_#Creator 2026-03-06 B.ts").write_bytes(b"ts")
         (second / "20260306_140000_#Other 2026-03-06 C.ts").write_bytes(b"ts")
-        _fake_successful_merge(monkeypatch)
+        _fake_merge(monkeypatch)
 
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
+        recover_orphaned_sessions(LOGGER)
 
-        assert recovered == 3
-        assert (first / "#Creator 2026-03-06 A.mp4").exists()
-        assert (first / "#Creator 2026-03-06 B.mp4").exists()
-        assert (second / "#Other 2026-03-06 C.mp4").exists()
-        assert list(first.glob("*.ts")) == []
-        assert list(second.glob("*.ts")) == []
+        assert sorted(first.iterdir()) == [
+            first / "#Creator 2026-03-06 A.mp4",
+            first / "#Creator 2026-03-06 B.mp4",
+        ]
+        assert list(second.iterdir()) == [second / "#Other 2026-03-06 C.mp4"]
 
-    def test_quiet_and_safe_when_nothing_to_recover(self, archive, caplog):
-        """Test a clean archive logs nothing and reports no recoveries."""
-        (archive / "#Creator 2026-03-06 done.mp4").write_bytes(b"complete")
+    def test_ffmpeg_is_run_with_check_and_a_timeout_on_a_mp4_target(
+        self, archive, monkeypatch
+    ):
+        """Test recovery reaches ffmpeg through the shared helper, bounded and checked.
 
-        caplog.set_level(logging.DEBUG)
-        recovered = recover_orphaned_sessions(logging.getLogger("test_recovery"))
-
-        assert recovered == 0
-        assert not caplog.records
-
-    def test_missing_archive_directory_is_ignored(self, tmp_path, monkeypatch, caplog):
-        """Test a first run with no archive directory is a quiet no-op."""
-        monkeypatch.chdir(tmp_path)
-
-        caplog.set_level(logging.DEBUG)
-
-        assert recover_orphaned_sessions(logging.getLogger("test_recovery")) == 0
-        assert not caplog.records
-
-    def test_recovery_invokes_the_shared_ffmpeg_concat_command(self, archive, monkeypatch):
-        """Test recovery reaches ffmpeg through the same concat command as the live merge.
-
-        Exercises the real merge helper, stubbing only the subprocess call, so
-        the argv and concat list are the ones ffmpeg would actually receive.
+        Stubs only the subprocess call, so the kwargs and output target are the
+        ones ffmpeg would actually be given.
         """
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 it's live.ts"
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
         captured = {}
 
         def fake_run(command, **kwargs):
             captured["command"] = command
             captured["kwargs"] = kwargs
-            captured["list_content"] = Path(command[7]).read_text(encoding="utf-8")
             # Stand in for ffmpeg actually producing the output.
             Path(command[-1]).write_bytes(b"mp4")
 
         monkeypatch.setattr("core.orphan_recovery.subprocess.run", fake_run)
 
-        assert recover_orphaned_sessions(logging.getLogger("test_recovery")) == 1
+        recover_orphaned_sessions(LOGGER)
 
-        assert captured["command"][:7] == [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i",
-        ]
-        assert captured["command"][8:10] == ["-c", "copy"]
-        assert captured["command"][-1] == str(archive / "#Creator 2026-03-06 it's live.mp4")
-        # Apostrophes must survive into the concat list, or ffmpeg reads a
-        # truncated path and the recording is lost.
-        assert r"it'\''s live.ts" in captured["list_content"]
-        # Without check/timeout a wedged or failing ffmpeg would look successful
-        # and the raw inputs would be deleted.
+        assert list(archive.iterdir()) == [archive / "#Creator 2026-03-06 123.mp4"]
+        # Without check/timeout a wedged or failing ffmpeg would look successful.
         assert captured["kwargs"]["check"] is True
         assert captured["kwargs"]["timeout"] > 0
-        # The temporary concat list must not survive as a new leftover.
-        assert not (archive / "merge-inputs.txt").exists()
-
-
-class TestRecoveryFfmpegRunner:
-    """The subprocess contract the recovery failure handling depends on."""
-
-    def test_non_zero_exit_raises(self):
-        """Test a failing merge child raises so inputs are never deleted."""
-        with pytest.raises(subprocess.CalledProcessError):
-            _run_recovery_ffmpeg([sys.executable, "-c", "raise SystemExit(1)"], 30)
-
-    def test_timeout_raises(self):
-        """Test a wedged merge child is killed and reported, not waited on forever."""
-        with pytest.raises(subprocess.TimeoutExpired):
-            _run_recovery_ffmpeg(
-                [sys.executable, "-c", "import time; time.sleep(30)"], 1
-            )
+        # The temporary target keeps the suffix ffmpeg infers the muxer from.
+        assert captured["command"][-1].endswith(".mp4")

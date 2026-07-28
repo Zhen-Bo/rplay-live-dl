@@ -1,15 +1,10 @@
 """
 Startup recovery for raw .ts recordings whose merge never completed.
 
-Two paths leave a finished recording unmerged on disk: a merge abandoned when
-shutdown's aggregate budget ran out, and a raw download whose completion event
-arrived after the merge executor had already closed. Both are logged at the
-time, but nothing merges them afterwards, so the recording stays as .ts files
-that no later run would ever look at again.
-
-This module merges them at the next startup using the same ffmpeg concat
-invocation the live merge executor uses, so a recovered recording is
-byte-for-byte the artifact the interrupted run would have produced.
+A merge abandoned when shutdown's aggregate budget ran out, or a raw download
+whose completion arrived after the merge executor had closed, leaves a finished
+recording on disk as .ts files that no later run would look at again. This
+merges them through the same ffmpeg concat invocation the live merge uses.
 """
 
 import logging
@@ -27,64 +22,35 @@ __all__ = [
 ]
 
 # The canonical session prefix the downloader stamps onto every raw output:
-# YYYYMMDD_HHMMSS_. Recovery is deliberately narrow — a .ts file without this
-# prefix was not produced by a session this application can reconstruct, so it
-# is left alone rather than guessed at.
+# YYYYMMDD_HHMMSS_. A .ts file without it was not produced by a session this
+# application can reconstruct, so it is left alone rather than guessed at.
 _SESSION_PREFIX_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_")
 
-_TS_SUFFIX = ".ts"
 
-
-def recover_orphaned_sessions(
-    logger: logging.Logger,
-    merge_timeout_seconds: int = DEFAULT_MERGE_TIMEOUT_SECONDS,
-) -> int:
+def recover_orphaned_sessions(logger: logging.Logger) -> None:
     """
     Merge every recoverable orphaned session under the archive directory.
 
     Runs synchronously at startup, before the scheduler polls, so recovery
-    cannot race a fresh recording writing into the same creator directory.
-
-    Single-instance assumption: at startup nothing else in this process is
-    writing these files. A second concurrent instance pointed at the same
-    volume is explicitly out of scope — it could observe a half-written mp4
-    from the other instance's merge.
-
-    Returns:
-        The number of sessions merged successfully.
+    cannot race a fresh recording writing into the same creator directory. A
+    second concurrent instance on the same volume is out of scope: it could
+    observe a half-written mp4 from the other instance's merge.
     """
     archive = Path.cwd() / StreamDownloader.ARCHIVE_DIR
-    if not archive.is_dir():
-        return 0
 
-    sessions = _group_orphan_sessions(archive)
-    recovered = 0
-    for (output_dir, session_prefix), ts_files in sorted(sessions.items()):
-        if _recover_one_session(
-            logger, output_dir, session_prefix, ts_files, merge_timeout_seconds
-        ):
-            recovered += 1
-
-    return recovered
-
-
-def _group_orphan_sessions(archive: Path) -> Dict[Tuple[Path, str], List[Path]]:
-    """
-    Group orphaned .ts payloads by the session that produced them.
-
-    Only ``*.ts`` is globbed, which is what keeps yt-dlp's in-flight artifacts
-    out of recovery entirely: .part, .part-FragN and .ytdl all end in another
-    suffix, so they can never enter a concat list nor a cleanup loop. Those may
-    be truncated mid-write, and merging them would produce broken video.
-    """
+    # Globbing *.ts alone is what keeps yt-dlp's in-flight artifacts out of
+    # recovery entirely: .part, .part-FragN and .ytdl all end in another
+    # suffix, so they can enter neither a concat list nor a cleanup loop. Those
+    # may be truncated mid-write, and merging them would produce broken video.
     sessions: Dict[Tuple[Path, str], List[Path]] = {}
-    for ts_file in sorted(archive.glob(f"*/*{_TS_SUFFIX}")):
+    for ts_file in sorted(archive.glob("*/*.ts")):
         match = _SESSION_PREFIX_RE.match(ts_file.name)
         if match is None:
             continue
         sessions.setdefault((ts_file.parent, match.group(0)), []).append(ts_file)
 
-    return sessions
+    for (output_dir, session_prefix), ts_files in sorted(sessions.items()):
+        _recover_one_session(logger, output_dir, session_prefix, ts_files)
 
 
 def _recover_one_session(
@@ -92,9 +58,8 @@ def _recover_one_session(
     output_dir: Path,
     session_prefix: str,
     ts_files: List[Path],
-    merge_timeout_seconds: int,
-) -> bool:
-    """Merge one session's raw .ts files, returning True only on full success."""
+) -> None:
+    """Merge one session's raw .ts files, deleting them only once the mp4 is proven."""
     session_id = session_prefix.rstrip("_")
 
     # The live path builds the final name by dropping the session prefix from
@@ -107,7 +72,7 @@ def _recover_one_session(
             f"⚠️ Skipping orphan recovery for session {session_id}: "
             f"{ts_files[0].name} has no name beyond its session prefix"
         )
-        return False
+        return
 
     output_path = output_dir / f"{final_stem}.mp4"
     if output_path.exists():
@@ -120,24 +85,47 @@ def _recover_one_session(
             f"{output_path.name} already exists. "
             f"Raw .ts files left in: {output_dir}"
         )
-        return False
+        return
 
+    # ffmpeg writes to a temporary name in the same directory, and only a
+    # validated result is renamed onto the final one. A process death mid-merge
+    # would otherwise leave a partial file under the final name, which the
+    # collision check above reads as a finished recording — skipping that
+    # session, and its intact inputs, on every later startup. The .mp4 suffix
+    # is kept so ffmpeg still infers the mp4 muxer; a stale temp from an
+    # interrupted attempt is overwritten by the invocation's -y.
+    temp_path = output_path.with_name(f".{final_stem}.recovering.mp4")
     try:
         merge_ts_files_to_mp4(
             ts_files,
-            output_path,
-            lambda command: _run_recovery_ffmpeg(command, merge_timeout_seconds),
+            temp_path,
+            lambda command: subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=DEFAULT_MERGE_TIMEOUT_SECONDS,
+            ),
         )
+
+        # A merge callable that returns without producing anything must not
+        # count as success: the inputs below are deleted on the strength of
+        # this check, so the recording would be lost to an empty result.
+        if not temp_path.is_file() or temp_path.stat().st_size == 0:
+            raise RuntimeError(f"merge produced no output at {temp_path.name}")
+
+        # Atomic within the directory: the final name never exists half-written.
+        temp_path.replace(output_path)
     except Exception as exc:
-        # Same contract as the live merge: drop the half-written mp4 so a
-        # failure cannot pass for a finished recording, and keep every input so
-        # the next startup can attempt this session again unchanged.
-        _discard_partial_output(logger, output_path)
+        # Same contract as the live merge: drop the partial output so a failure
+        # cannot pass for a finished recording, and keep every input so the
+        # next startup can attempt this session again unchanged.
+        _discard_partial_output(logger, temp_path)
         logger.warning(
             f"⚠️ Orphan recovery merge failed for session {session_id}: {exc}. "
             f"Raw .ts files left in: {output_dir}"
         )
-        return False
+        return
 
     for ts_file in ts_files:
         try:
@@ -154,34 +142,13 @@ def _recover_one_session(
         f"🛟 Recovered interrupted recording (session {session_id}): "
         f"merged {len(ts_files)} raw file(s) into {output_path}"
     )
-    return True
 
 
-def _run_recovery_ffmpeg(command: List[str], timeout_seconds: int) -> None:
-    """
-    Run one recovery merge to completion.
-
-    Unlike the monitor's merge child, this one needs no pid registration: no
-    recording sweep runs at startup, so there is nothing to be spared from.
-
-    Raises:
-        subprocess.TimeoutExpired: If the merge outlives timeout_seconds
-        subprocess.CalledProcessError: If ffmpeg exits non-zero
-    """
-    subprocess.run(
-        command,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-    )
-
-
-def _discard_partial_output(logger: logging.Logger, output_path: Path) -> None:
-    """Drop a half-written mp4 so a failed recovery leaves no broken artifact."""
+def _discard_partial_output(logger: logging.Logger, temp_path: Path) -> None:
+    """Drop a half-written merge output, without letting a locked file raise."""
     try:
-        output_path.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning(
-            f"Could not remove partial recovery output {output_path.name}: {exc}"
+            f"Could not remove partial recovery output {temp_path.name}: {exc}"
         )
