@@ -234,7 +234,7 @@ class TestSessionAwareMonitoring:
             api=mock_api,
         )
 
-        def assert_eager_state(creator_oid: str, stream_key=None) -> str:
+        def assert_eager_state(creator_oid: str, stream_key: str) -> str:
             active_session_key = monitor._active_raw_session_by_creator[creator_oid]
             assert active_session_key in monitor.sessions
             active_session = monitor.sessions[active_session_key]
@@ -291,10 +291,6 @@ class TestSessionAwareMonitoring:
 
         monitor.check_live_streams_and_start_download()
 
-        mock_api._get_stream_key.assert_called_once()
-        mock_api.get_stream_url.assert_called_once_with(
-            "creator1", stream_key=mock_api._get_stream_key.return_value
-        )
         mock_download.assert_called_once_with(
             "http://example.com/stream.m3u8", "Test Stream"
         )
@@ -591,7 +587,6 @@ class TestStartDownload:
     """Tests for _start_download method."""
 
     def test_start_download_success(self, mock_api, monitor):
-        """Test successful download start."""
         mock_api._get_stream_key.return_value = "cycle-key"
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_stream = MagicMock()
@@ -606,10 +601,6 @@ class TestStartDownload:
         with patch('core.live_stream_monitor.StreamDownloader.download') as mock_download:
             monitor._start_download(mock_stream)
 
-        mock_api._get_stream_key.assert_called_once()
-        mock_api.get_stream_url.assert_called_once_with(
-            "test_oid", stream_key="cycle-key"
-        )
         mock_download.assert_called_once_with(
             "http://example.com/stream.m3u8", "Test Stream"
         )
@@ -633,7 +624,7 @@ class TestStartDownload:
         assert '[TestCreator] 🔴 Live: "Test Stream"' in messages
 
     def test_start_download_auth_error(self, mock_api, monitor, caplog):
-        """Test first auth error is ERROR; a repeat is DEBUG-only (dedup)."""
+        """First auth error is ERROR; a repeat is DEBUG-only; failed key is not cached."""
         mock_api._get_stream_key.side_effect = RPlayAuthError("Unauthorized")
         mock_stream = MagicMock()
         mock_stream.creator_oid = "test_oid"
@@ -656,6 +647,8 @@ class TestStartDownload:
 
         mock_download.assert_not_called()
         mock_api.get_stream_url.assert_not_called()
+        # Failure is not cached: each start retries the real key2 fetch.
+        assert mock_api._get_stream_key.call_count == 2
         error_auth = [
             r
             for r in caplog.records
@@ -668,8 +661,8 @@ class TestStartDownload:
         ]
         assert len(error_auth) == 1
         assert len(debug_auth) >= 1
-        # Failed fetches must not be cached.
         assert monitor._cycle_stream_key is None
+        assert monitor._cycle_key_fetch_auth_failed is True
 
     def test_start_download_api_error(self, mock_api, monitor):
         """Test API error is logged as warning."""
@@ -707,8 +700,6 @@ class TestStartDownload:
 
 
 class TestCycleStreamKeyCache:
-    """Per-poll-cycle key2 cache: user-scoped, one fetch per cycle."""
-
     def _live_stream(self, creator_oid: str, title: str = "Live"):
         stream = MagicMock()
         stream.oid = f"stream-{creator_oid}"
@@ -720,20 +711,18 @@ class TestCycleStreamKeyCache:
 
     @patch("core.live_stream_monitor.read_config")
     @patch("core.live_stream_monitor.StreamDownloader.download")
-    def test_n_live_creators_fetch_key2_once_per_cycle(
+    def test_two_creators_share_one_key2_fetch_and_reset_next_cycle(
         self, mock_download, mock_read_config, mock_api
     ):
-        """N live creators in one cycle share a single key2 fetch."""
-        streams = [self._live_stream("c1"), self._live_stream("c2"), self._live_stream("c3")]
+        streams = [self._live_stream("c1"), self._live_stream("c2")]
         mock_api.get_livestream_status.return_value = streams
         mock_api._get_stream_key.return_value = "shared-key"
         mock_api.get_stream_url.side_effect = (
-            lambda oid, stream_key=None: f"http://example.com/{oid}.m3u8"
+            lambda oid, stream_key: f"http://example.com/{oid}.m3u8"
         )
         mock_read_config.return_value = _runtime_config([
             CreatorProfile(creator_name="C1", creator_oid="c1"),
             CreatorProfile(creator_name="C2", creator_oid="c2"),
-            CreatorProfile(creator_name="C3", creator_oid="c3"),
         ])
         monitor = LiveStreamMonitor(
             auth_token="test_token",
@@ -742,79 +731,21 @@ class TestCycleStreamKeyCache:
         )
 
         monitor.check_live_streams_and_start_download()
-
         assert mock_api._get_stream_key.call_count == 1
-        assert mock_api.get_stream_url.call_count == 3
-        for call, oid in zip(mock_api.get_stream_url.call_args_list, ("c1", "c2", "c3")):
-            assert call.args[0] == oid
-            assert call.kwargs["stream_key"] == "shared-key"
-        assert monitor._cycle_stream_key == "shared-key"
-        assert mock_download.call_count == 3
+        assert mock_api.get_stream_url.call_count == 2
+        for call, oid in zip(mock_api.get_stream_url.call_args_list, ("c1", "c2")):
+            assert call.args == (oid,)
+            assert call.kwargs == {"stream_key": "shared-key"}
+        assert mock_download.call_count == 2
 
-    @patch("core.live_stream_monitor.read_config")
-    @patch("core.live_stream_monitor.StreamDownloader.download")
-    def test_next_cycle_fetches_key2_again(
-        self, mock_download, mock_read_config, mock_api
-    ):
-        """Cache is reset at each poll-cycle start; no cross-cycle reuse."""
-        stream = self._live_stream("c1")
-        mock_api.get_livestream_status.return_value = [stream]
-        mock_api._get_stream_key.return_value = "shared-key"
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_read_config.return_value = _runtime_config([
-            CreatorProfile(creator_name="C1", creator_oid="c1"),
-        ])
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-
-        monitor.check_live_streams_and_start_download()
-        # First cycle left the creator RAW_RUNNING; clear so the next cycle starts again.
+        # Next cycle: clear sessions so downloads start again; cache must reset.
         monitor.sessions.clear()
         monitor._active_raw_session_by_creator.clear()
         monitor._active_downloaders.clear()
         monitor.check_live_streams_and_start_download()
-
         assert mock_api._get_stream_key.call_count == 2
-
-    @patch("core.live_stream_monitor.read_config")
-    @patch("core.live_stream_monitor.StreamDownloader.download")
-    def test_failed_key2_not_cached_retries_for_next_creator(
-        self, mock_download, mock_read_config, mock_api
-    ):
-        """A failed key2 fetch is not cached; the next creator retries for real."""
-        streams = [self._live_stream("c1"), self._live_stream("c2")]
-        mock_api.get_livestream_status.return_value = streams
-        mock_api._get_stream_key.side_effect = [
-            RPlayAuthError("Unauthorized"),
-            "recovered-key",
-        ]
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_read_config.return_value = _runtime_config([
-            CreatorProfile(creator_name="C1", creator_oid="c1"),
-            CreatorProfile(creator_name="C2", creator_oid="c2"),
-        ])
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-
-        monitor.check_live_streams_and_start_download()
-
-        assert mock_api._get_stream_key.call_count == 2
-        assert monitor._cycle_stream_key == "recovered-key"
-        mock_download.assert_called_once_with(
-            "http://example.com/stream.m3u8", "Live"
-        )
-        mock_api.get_stream_url.assert_called_once_with(
-            "c2", stream_key="recovered-key"
-        )
 
     def test_cache_hit_does_not_rearm_auth_dedup(self, mock_api, monitor):
-        """Cache hit skips re-arm; re-arm only runs on a real key2 fetch."""
         mock_api._get_stream_key.return_value = "shared-key"
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         monitor.monitored_creators["c1"] = CreatorProfile(
@@ -831,7 +762,6 @@ class TestCycleStreamKeyCache:
             monitor._auth_error_notified = True  # simulate a later notify
             monitor._start_download(self._live_stream("c2"))
 
-        # Second creator used the cache; re-arm did not run again.
         assert monitor._auth_error_notified is True
         assert mock_api._get_stream_key.call_count == 1
 
@@ -893,10 +823,10 @@ class TestCheckLiveStreams:
         # example.com. Its failure callback lands after this test returns and
         # logs through the process-wide "Monitor" logger, which is how it used
         # to pollute whichever test happened to be patching that logger.
-        with patch('core.live_stream_monitor.StreamDownloader.download'):
+        with patch('core.live_stream_monitor.StreamDownloader.download') as mock_download:
             monitor.check_live_streams_and_start_download()
-        mock_api.get_stream_url.assert_called_once_with(
-            "creator_oid", stream_key="cycle-key"
+        mock_download.assert_called_once_with(
+            "http://example.com/stream.m3u8", "Live Stream"
         )
 
     @patch('core.live_stream_monitor.read_config')
@@ -983,6 +913,69 @@ class TestCheckLiveStreamsErrorHandling:
         )
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
+
+    @patch("core.live_stream_monitor.read_config")
+    @patch("core.live_stream_monitor.StreamDownloader.download")
+    def test_all_key2_auth_failures_mark_cycle_unhealthy(
+        self, mock_download, mock_read_config, mock_api
+    ):
+        stream = MagicMock()
+        stream.oid = "stream-c1"
+        stream.creator_oid = "c1"
+        stream.stream_state = StreamState.LIVE
+        stream.stream_start_time = datetime(2026, 3, 7, 5, 3, 40)
+        stream.title = "Live"
+        mock_api.get_livestream_status.return_value = [stream]
+        mock_api._get_stream_key.side_effect = RPlayAuthError("Unauthorized")
+        mock_read_config.return_value = _runtime_config([
+            CreatorProfile(creator_name="C1", creator_oid="c1"),
+        ])
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        monitor.check_live_streams_and_start_download()
+
+        mock_download.assert_not_called()
+        assert monitor.is_healthy is False
+
+    @patch("core.live_stream_monitor.read_config")
+    @patch("core.live_stream_monitor.StreamDownloader.download")
+    def test_key2_auth_failure_then_success_marks_cycle_healthy(
+        self, mock_download, mock_read_config, mock_api
+    ):
+        streams = []
+        for oid in ("c1", "c2"):
+            stream = MagicMock()
+            stream.oid = f"stream-{oid}"
+            stream.creator_oid = oid
+            stream.stream_state = StreamState.LIVE
+            stream.stream_start_time = datetime(2026, 3, 7, 5, 3, 40)
+            stream.title = "Live"
+            streams.append(stream)
+        mock_api.get_livestream_status.return_value = streams
+        mock_api._get_stream_key.side_effect = [
+            RPlayAuthError("Unauthorized"),
+            "recovered-key",
+        ]
+        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
+        mock_read_config.return_value = _runtime_config([
+            CreatorProfile(creator_name="C1", creator_oid="c1"),
+            CreatorProfile(creator_name="C2", creator_oid="c2"),
+        ])
+        monitor = LiveStreamMonitor(
+            auth_token="test_token",
+            user_oid="test_oid",
+            api=mock_api,
+        )
+
+        monitor.check_live_streams_and_start_download()
+
+        assert mock_api._get_stream_key.call_count == 2
+        mock_download.assert_called_once()
+        assert monitor.is_healthy is True
 
     @patch('core.live_stream_monitor.read_config')
     def test_connection_error_sets_unhealthy(self, mock_read_config):

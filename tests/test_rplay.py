@@ -115,36 +115,11 @@ class TestGetStreamUrl:
     """Tests for get_stream_url method."""
 
     def test_url_encoding(self):
-        """Test that stream URL is properly URL-encoded."""
         api = RPlayAPI(auth_token="test", user_oid="test")
-
-        # Mock _get_stream_key to return a key with special characters
-        with patch.object(api, "_get_stream_key", return_value="key+with/special=chars"):
-            url = api.get_stream_url("creator123")
-
-        # Check URL encoding
+        url = api.get_stream_url("creator123", stream_key="key+with/special=chars")
         assert "key%2Bwith%2Fspecial%3Dchars" in url
         assert "creatorOid=creator123" in url
-
-    def test_returns_m3u8_url(self):
-        """Test that returned URL is an m3u8 playlist URL."""
-        api = RPlayAPI(auth_token="test", user_oid="test")
-
-        with patch.object(api, "_get_stream_key", return_value="simple_key"):
-            url = api.get_stream_url("creator123")
-
         assert "playlist.m3u8" in url
-
-    def test_reuses_provided_stream_key_without_fetch(self):
-        """Test an explicit stream_key skips the key2 network call."""
-        api = RPlayAPI(auth_token="test", user_oid="test")
-
-        with patch.object(api, "_get_stream_key") as mock_get_key:
-            url = api.get_stream_url("creator123", stream_key="prefetched")
-
-        mock_get_key.assert_not_called()
-        assert "key2=prefetched" in url
-        assert "creatorOid=creator123" in url
 
 
 class TestValidateCredentials:
@@ -194,11 +169,22 @@ class TestGetStreamKey:
         assert key == "my_stream_key"
 
     def test_missing_auth_key_raises_auth_error(self):
-        """Test that missing authKey raises RPlayAuthError."""
         api = RPlayAPI(auth_token="test", user_oid="test")
 
         mock_response = MagicMock()
         mock_response.json.return_value = {"other": "data"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(api._session, "get", return_value=mock_response):
+            with pytest.raises(RPlayAuthError, match="Invalid authentication"):
+                api._get_stream_key()
+
+    @pytest.mark.parametrize("auth_key", [None, ""])
+    def test_null_or_empty_auth_key_raises_auth_error(self, auth_key):
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"authKey": auth_key}
         mock_response.raise_for_status = MagicMock()
 
         with patch.object(api._session, "get", return_value=mock_response):
@@ -336,8 +322,8 @@ class TestTransientRetry:
             ) as mock_get,
             patch("time.sleep") as mock_sleep,
         ):
-            stream_url = api.get_stream_url("creator123")
+            key = api._get_stream_key()
 
-        assert "creatorOid=creator123" in stream_url
+        assert key == "my_stream_key"
         assert mock_get.call_count == 3
         assert mock_sleep.call_count == 2

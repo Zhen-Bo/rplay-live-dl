@@ -439,7 +439,7 @@ def test_in_flight_poll_does_not_start_recording_after_shutdown(tmp_path, monkey
     at_stream_url = ThreadEvent()
     resume_poll = ThreadEvent()
 
-    def blocking_stream_url(creator_oid, stream_key=None):
+    def blocking_stream_url(creator_oid, stream_key):
         at_stream_url.set()
         assert resume_poll.wait(timeout=5)
         return "http://example.com/stream.m3u8"

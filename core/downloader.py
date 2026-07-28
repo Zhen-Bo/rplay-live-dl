@@ -6,6 +6,7 @@ with support for concurrent downloads and automatic file management.
 """
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime
@@ -36,6 +37,9 @@ __all__ = [
     "StreamDownloader",
 ]
 
+# Playlist URLs embed key2; mask before any yt-dlp message reaches the logger.
+_KEY2_QUERY_RE = re.compile(r"key2=[^&\s\"']+")
+
 
 class _RetryableDownloadTaskError(Exception):
     """Internal exception used to retry a full yt-dlp task."""
@@ -56,7 +60,8 @@ class _YtDlpLoggerBridge:
         normalized = str(message).strip()
         if not normalized:
             return
-        self._downloader.log.debug(f"yt-dlp: {normalized}")
+        masked = _KEY2_QUERY_RE.sub("key2=REDACTED", normalized)
+        self._downloader.log.debug(f"yt-dlp: {masked}")
 
     def debug(self, message: Any) -> None:
         self._emit(message)
