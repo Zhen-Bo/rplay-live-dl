@@ -482,6 +482,10 @@ rplay-live-dl/
 │   ├── rplay.py
 │   ├── scheduler.py
 │   └── utils.py
+├── docs/
+│   └── plans/
+│       ├── 2026-03-09-m3u8-retry-timeout-design.md
+│       └── 2026-03-09-m3u8-retry-timeout.md
 ├── models/
 │   ├── config.py
 │   ├── download.py
@@ -497,6 +501,7 @@ rplay-live-dl/
 │   ├── test_env.py
 │   ├── test_live_stream_monitor.py
 │   ├── test_logger.py
+│   ├── test_main.py
 │   ├── test_merge_flow.py
 │   ├── test_models.py
 │   ├── test_monitor_events.py
