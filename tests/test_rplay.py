@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
-from requests.exceptions import ConnectionError, HTTPError, Timeout
+from requests.exceptions import ConnectionError, HTTPError, JSONDecodeError, Timeout
 
 from core.rplay import (
     RPlayAPI,
@@ -199,6 +199,36 @@ class TestGetStreamKey:
         with patch.object(api._session, "get", side_effect=Timeout()):
             with pytest.raises(RPlayConnectionError, match="timed out"):
                 api._get_stream_key()
+
+    def test_json_decode_error_raises_api_error(self):
+        """Test malformed JSON body raises RPlayAPIError, not the raw decode error."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.side_effect = JSONDecodeError(
+            "Expecting value", "doc", 0
+        )
+
+        with patch.object(api._session, "get", return_value=mock_response):
+            with pytest.raises(RPlayAPIError, match="Unexpected error"):
+                api._get_stream_key()
+
+    def test_unexpected_exception_does_not_leak_secret(self, caplog):
+        """Exception messages may embed Authorization; must not reach logs or RPlayAPIError."""
+        api = RPlayAPI(auth_token="test", user_oid="test")
+        secret = "Bearer sekrit-token"
+
+        with patch.object(
+            api._session, "get", side_effect=RuntimeError(secret)
+        ):
+            with caplog.at_level("ERROR"):
+                with pytest.raises(RPlayAPIError) as exc_info:
+                    api._get_stream_key()
+
+        assert secret not in str(exc_info.value)
+        assert all(secret not in record.getMessage() for record in caplog.records)
+        assert "RuntimeError" in str(exc_info.value)
 
 
 class TestCreatorStreamState:
