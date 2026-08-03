@@ -953,6 +953,7 @@ class LiveStreamMonitor:
                 late_creator_name = session.creator_name
                 late_output_dir = session.output_dir
             else:
+                late_creator_name = None
                 late_output_dir = None
 
         if late_output_dir is not None:
