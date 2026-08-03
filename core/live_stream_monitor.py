@@ -625,7 +625,7 @@ class LiveStreamMonitor:
                 f"{monitored_live}/{monitored_count} monitored creator(s) live"
             )
         elif periodic_heartbeat and monitored_count > 0:
-            self.logger.info(
+            self.logger.debug(
                 f"📊 Checked {total_live} live stream(s), "
                 f"none of {monitored_count} monitored creator(s) are live"
             )
