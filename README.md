@@ -337,7 +337,7 @@ docker run -d \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/archive:/app/archive \
   -v $(pwd)/logs:/app/logs \
-  paverz/rplay-live-dl:v2.3.1-vibe
+  paverz/rplay-live-dl:latest
 ```
 
 #### Docker healthcheck

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "rplay-live-dl"
-version = "2.3.1"
+version = "2.3.2"
 description = ""
 authors = ["paver(kevinsun)"]
 license = "MIT"
