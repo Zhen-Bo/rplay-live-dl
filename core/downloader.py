@@ -651,7 +651,7 @@ class StreamDownloader:
                     # Only a retry is worth a line of its own.
                     if attempt_number > 1:
                         self.log.info(
-                            f"🔁 Retry {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
+                            f"🔁 Attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
                         )
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.log.debug(
@@ -677,7 +677,7 @@ class StreamDownloader:
 
         if attempt_number > 1:
             self.log.info(
-                f"✅ Download succeeded on retry attempt "
+                f"✅ Download succeeded on attempt "
                 f"{attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
             )
 
