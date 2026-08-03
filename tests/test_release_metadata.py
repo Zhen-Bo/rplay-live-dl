@@ -15,29 +15,15 @@ def test_version_is_valid_semver():
     assert re.match(r"^\d+\.\d+\.\d+", main.__version__)
 
 
-def test_release_version_is_consistent():
-    """Test that release metadata uses the same version in every published location."""
+def test_release_image_references_use_latest():
+    """Test that published image references track :latest instead of stale pinned tags."""
     root = Path(__file__).resolve().parents[1]
-    versions = {
-        "pyproject.toml": re.search(
-            r'^\s*version\s*=\s*"(\d+\.\d+\.\d+)',
-            (root / "pyproject.toml").read_text(),
-            re.MULTILINE,
-        ).group(1),
-        "docker-compose.yaml": re.search(
-            r"^\s*image:\s+\S+:v?(\d+\.\d+\.\d+)",
-            (root / "docker-compose.yaml").read_text(),
-            re.MULTILINE,
-        ).group(1),
-        "README.md": re.search(
-            r"paverz/rplay-live-dl:v?(\d+\.\d+\.\d+)",
-            (root / "README.md").read_text(),
-        ).group(1),
-    }
-    expected = versions["pyproject.toml"]
+    compose = (root / "docker-compose.yaml").read_text()
+    readme = (root / "README.md").read_text()
 
-    for filename, version in versions.items():
-        assert version == expected, (
-            f"{filename} version {version!r} disagrees with "
-            f"pyproject.toml version {expected!r}"
+    assert re.search(r"^\s*image:\s+paverz/rplay-live-dl:latest\s*$", compose, re.MULTILINE)
+    assert "paverz/rplay-live-dl:latest" in readme
+    for filename, text in (("docker-compose.yaml", compose), ("README.md", readme)):
+        assert not re.search(r"paverz/rplay-live-dl:v\d", text), (
+            f"{filename} still pins an old image tag; use :latest"
         )

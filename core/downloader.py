@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import yt_dlp
+import yt_dlp.utils
 from pathvalidate import sanitize_filename
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -102,6 +103,9 @@ class StreamDownloader:
     MAX_DUPLICATE_FILES = 1000
 
     # Error message patterns indicating non-retriable access failure.
+    # Verified against the live service: no-access (paid) streams return 404 from
+    # the moment they go live, so 404 right after stream start means blocked, not
+    # CDN warmup. Do not "fix" this by retrying 404 longer.
     ACCESS_ERROR_PATTERNS = [
         "HTTP Error 403",
         "HTTP Error 404",
@@ -647,7 +651,7 @@ class StreamDownloader:
                     # Only a retry is worth a line of its own.
                     if attempt_number > 1:
                         self.log.info(
-                            f"🔁 Retry {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
+                            f"🔁 Attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
                         )
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.log.debug(
@@ -657,7 +661,7 @@ class StreamDownloader:
                             f"{self._build_output_state_details(output_path)}",
                         )
                     try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]
                             ydl.download([stream_url])
                     except yt_dlp.utils.DownloadError as exc:
                         error_message = str(exc)
@@ -673,7 +677,7 @@ class StreamDownloader:
 
         if attempt_number > 1:
             self.log.info(
-                f"✅ Download succeeded on retry attempt "
+                f"✅ Download succeeded on attempt "
                 f"{attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
             )
 

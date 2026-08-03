@@ -1834,14 +1834,14 @@ class TestHeartbeatLogOptimization:
             api=mock_api,
         )
 
-        with patch.object(monitor.logger, 'info') as mock_info:
+        with patch.object(monitor.logger, 'debug') as mock_debug:
             # Run multiple checks
             for _ in range(10):
                 monitor.check_live_streams_and_start_download()
 
-        # Should have at least one periodic heartbeat (info level, so quiet
-        # nights still show life in default INFO logs)
-        heartbeat_logs = [c for c in mock_info.call_args_list if "Checked" in str(c)]
+        # Should have at least one periodic heartbeat (debug level; quiet
+        # nights only show life when DEBUG logging is enabled)
+        heartbeat_logs = [c for c in mock_debug.call_args_list if "Checked" in str(c)]
         assert len(heartbeat_logs) >= 1
 
 

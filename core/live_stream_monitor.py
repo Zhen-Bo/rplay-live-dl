@@ -625,7 +625,7 @@ class LiveStreamMonitor:
                 f"{monitored_live}/{monitored_count} monitored creator(s) live"
             )
         elif periodic_heartbeat and monitored_count > 0:
-            self.logger.info(
+            self.logger.debug(
                 f"📊 Checked {total_live} live stream(s), "
                 f"none of {monitored_count} monitored creator(s) are live"
             )
@@ -953,6 +953,7 @@ class LiveStreamMonitor:
                 late_creator_name = session.creator_name
                 late_output_dir = session.output_dir
             else:
+                late_creator_name = None
                 late_output_dir = None
 
         if late_output_dir is not None:
@@ -1025,7 +1026,10 @@ class LiveStreamMonitor:
         )
 
     def _handle_raw_download_blocked(self, event: RawDownloadBlocked) -> None:
-        """Apply blocked-session state when downloader reports access failure."""
+        """Apply blocked-session state when downloader reports access failure.
+
+        Reaching here via 404 shortly after stream start is expected for no-access (paid) streams.
+        """
         with self._state_lock:
             session = self.sessions.get(event.session_key)
             if session is None:

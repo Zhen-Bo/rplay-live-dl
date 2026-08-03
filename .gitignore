@@ -9,3 +9,5 @@ config/config.yaml
 archive/
 logs/
 .worktrees/
+poetry.toml
+pyrightconfig.json
