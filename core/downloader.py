@@ -103,6 +103,9 @@ class StreamDownloader:
     MAX_DUPLICATE_FILES = 1000
 
     # Error message patterns indicating non-retriable access failure.
+    # Verified against the live service: no-access (paid) streams return 404 from
+    # the moment they go live, so 404 right after stream start means blocked, not
+    # CDN warmup. Do not "fix" this by retrying 404 longer.
     ACCESS_ERROR_PATTERNS = [
         "HTTP Error 403",
         "HTTP Error 404",

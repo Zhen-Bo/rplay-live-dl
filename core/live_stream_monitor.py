@@ -1026,7 +1026,10 @@ class LiveStreamMonitor:
         )
 
     def _handle_raw_download_blocked(self, event: RawDownloadBlocked) -> None:
-        """Apply blocked-session state when downloader reports access failure."""
+        """Apply blocked-session state when downloader reports access failure.
+
+        Reaching here via 404 shortly after stream start is expected for no-access (paid) streams.
+        """
         with self._state_lock:
             session = self.sessions.get(event.session_key)
             if session is None:
