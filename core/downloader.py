@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import yt_dlp
+import yt_dlp.utils
 from pathvalidate import sanitize_filename
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -657,7 +658,7 @@ class StreamDownloader:
                             f"{self._build_output_state_details(output_path)}",
                         )
                     try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]
                             ydl.download([stream_url])
                     except yt_dlp.utils.DownloadError as exc:
                         error_message = str(exc)
