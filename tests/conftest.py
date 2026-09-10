@@ -6,6 +6,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def no_dotenv_file(monkeypatch):
+    """Keep unit tests independent of the user's credentials and runtime settings."""
+    from models.env import EnvConfig
+
+    monkeypatch.setattr(
+        EnvConfig, "model_config", {**EnvConfig.model_config, "env_file": None}
+    )
+    for field in EnvConfig.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+    return monkeypatch
+
+
+@pytest.fixture(autouse=True)
 def disable_file_logging(monkeypatch):
     """
     Disable file logging during tests to prevent test output pollution.

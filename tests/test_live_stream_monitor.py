@@ -64,7 +64,11 @@ class TestLiveStreamMonitorInit:
             auth_token="test_token",
             user_oid="test_oid",
         )
-        mock_api_class.assert_called_once_with("test_token", "test_oid")
+        mock_api_class.assert_called_once_with(
+            base_url="https://api.rplay.live",
+            user_oid="test_oid",
+            auth_token="test_token",
+        )
 
     def test_init_uses_injected_api(self, mock_api):
         """Test that injected API is used instead of creating new one."""

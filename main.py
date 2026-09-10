@@ -118,7 +118,9 @@ def main() -> None:
         )
         api_base_url = DEFAULT_RPLAY_API_BASE_URL
 
-    api = RPlayAPI(env.auth_token, env.user_oid, base_url=api_base_url)
+    api = RPlayAPI(
+        base_url=api_base_url, user_oid=env.user_oid, auth_token=env.auth_token
+    )
     try:
         api.validate_credentials()
         logger.info("API credentials validated successfully")

@@ -17,6 +17,7 @@ from core.constants import (
 )
 from core.constants import (
     DEFAULT_MIN_FREE_DISK_GB,
+    DEFAULT_RPLAY_API_BASE_URL,
 )
 from models.config import CreatorProfile
 from models.download import (
@@ -135,7 +136,15 @@ class LiveStreamMonitor:
             merge_timeout_seconds: Timeout for ffmpeg merge commands
             min_free_disk_gb: Minimum free disk space in GiB before recording; 0 disables
         """
-        self.api = api if api is not None else RPlayAPI(auth_token, user_oid)
+        self.api = (
+            api
+            if api is not None
+            else RPlayAPI(
+                base_url=DEFAULT_RPLAY_API_BASE_URL,
+                user_oid=user_oid,
+                auth_token=auth_token,
+            )
+        )
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
         self.min_free_disk_gb = min_free_disk_gb
