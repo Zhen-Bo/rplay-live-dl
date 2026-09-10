@@ -21,9 +21,11 @@ def test_release_image_references_use_latest():
     compose = (root / "docker-compose.yaml").read_text()
     readme = (root / "README.md").read_text()
 
-    assert re.search(r"^\s*image:\s+paverz/rplay-live-dl:latest\s*$", compose, re.MULTILINE)
+    assert re.search(
+        r"^\s*image:\s+paverz/rplay-live-dl:latest\s*$", compose, re.MULTILINE
+    )
     assert "paverz/rplay-live-dl:latest" in readme
     for filename, text in (("docker-compose.yaml", compose), ("README.md", readme)):
-        assert not re.search(r"paverz/rplay-live-dl:v\d", text), (
-            f"{filename} still pins an old image tag; use :latest"
-        )
+        assert not re.search(
+            r"paverz/rplay-live-dl:v\d", text
+        ), f"{filename} still pins an old image tag; use :latest"

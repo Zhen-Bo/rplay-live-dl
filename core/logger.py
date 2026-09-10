@@ -21,7 +21,9 @@ import wcwidth
 
 from core.constants import (
     DEFAULT_LOG_BACKUP_COUNT,
-    DEFAULT_LOG_LEVEL as DEFAULT_LOG_LEVEL_NAME,
+)
+from core.constants import DEFAULT_LOG_LEVEL as DEFAULT_LOG_LEVEL_NAME
+from core.constants import (
     DEFAULT_LOG_MAX_SIZE_MB,
     DEFAULT_LOG_RETENTION_DAYS,
     DEFAULT_LOG_YTDLP_INTERNAL,
@@ -79,6 +81,7 @@ def _resolve_log_level(level: Optional[int]) -> int:
     if level is not None:
         return level
     return _configured_log_level
+
 
 # Logger name display width (for alignment)
 # Set to match the longest logger name: "Downloader" = 10 characters
@@ -229,10 +232,10 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
         # Replace levelname with centered version in the output
         # The format is: "date │ <color>LEVELNAME<reset> │ name │ message"
         centered_levelname = _fit(original_levelname, self.level_width)
-        parts = result.split('│', 2)
+        parts = result.split("│", 2)
         if len(parts) >= 2:
             parts[1] = parts[1].replace(original_levelname, centered_levelname, 1)
-            result = '│'.join(parts)
+            result = "│".join(parts)
 
         return result
 
@@ -278,7 +281,9 @@ def setup_logger(
         return logger
 
     # Format strings - level and name are centered by the formatter
-    console_fmt = "%(asctime)s │ %(log_color)s%(levelname)s%(reset)s │ %(name)s │ %(message)s"
+    console_fmt = (
+        "%(asctime)s │ %(log_color)s%(levelname)s%(reset)s │ %(name)s │ %(message)s"
+    )
     file_fmt = "%(asctime)s │ %(levelname)s │ %(name)s │ %(message)s"
     date_fmt = "%Y-%m-%d %H:%M:%S"
 

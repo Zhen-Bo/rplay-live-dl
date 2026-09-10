@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from core.config import DEFAULT_CONFIG_PATH, ConfigError, read_app_config
 from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.downloader import StreamDownloader
-from core.env import EnvConfig, EnvConfigError, load_env
+from core.env import EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
 from core.orphan_recovery import recover_orphaned_sessions
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError
@@ -51,11 +51,15 @@ def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
     # *.part* covers .part, .part-FragN and .part-FragN.part in one pattern,
     # so the three patterns are disjoint and need no dedup.
     patterns = ("[0-9]*_*.ts", "*.part*", "*.ytdl")
-    orphans = sorted(path for pattern in patterns for path in archive.glob(f"*/{pattern}"))
+    orphans = sorted(
+        path for pattern in patterns for path in archive.glob(f"*/{pattern}")
+    )
     if not orphans:
         return
 
-    logger.warning(f"Found {len(orphans)} file(s) left behind by interrupted recordings:")
+    logger.warning(
+        f"Found {len(orphans)} file(s) left behind by interrupted recordings:"
+    )
     for path in orphans[:10]:
         logger.warning(f"  {path.relative_to(archive)}")
     if len(orphans) > 10:
@@ -114,31 +118,41 @@ def main() -> None:
         )
         api_base_url = DEFAULT_RPLAY_API_BASE_URL
 
-    api = RPlayAPI(env.auth_token, env.user_oid, base_url=api_base_url)
+    api_client = RPlayAPI(
+        base_url=api_base_url,
+        user_oid=env.user_oid,
+        auth_token=env.auth_token,
+        refresh_token=env.refresh_token,
+        token_refresh_leeway_seconds=env.token_refresh_leeway_seconds,
+    )
     try:
-        api.validate_credentials()
-        logger.info("API credentials validated successfully")
-    except RPlayAuthError as exc:
-        logger.error(
-            f"Authentication failed: {exc}. "
-            "Please update AUTH_TOKEN and USER_OID in your .env file, then restart."
-        )
-        sys.exit(1)
-    except RPlayAPIError as exc:
-        # RPlayConnectionError is an RPlayAPIError; monitor owns retries.
-        logger.warning(
-            f"Could not verify credentials due to API error "
-            f"(continuing; will retry while running): {exc}"
-        )
-    finally:
-        api.close()
+        try:
+            api_client.validate_credentials()
+            logger.info("API credentials validated successfully")
+        except RPlayAuthError as exc:
+            credential = "REFRESH_TOKEN" if env.refresh_token else "AUTH_TOKEN"
+            logger.error(
+                f"Authentication failed: {exc}. "
+                f"Please update {credential} and USER_OID in your .env file, then restart."
+            )
+            sys.exit(1)
+        except RPlayAPIError as exc:
+            # RPlayConnectionError is an RPlayAPIError; monitor owns retries.
+            logger.warning(
+                f"Could not verify credentials due to API error "
+                f"(continuing; will retry while running): {exc}"
+            )
 
-    # Start the scheduler
-    try:
-        run_scheduler(env=env, logger=logger, version=__version__)
-    except Exception as e:
-        logger.exception(f"Scheduler error: {e}")
-        sys.exit(1)
+        # Share the validated client so monitoring retains its acquired JWT.
+        try:
+            run_scheduler(
+                env=env, logger=logger, version=__version__, api_client=api_client
+            )
+        except Exception as e:
+            logger.exception(f"Scheduler error: {e}")
+            sys.exit(1)
+    finally:
+        api_client.close()
 
 
 if __name__ == "__main__":

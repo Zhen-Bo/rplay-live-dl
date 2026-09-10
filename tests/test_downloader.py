@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yt_dlp
+import yt_dlp.utils
 from freezegun import freeze_time
 
 from core.downloader import StreamDownloader
@@ -16,7 +17,7 @@ from models.download import RawDownloadCompleted, RawDownloadFailed
 @pytest.fixture
 def mock_yt_dlp():
     """Create a mock yt-dlp YoutubeDL context manager."""
-    with patch('core.downloader.yt_dlp.YoutubeDL') as mock_ydl_class:
+    with patch("core.downloader.yt_dlp.YoutubeDL") as mock_ydl_class:
         mock_ydl = MagicMock()
         mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl)
         mock_ydl_class.return_value.__exit__ = MagicMock(return_value=False)
@@ -34,6 +35,7 @@ class TestStreamDownloaderInit:
     def test_init_sets_log_prefix(self):
         """Test that the log adapter is bound to the creator name."""
         downloader = StreamDownloader("TestCreator")
+        assert downloader.log.extra is not None
         assert downloader.log.extra["context"] == "TestCreator"
 
     def test_init_creates_logger(self):
@@ -175,7 +177,9 @@ class TestGetUniquePath:
 class TestYtDlpLoggerBridge:
     """Tests for filtering noisy yt-dlp internal logs."""
 
-    def test_internal_ytdlp_debug_logs_are_suppressed_by_default(self, tmp_path, monkeypatch):
+    def test_internal_ytdlp_debug_logs_are_suppressed_by_default(
+        self, tmp_path, monkeypatch
+    ):
         """Test internal yt-dlp debug chatter is hidden unless explicitly enabled."""
         import core.logger as logger_module
 
@@ -201,7 +205,9 @@ class TestYtDlpLoggerBridge:
 
         assert any("yt-dlp" in str(call) for call in mock_log.debug.call_args_list)
 
-    def test_key2_query_values_are_redacted_before_forwarding(self, tmp_path, monkeypatch):
+    def test_key2_query_values_are_redacted_before_forwarding(
+        self, tmp_path, monkeypatch
+    ):
         import core.logger as logger_module
 
         monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", True)
@@ -284,16 +290,25 @@ class TestBuildYdlOptions:
         options = downloader._build_ydl_options(tmp_path / "test.ts")
         assert options["external_downloader_args"] == {
             "ffmpeg_i": [
-                "-rw_timeout", "30000000",
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_on_network_error", "1",
-                "-reconnect_on_http_error", "429,5xx",
-                "-reconnect_delay_max", "30",
-                "-seg_max_retry", "20",
+                "-rw_timeout",
+                "30000000",
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_on_network_error",
+                "1",
+                "-reconnect_on_http_error",
+                "429,5xx",
+                "-reconnect_delay_max",
+                "30",
+                "-seg_max_retry",
+                "20",
             ],
         }
-        assert "-reconnect_at_eof" not in options["external_downloader_args"]["ffmpeg_i"]
+        assert (
+            "-reconnect_at_eof" not in options["external_downloader_args"]["ffmpeg_i"]
+        )
 
 
 class TestLiveHlsDownloaderSelection:
@@ -308,19 +323,24 @@ class TestLiveHlsDownloaderSelection:
         from yt_dlp.downloader import get_suitable_downloader
         from yt_dlp.downloader.external import FFmpegFD
 
-        info_dict = {
-            "url": "https://example.invalid/live.m3u8",
-            "protocol": "m3u8_native",
-            "is_live": True,
-        }
-
-        assert get_suitable_downloader(info_dict, params={}) is FFmpegFD
+        assert (
+            get_suitable_downloader(
+                {
+                    "id": "test-live",
+                    "url": "https://example.invalid/live.m3u8",
+                    "is_live": True,
+                },
+                params={},
+                protocol="m3u8_native",
+            )
+            is FFmpegFD
+        )
 
 
 class TestDownloadMethod:
     """Tests for download method."""
 
-    @patch.object(StreamDownloader, '_download_worker')
+    @patch.object(StreamDownloader, "_download_worker")
     def test_download_sanitizes_title(self, mock_worker, tmp_path, monkeypatch):
         """Test download sanitizes special characters in title."""
         monkeypatch.chdir(tmp_path)
@@ -329,7 +349,7 @@ class TestDownloadMethod:
         assert downloader.download_thread is not None
         downloader.download_thread.join(timeout=1)
 
-    @patch.object(StreamDownloader, '_download_worker')
+    @patch.object(StreamDownloader, "_download_worker")
     def test_download_empty_title_fallback(self, mock_worker, tmp_path, monkeypatch):
         """Test download uses 'untitled' for empty title."""
         monkeypatch.chdir(tmp_path)
@@ -338,7 +358,7 @@ class TestDownloadMethod:
         assert downloader._current_output_path is not None
         assert "untitled" in downloader._current_output_path.name
 
-    @patch.object(StreamDownloader, '_download_worker')
+    @patch.object(StreamDownloader, "_download_worker")
     def test_download_starts_thread(self, mock_worker, tmp_path, monkeypatch):
         """Test download starts a new thread."""
         monkeypatch.chdir(tmp_path)
@@ -347,7 +367,7 @@ class TestDownloadMethod:
         assert downloader.download_thread is not None
         assert downloader.download_thread.name == "download-TestCreator"
 
-    @patch.object(StreamDownloader, '_download_worker')
+    @patch.object(StreamDownloader, "_download_worker")
     def test_download_sets_output_path(self, mock_worker, tmp_path, monkeypatch):
         """Test download sets current output path."""
         monkeypatch.chdir(tmp_path)
@@ -356,7 +376,7 @@ class TestDownloadMethod:
         assert downloader._current_output_path is not None
         assert downloader._current_output_path.suffix == ".mp4"
 
-    @patch.object(StreamDownloader, '_download_worker')
+    @patch.object(StreamDownloader, "_download_worker")
     def test_download_sets_start_time(self, mock_worker, tmp_path, monkeypatch):
         """Test download sets download start time."""
         monkeypatch.chdir(tmp_path)
@@ -367,7 +387,7 @@ class TestDownloadMethod:
         assert downloader._download_start_time is not None
         assert before <= downloader._download_start_time <= after
 
-    @patch.object(StreamDownloader, '_download_worker')
+    @patch.object(StreamDownloader, "_download_worker")
     def test_download_logs_context(self, mock_worker, tmp_path, monkeypatch):
         """Test download logs session and output context before starting."""
         monkeypatch.chdir(tmp_path)
@@ -376,7 +396,7 @@ class TestDownloadMethod:
             session_key="creator1:1772880472",
         )
 
-        with patch.object(downloader, 'log') as mock_log:
+        with patch.object(downloader, "log") as mock_log:
             downloader.download("http://example.com/stream.m3u8", "Test Stream")
             assert downloader.download_thread is not None
             downloader.download_thread.join(timeout=1)
@@ -570,7 +590,10 @@ class TestDownloadErrorCallback:
     def test_is_m3u8_access_error_rejects_ffmpeg_exit_errors(self):
         """Test transient ffmpeg errors are not treated as blocked access."""
         downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("ERROR: ffmpeg exited with code 8") is False
+        assert (
+            downloader._is_m3u8_access_error("ERROR: ffmpeg exited with code 8")
+            is False
+        )
 
     def test_notify_calls_callback_on_m3u8_error(self):
         """Test that callback is invoked for M3U8 access errors."""
@@ -646,10 +669,7 @@ class TestDownloadErrorCallback:
                 output_path,
             )
 
-        assert not any(
-            "Retry" in str(call)
-            for call in mock_log.info.call_args_list
-        )
+        assert not any("Retry" in str(call) for call in mock_log.info.call_args_list)
 
     def test_worker_retries_transient_download_errors_within_same_task(
         self, mock_yt_dlp, tmp_path
@@ -674,14 +694,18 @@ class TestDownloadErrorCallback:
         ]
 
         with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         assert mock_ydl.download.call_count == 3
         assert mock_sleep.call_count == 2
         assert len(completed_events) == 1
         assert failed_events == []
 
-    def test_worker_retries_404_access_errors_before_blocking(self, mock_yt_dlp, tmp_path):
+    def test_worker_retries_404_access_errors_before_blocking(
+        self, mock_yt_dlp, tmp_path
+    ):
         """Test 404 access errors retry before the stream is marked blocked."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         blocked_callback = MagicMock()
@@ -701,7 +725,9 @@ class TestDownloadErrorCallback:
         ]
 
         with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         assert mock_ydl.download.call_count == 3
         assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 4.0]
@@ -726,14 +752,18 @@ class TestDownloadErrorCallback:
         )
 
         with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         assert mock_ydl.download.call_count == 1
         mock_sleep.assert_not_called()
         blocked_callback.assert_called_once_with("HTTP Error 403: Forbidden")
         assert failed_events == []
 
-    def test_worker_retries_timeout_errors_before_completing(self, mock_yt_dlp, tmp_path):
+    def test_worker_retries_timeout_errors_before_completing(
+        self, mock_yt_dlp, tmp_path
+    ):
         """Test timeout-like download errors still use same-task retries."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         completed_events = []
@@ -748,12 +778,16 @@ class TestDownloadErrorCallback:
         output_path.write_bytes(b"x")
         downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = [
-            yt_dlp.utils.DownloadError("HTTPSConnectionPool(host='api.rplay.live', port=443): Read timed out. (read timeout=10.0)"),
+            yt_dlp.utils.DownloadError(
+                "HTTPSConnectionPool(host='api.rplay.live', port=443): Read timed out. (read timeout=10.0)"
+            ),
             None,
         ]
 
         with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         assert mock_ydl.download.call_count == 2
         assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0]
@@ -778,7 +812,9 @@ class TestDownloadErrorCallback:
         )
 
         with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         assert mock_ydl.download.call_count == 1
         mock_sleep.assert_not_called()
@@ -809,7 +845,9 @@ class TestDownloadErrorCallback:
         ]
 
         with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         assert mock_ydl.download.call_count == 3
         assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 4.0]
@@ -840,7 +878,9 @@ class TestDownloadErrorCallback:
         mock_ydl.download.side_effect = kill_recording_mid_download
 
         with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         # One attempt, no backoff: shutdown has a bounded window to collect the
         # terminal event before the merge executor closes.
@@ -947,7 +987,9 @@ class TestDownloadErrorCallback:
         assert not output_path.exists()
         assert len(completed) == 1
 
-    def test_worker_does_not_adopt_an_empty_partial_download(self, mock_yt_dlp, tmp_path):
+    def test_worker_does_not_adopt_an_empty_partial_download(
+        self, mock_yt_dlp, tmp_path
+    ):
         """Test a zero-byte part is not turned into an empty merge input."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader, completed, failed = self._stopped_downloader(
@@ -1027,7 +1069,9 @@ class TestDownloadErrorCallback:
         with patch("core.downloader.time.sleep"), patch.object(
             downloader, "log"
         ) as mock_log:
-            downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+            downloader._download_worker(
+                "http://example.com/stream.m3u8", {}, output_path
+            )
 
         warning_msgs = [str(call.args[0]) for call in mock_log.warning.call_args_list]
         error_msgs = [str(call.args[0]) for call in mock_log.error.call_args_list]
@@ -1106,7 +1150,9 @@ class TestDownloadErrorCallback:
         assert events[0].session_key == "creator1:2026-03-06T12:00:00"
         assert events[0].error_message == "Some other error"
 
-    def test_worker_emits_failure_event_on_unexpected_exception(self, mock_yt_dlp, tmp_path):
+    def test_worker_emits_failure_event_on_unexpected_exception(
+        self, mock_yt_dlp, tmp_path
+    ):
         """Test unexpected download exceptions emit a raw failure event."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
         events = []
@@ -1125,4 +1171,3 @@ class TestDownloadErrorCallback:
         assert isinstance(events[0], RawDownloadFailed)
         assert events[0].session_key == "creator1:2026-03-06T12:00:00"
         assert events[0].error_message == "Unexpected error"
-

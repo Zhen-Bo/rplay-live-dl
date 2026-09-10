@@ -6,6 +6,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def no_dotenv_file(monkeypatch):
+    """Keep unit tests independent of the user's credentials and runtime settings."""
+    from models.env import EnvConfig
+
+    monkeypatch.setattr(
+        EnvConfig, "model_config", {**EnvConfig.model_config, "env_file": None}
+    )
+    for field in EnvConfig.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+    return monkeypatch
+
+
+@pytest.fixture(autouse=True)
 def disable_file_logging(monkeypatch):
     """
     Disable file logging during tests to prevent test output pollution.
@@ -18,7 +31,9 @@ def disable_file_logging(monkeypatch):
     # Store original function
     original_setup_logger = logger_module.setup_logger
 
-    def patched_setup_logger(name, level=logging.INFO, log_to_file=True, log_to_console=True):
+    def patched_setup_logger(
+        name, level=logging.INFO, log_to_file=True, log_to_console=True
+    ):
         # Always disable file logging in tests
         return original_setup_logger(
             name=name,
@@ -33,18 +48,21 @@ def disable_file_logging(monkeypatch):
     # Patch where it's imported in other modules
     try:
         from core import rplay as rplay_module
+
         monkeypatch.setattr(rplay_module, "setup_logger", patched_setup_logger)
     except (ImportError, AttributeError):
         pass
 
     try:
         from core import downloader as downloader_module
+
         monkeypatch.setattr(downloader_module, "setup_logger", patched_setup_logger)
     except (ImportError, AttributeError):
         pass
 
     try:
         from core import live_stream_monitor as monitor_module
+
         monkeypatch.setattr(monitor_module, "setup_logger", patched_setup_logger)
     except (ImportError, AttributeError):
         pass
@@ -58,10 +76,12 @@ def disable_file_logging(monkeypatch):
             logger = logging.getLogger("Config")
             if not logger.handlers:
                 handler = logging.StreamHandler()
-                handler.setFormatter(logging.Formatter(
-                    fmt="%(asctime)s | %(name)-15s | %(levelname)-8s | %(message)s",
-                    datefmt="%Y-%m-%d %H:%M:%S",
-                ))
+                handler.setFormatter(
+                    logging.Formatter(
+                        fmt="%(asctime)s | %(name)-15s | %(levelname)-8s | %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S",
+                    )
+                )
                 logger.addHandler(handler)
                 logger.setLevel(logging.INFO)
             return logger

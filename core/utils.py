@@ -83,7 +83,7 @@ def _format_ffconcat_input_path(ts_file: Path) -> str:
 def merge_ts_files_to_mp4(
     ts_files: List[Path],
     output_path: Path,
-    run_command: Callable[[List[str]], None],
+    run_command: Callable[[List[str]], object],
 ) -> None:
     """
     Merge ts fragments into one mp4 file using ffmpeg concat.
@@ -103,7 +103,9 @@ def merge_ts_files_to_mp4(
             (``CalledProcessError``) and on timeout (``TimeoutExpired``).
     """
     list_path = ts_files[0].parent / "merge-inputs.txt"
-    list_content = "\n".join(_format_ffconcat_input_path(ts_file) for ts_file in ts_files)
+    list_content = "\n".join(
+        _format_ffconcat_input_path(ts_file) for ts_file in ts_files
+    )
     list_path.write_text(list_content, encoding="utf-8")
 
     try:

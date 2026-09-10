@@ -1,7 +1,6 @@
 """Tests for session-aware download models."""
 
 from datetime import datetime
-from pathlib import Path
 
 from models.download import (
     DownloadSession,

@@ -17,6 +17,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from core.config import DEFAULT_CONFIG_PATH, validate_startup_config_path
 from core.env import EnvConfig
 from core.live_stream_monitor import LiveStreamMonitor
+from core.rplay import RPlayAPI
 from core.utils import terminate_child_processes
 
 __all__ = [
@@ -49,6 +50,7 @@ class LiveStreamScheduler:
         self,
         env: EnvConfig,
         logger: logging.Logger,
+        api_client: RPlayAPI,
         version: str = "unknown",
     ) -> None:
         """
@@ -57,6 +59,7 @@ class LiveStreamScheduler:
         Args:
             env: Environment configuration containing auth and interval settings
             logger: Logger instance for output
+            api_client: Validated RPlay client shared with the monitor
             version: Application version string for display
         """
         self.logger = logger
@@ -64,8 +67,7 @@ class LiveStreamScheduler:
         self.version = version
         self.git_sha = os.getenv("APP_GIT_SHA", "").strip()
         self.monitor = LiveStreamMonitor(
-            self.env.auth_token,
-            self.env.user_oid,
+            api_client=api_client,
             min_free_disk_gb=self.env.min_free_disk_gb,
         )
         self.scheduler = BlockingScheduler()
@@ -138,7 +140,12 @@ class LiveStreamScheduler:
         self.logger.info("Scheduler stopped")
 
 
-def run_scheduler(env: EnvConfig, logger: logging.Logger, version: str) -> None:
+def run_scheduler(
+    env: EnvConfig,
+    logger: logging.Logger,
+    version: str,
+    api_client: RPlayAPI,
+) -> None:
     """
     Initialize and run the scheduler with signal handling.
 
@@ -146,6 +153,7 @@ def run_scheduler(env: EnvConfig, logger: logging.Logger, version: str) -> None:
         env: Environment configuration
         logger: Logger instance
         version: Application version string
+        api_client: Validated RPlay client shared with the monitor
     """
     global _scheduler
 
@@ -154,5 +162,10 @@ def run_scheduler(env: EnvConfig, logger: logging.Logger, version: str) -> None:
     signal.signal(signal.SIGTERM, _signal_handler)
 
     validate_startup_config_path(DEFAULT_CONFIG_PATH)
-    _scheduler = LiveStreamScheduler(env=env, logger=logger, version=version)
-    _scheduler.start()
+    _scheduler = LiveStreamScheduler(
+        env=env, logger=logger, api_client=api_client, version=version
+    )
+    try:
+        _scheduler.start()
+    finally:
+        _scheduler.stop()

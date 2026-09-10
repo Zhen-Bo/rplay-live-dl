@@ -1,21 +1,23 @@
-﻿"""Tests for scheduler module."""
+"""Tests for scheduler module."""
 
 import logging
 import os
 import signal
-from unittest.mock import MagicMock, call, patch
+from typing import cast
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
 
 from core.config import ConfigError
-from core.scheduler import LiveStreamScheduler, run_scheduler, _signal_handler
+from core.rplay import RPlayAPI
+from core.scheduler import LiveStreamScheduler, _signal_handler, run_scheduler
 from models.env import EnvConfig
 
 
 @pytest.fixture
 def mock_env():
     """Create mock EnvConfig."""
-    return EnvConfig(auth_token="test_token", user_oid="test_oid", interval=60)
+    return EnvConfig(user_oid="test_oid", auth_token="test_token", interval=60)
 
 
 @pytest.fixture
@@ -27,8 +29,9 @@ def mock_logger():
 @pytest.fixture
 def patched_scheduler_deps():
     """Patch LiveStreamMonitor and BlockingScheduler for scheduler tests."""
-    with patch('core.scheduler.LiveStreamMonitor') as mock_monitor_class, \
-         patch('core.scheduler.BlockingScheduler') as mock_scheduler_class:
+    with patch("core.scheduler.LiveStreamMonitor") as mock_monitor_class, patch(
+        "core.scheduler.BlockingScheduler"
+    ) as mock_scheduler_class:
         yield mock_scheduler_class, mock_monitor_class
 
 
@@ -37,41 +40,77 @@ class TestLiveStreamSchedulerInit:
 
     def test_init_stores_env(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that env config is stored correctly."""
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         assert scheduler.env is mock_env
 
     def test_init_stores_logger(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that logger is stored correctly."""
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         assert scheduler.logger is mock_logger
 
     def test_init_stores_version(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that version is stored correctly."""
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="2.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="2.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         assert scheduler.version == "2.0.0"
 
     def test_init_creates_monitor(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that LiveStreamMonitor is created."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         mock_monitor_class.assert_called_once_with(
-            "test_token",
-            "test_oid",
+            api_client=ANY,
             min_free_disk_gb=5.0,
         )
         assert scheduler.monitor is mock_monitor_class.return_value
 
-    def test_init_creates_scheduler(self, patched_scheduler_deps, mock_env, mock_logger):
+    def test_init_creates_scheduler(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that BlockingScheduler is created."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         mock_scheduler_class.assert_called_once()
         assert scheduler.scheduler is mock_scheduler_class.return_value
 
     def test_init_default_version(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test default version is 'unknown'."""
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger)
+        scheduler = LiveStreamScheduler(
+            env=mock_env, logger=mock_logger, api_client=MagicMock(spec=RPlayAPI)
+        )
         assert scheduler.version == "unknown"
+
+    def test_reuses_startup_client(self, patched_scheduler_deps, mock_env, mock_logger):
+        _, monitor_class = patched_scheduler_deps
+        api = MagicMock()
+        with patch("core.scheduler.RPlayAPI") as create_api:
+            LiveStreamScheduler(env=mock_env, logger=mock_logger, api_client=api)
+        create_api.assert_not_called()
+        assert monitor_class.call_args.kwargs["api_client"] is api
 
 
 class TestCheckAndDownload:
@@ -79,14 +118,30 @@ class TestCheckAndDownload:
 
     def test_calls_monitor_check(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that check_and_download calls monitor's check method."""
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.check_and_download()
-        scheduler.monitor.check_live_streams_and_start_download.assert_called_once()
+        cast(
+            MagicMock, scheduler.monitor
+        ).check_live_streams_and_start_download.assert_called_once()
 
-    def test_handles_exception_gracefully(self, patched_scheduler_deps, mock_env, mock_logger):
+    def test_handles_exception_gracefully(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that exceptions are logged but don't crash."""
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
-        scheduler.monitor.check_live_streams_and_start_download.side_effect = RuntimeError("Test error")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
+        cast(
+            MagicMock, scheduler.monitor
+        ).check_live_streams_and_start_download.side_effect = RuntimeError("Test error")
 
         # Should not raise
         scheduler.check_and_download()
@@ -102,7 +157,12 @@ class TestStartScheduler:
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
         mock_scheduler = MagicMock()
         mock_scheduler_class.return_value = mock_scheduler
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.2.3")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.2.3",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
 
         # Stop scheduler immediately to avoid blocking
         mock_scheduler.start.side_effect = KeyboardInterrupt()
@@ -113,15 +173,24 @@ class TestStartScheduler:
         log_calls = [str(call) for call in mock_logger.info.call_args_list]
         assert any("1.2.3" in call for call in log_calls)
 
-    def test_start_logs_git_sha_when_present(self, patched_scheduler_deps, mock_env, mock_logger):
+    def test_start_logs_git_sha_when_present(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that start logs a short git SHA when APP_GIT_SHA is set."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
         mock_scheduler = MagicMock()
         mock_scheduler_class.return_value = mock_scheduler
         mock_scheduler.start.side_effect = KeyboardInterrupt()
 
-        with patch.dict(os.environ, {"APP_GIT_SHA": "5bae5e3abcdef1234567890"}, clear=False):
-            scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.2.3")
+        with patch.dict(
+            os.environ, {"APP_GIT_SHA": "5bae5e3abcdef1234567890"}, clear=False
+        ):
+            scheduler = LiveStreamScheduler(
+                env=mock_env,
+                logger=mock_logger,
+                version="1.2.3",
+                api_client=MagicMock(spec=RPlayAPI),
+            )
             scheduler.start()
 
         log_calls = [str(call) for call in mock_logger.info.call_args_list]
@@ -134,23 +203,37 @@ class TestStartScheduler:
         mock_scheduler_class.return_value = mock_scheduler
         mock_scheduler.start.side_effect = KeyboardInterrupt()
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.start()
 
         mock_scheduler.add_job.assert_called_once()
 
-    def test_start_performs_initial_check(self, patched_scheduler_deps, mock_env, mock_logger):
+    def test_start_performs_initial_check(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that start performs initial check."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
         mock_scheduler = MagicMock()
         mock_scheduler_class.return_value = mock_scheduler
         mock_scheduler.start.side_effect = KeyboardInterrupt()
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.start()
 
         # Monitor's check should be called for initial check
-        scheduler.monitor.check_live_streams_and_start_download.assert_called()
+        cast(
+            MagicMock, scheduler.monitor
+        ).check_live_streams_and_start_download.assert_called()
 
     def test_start_logs_interval(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test that start logs check interval."""
@@ -159,20 +242,32 @@ class TestStartScheduler:
         mock_scheduler_class.return_value = mock_scheduler
         mock_scheduler.start.side_effect = KeyboardInterrupt()
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.start()
 
         log_calls = [str(call) for call in mock_logger.info.call_args_list]
         assert any("60s" in call for call in log_calls)
 
-    def test_start_handles_keyboard_interrupt(self, patched_scheduler_deps, mock_env, mock_logger):
+    def test_start_handles_keyboard_interrupt(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that KeyboardInterrupt is handled gracefully."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
         mock_scheduler = MagicMock()
         mock_scheduler_class.return_value = mock_scheduler
         mock_scheduler.start.side_effect = KeyboardInterrupt()
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
 
         # Should not raise
         scheduler.start()
@@ -180,14 +275,21 @@ class TestStartScheduler:
         log_calls = [str(call) for call in mock_logger.info.call_args_list]
         assert any("manually stopped" in call for call in log_calls)
 
-    def test_start_propagates_other_exceptions(self, patched_scheduler_deps, mock_env, mock_logger):
+    def test_start_propagates_other_exceptions(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that other exceptions are propagated."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
         mock_scheduler = MagicMock()
         mock_scheduler_class.return_value = mock_scheduler
         mock_scheduler.start.side_effect = RuntimeError("System error")
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
 
         with pytest.raises(RuntimeError, match="System error"):
             scheduler.start()
@@ -203,13 +305,20 @@ class TestStopScheduler:
         mock_scheduler.running = False
         mock_scheduler_class.return_value = mock_scheduler
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         order = MagicMock()
         with patch("core.scheduler.terminate_child_processes") as mock_terminate:
             # A real int keeps `if reaped:` from recording __bool__/__str__
             # calls on the manager mock below.
             mock_terminate.return_value = 0
-            order.attach_mock(scheduler.monitor.shutdown, "monitor_shutdown")
+            order.attach_mock(
+                cast(MagicMock, scheduler.monitor).shutdown, "monitor_shutdown"
+            )
             order.attach_mock(mock_terminate, "reap")
             scheduler.stop()
             scheduler.stop()
@@ -228,11 +337,16 @@ class TestStopScheduler:
         mock_scheduler.running = False
         mock_scheduler_class.return_value = mock_scheduler
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         with patch("core.scheduler.terminate_child_processes"):
             scheduler.stop()
 
-        scheduler.monitor.shutdown.assert_called_once()
+        cast(MagicMock, scheduler.monitor).shutdown.assert_called_once()
 
     def test_stop_when_running(self, patched_scheduler_deps, mock_env, mock_logger):
         """Test stop shuts down scheduler when running."""
@@ -241,7 +355,12 @@ class TestStopScheduler:
         mock_scheduler.running = True
         mock_scheduler_class.return_value = mock_scheduler
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.stop()
 
         mock_scheduler.shutdown.assert_called_once_with(wait=False)
@@ -253,7 +372,12 @@ class TestStopScheduler:
         mock_scheduler.running = False
         mock_scheduler_class.return_value = mock_scheduler
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.stop()
 
         mock_scheduler.shutdown.assert_not_called()
@@ -265,31 +389,44 @@ class TestStopScheduler:
         mock_scheduler.running = True
         mock_scheduler_class.return_value = mock_scheduler
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.stop()
 
         mock_logger.info.assert_called_with("Scheduler stopped")
 
-    def test_stop_shuts_down_monitor(self, patched_scheduler_deps, mock_env, mock_logger):
+    def test_stop_shuts_down_monitor(
+        self, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test stop also shuts down monitor background work."""
         mock_scheduler_class, mock_monitor_class = patched_scheduler_deps
         mock_scheduler = MagicMock()
         mock_scheduler.running = True
         mock_scheduler_class.return_value = mock_scheduler
 
-        scheduler = LiveStreamScheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        scheduler = LiveStreamScheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
         scheduler.stop()
 
-        scheduler.monitor.shutdown.assert_called_once_with()
+        cast(MagicMock, scheduler.monitor).shutdown.assert_called_once_with()
 
 
 class TestSignalHandler:
     """Tests for _signal_handler function."""
 
-    @patch('core.scheduler.sys.exit')
+    @patch("core.scheduler.sys.exit")
     def test_signal_handler_no_scheduler(self, mock_exit):
         """Test signal handler when no scheduler exists."""
         import core.scheduler as scheduler_module
+
         original = scheduler_module._scheduler
         scheduler_module._scheduler = None
         try:
@@ -298,13 +435,18 @@ class TestSignalHandler:
         finally:
             scheduler_module._scheduler = original
 
-    @patch('core.scheduler.sys.exit')
-    def test_signal_handler_with_scheduler(self, mock_exit, patched_scheduler_deps, mock_env, mock_logger):
+    @patch("core.scheduler.sys.exit")
+    def test_signal_handler_with_scheduler(
+        self, mock_exit, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test signal handler calls stop on scheduler."""
         import core.scheduler as scheduler_module
 
         mock_scheduler_instance = LiveStreamScheduler(
-            env=mock_env, logger=mock_logger, version="1.0.0"
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
         )
         mock_scheduler_instance.stop = MagicMock()
 
@@ -318,13 +460,18 @@ class TestSignalHandler:
         finally:
             scheduler_module._scheduler = original
 
-    @patch('core.scheduler.sys.exit')
-    def test_signal_handler_logs_signal_name(self, mock_exit, patched_scheduler_deps, mock_env, mock_logger):
+    @patch("core.scheduler.sys.exit")
+    def test_signal_handler_logs_signal_name(
+        self, mock_exit, patched_scheduler_deps, mock_env, mock_logger
+    ):
         """Test signal handler logs the signal name."""
         import core.scheduler as scheduler_module
 
         mock_scheduler_instance = LiveStreamScheduler(
-            env=mock_env, logger=mock_logger, version="1.0.0"
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
         )
         mock_scheduler_instance.stop = MagicMock()
 
@@ -342,28 +489,49 @@ class TestSignalHandler:
 @pytest.fixture
 def patched_run_scheduler_deps():
     """Patch startup validation, signal.signal, and LiveStreamScheduler for run_scheduler tests."""
-    with patch("core.scheduler.validate_startup_config_path") as mock_validate, \
-         patch("core.scheduler.signal.signal") as mock_signal, \
-         patch("core.scheduler.LiveStreamScheduler") as mock_scheduler_class:
+    with patch("core.scheduler.validate_startup_config_path") as mock_validate, patch(
+        "core.scheduler.signal.signal"
+    ) as mock_signal, patch(
+        "core.scheduler.LiveStreamScheduler"
+    ) as mock_scheduler_class:
         yield mock_scheduler_class, mock_signal, mock_validate
-
 
 
 class TestRunScheduler:
     """Tests for run_scheduler function."""
 
-    def test_sets_signal_handlers(self, patched_run_scheduler_deps, mock_env, mock_logger):
+    def test_sets_signal_handlers(
+        self, patched_run_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that SIGINT and SIGTERM handlers are set."""
         mock_scheduler_class, mock_signal, mock_validate = patched_run_scheduler_deps
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
-        run_scheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        run_scheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
 
         # Verify both signal handlers are set
         signal_calls = [call[0][0] for call in mock_signal.call_args_list]
         assert signal.SIGINT in signal_calls
         assert signal.SIGTERM in signal_calls
+
+    def test_stops_monitor_before_releasing_shared_api(
+        self, patched_run_scheduler_deps, mock_env, mock_logger
+    ):
+        scheduler_class, _, _ = patched_run_scheduler_deps
+        api = MagicMock()
+        scheduler_class.return_value.start.side_effect = RuntimeError(
+            "scheduler failed"
+        )
+        with pytest.raises(RuntimeError, match="scheduler failed"):
+            run_scheduler(mock_env, mock_logger, "test", api_client=api)
+        assert scheduler_class.call_args.kwargs["api_client"] is api
+        scheduler_class.return_value.stop.assert_called_once()
 
     def test_creates_scheduler(self, patched_run_scheduler_deps, mock_env, mock_logger):
         """Test that LiveStreamScheduler is created with correct args."""
@@ -371,10 +539,15 @@ class TestRunScheduler:
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
-        run_scheduler(env=mock_env, logger=mock_logger, version="2.0.0")
+        run_scheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="2.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
 
         mock_scheduler_class.assert_called_once_with(
-            env=mock_env, logger=mock_logger, version="2.0.0"
+            env=mock_env, logger=mock_logger, api_client=ANY, version="2.0.0"
         )
 
     def test_starts_scheduler(self, patched_run_scheduler_deps, mock_env, mock_logger):
@@ -383,10 +556,14 @@ class TestRunScheduler:
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
-        run_scheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        run_scheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
 
         mock_instance.start.assert_called_once()
-
 
     def test_validates_startup_config_before_creating_scheduler(
         self, patched_run_scheduler_deps, mock_env, mock_logger
@@ -396,7 +573,12 @@ class TestRunScheduler:
         mock_instance = MagicMock()
         mock_scheduler_class.return_value = mock_instance
 
-        run_scheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+        run_scheduler(
+            env=mock_env,
+            logger=mock_logger,
+            version="1.0.0",
+            api_client=MagicMock(spec=RPlayAPI),
+        )
 
         mock_validate.assert_called_once()
         mock_scheduler_class.assert_called_once()
@@ -412,11 +594,18 @@ class TestRunScheduler:
             side_effect=ConfigError("move config to ./config/config.yaml"),
         ):
             with pytest.raises(ConfigError, match="move config"):
-                run_scheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+                run_scheduler(
+                    env=mock_env,
+                    logger=mock_logger,
+                    version="1.0.0",
+                    api_client=MagicMock(spec=RPlayAPI),
+                )
 
         mock_scheduler_class.assert_not_called()
 
-    def test_sets_global_reference(self, patched_run_scheduler_deps, mock_env, mock_logger):
+    def test_sets_global_reference(
+        self, patched_run_scheduler_deps, mock_env, mock_logger
+    ):
         """Test that global _scheduler is set."""
         import core.scheduler as scheduler_module
 
@@ -426,7 +615,12 @@ class TestRunScheduler:
 
         original = scheduler_module._scheduler
         try:
-            run_scheduler(env=mock_env, logger=mock_logger, version="1.0.0")
+            run_scheduler(
+                env=mock_env,
+                logger=mock_logger,
+                version="1.0.0",
+                api_client=MagicMock(spec=RPlayAPI),
+            )
             assert scheduler_module._scheduler is mock_instance
         finally:
             scheduler_module._scheduler = original

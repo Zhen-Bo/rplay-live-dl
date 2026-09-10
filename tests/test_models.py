@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from models.config import CreatorProfile
 from models.env import EnvConfig
-from models.rplay import LiveStream, MultiLangNick, StreamState
+from models.rplay import MultiLangNick, StreamState
 
 
 class TestCreatorProfile:
@@ -75,56 +75,35 @@ class TestEnvConfig:
 
     def test_valid_env_config(self):
         """Test creating a valid environment config."""
-        config = EnvConfig(
-            auth_token="token123",
-            user_oid="user456",
-            interval=60,
-        )
+        config = EnvConfig(user_oid="user456", auth_token="token123", interval=60)
         assert config.auth_token == "token123"
         assert config.user_oid == "user456"
         assert config.interval == 60
 
     def test_default_interval(self):
         """Test that interval has a default value."""
-        config = EnvConfig(
-            auth_token="token123",
-            user_oid="user456",
-        )
+        config = EnvConfig(user_oid="user456", auth_token="token123")
         assert config.interval == 60
 
     def test_interval_minimum(self):
         """Test that interval has a minimum value."""
         with pytest.raises(ValidationError):
-            EnvConfig(
-                auth_token="token123",
-                user_oid="user456",
-                interval=5,  # Below minimum of 10
-            )
+            EnvConfig(user_oid="user456", auth_token="token123", interval=5)
 
     def test_interval_maximum(self):
         """Test that interval has a maximum value."""
         with pytest.raises(ValidationError):
-            EnvConfig(
-                auth_token="token123",
-                user_oid="user456",
-                interval=4000,  # Above maximum of 3600
-            )
+            EnvConfig(user_oid="user456", auth_token="token123", interval=4000)
 
     def test_empty_auth_token_rejected(self):
         """Test that empty auth token is rejected."""
         with pytest.raises(ValidationError):
-            EnvConfig(
-                auth_token="",
-                user_oid="user456",
-            )
+            EnvConfig(user_oid="user456", auth_token="")
 
     def test_whitespace_auth_token_rejected(self):
         """Test that whitespace-only auth token is rejected."""
         with pytest.raises(ValidationError):
-            EnvConfig(
-                auth_token="   ",
-                user_oid="user456",
-            )
+            EnvConfig(user_oid="user456", auth_token="   ")
 
 
 class TestMultiLangNick:

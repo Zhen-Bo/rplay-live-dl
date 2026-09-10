@@ -189,7 +189,9 @@ def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:
 
         # Validate item is a dictionary
         if not isinstance(item, dict):
-            _get_logger().warning(f"Skipping invalid entry at index {index}: not a dictionary")
+            _get_logger().warning(
+                f"Skipping invalid entry at index {index}: not a dictionary"
+            )
             continue
 
         try:
@@ -199,7 +201,9 @@ def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:
 
             # Check for required fields
             if not name:
-                _get_logger().warning(f"Skipping entry at index {index}: missing 'name'")
+                _get_logger().warning(
+                    f"Skipping entry at index {index}: missing 'name'"
+                )
                 continue
 
             if not creator_id:
