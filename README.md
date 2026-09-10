@@ -136,21 +136,26 @@ Development:
 
 ### Obtaining Credentials
 
-#### `AUTH_TOKEN`
+#### Account credentials
 
-1. Log in to `rplay.live`
-2. Open browser DevTools (`F12`)
-3. Execute `localStorage.getItem('_AUTHORIZATION_')`
-4. Copy the returned token
+1. Open your logged-in session at `https://rplay.live`.
+2. Visit `https://rplay.live/myinfo/` and copy **User Number** to `USER_OID` in `.env`.
 
-![auth_token](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/auth_token.png?raw=true)
+![User Number on the account information page](images/user_oid.png)
 
-#### `USER_OID`
+3. Open browser DevTools (`F12`) → **Console**.
+4. Run the command for your session:
 
-1. Visit `https://rplay.live/myinfo/`
-2. Copy your `User Number`
+| Session | Console command | `.env` variable |
+| --- | --- | --- |
+| Existing legacy session | `localStorage.getItem('_AUTHORIZATION_')` | `AUTH_TOKEN` |
+| New login | `JSON.parse(localStorage.vuex).AccountModule.refreshToken` | `REFRESH_TOKEN` |
 
-![user_oid](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/user_oid.png?raw=true)
+![Browser console example using the legacy credential command](images/auth_token.png)
+
+5. Copy the returned value without surrounding quotes into the matching `.env` variable. Leave the other token variable empty.
+
+For the new-login flow, an empty or `undefined` refresh token means you need to sign in again. Use the same account for the token and `USER_OID`. Keep token values out of screenshots, logs, and issues.
 
 #### Creator ID
 
@@ -159,7 +164,7 @@ Development:
 3. Refresh the page and search for `CreatorOid`
 4. Copy the creator ID
 
-![creator_oid](https://github.com/Zhen-Bo/rplay-live-dl/blob/main/images/creator_oid.png?raw=true)
+![Creator ID in browser network requests](images/creator_oid.png)
 
 ### Configuration
 
@@ -170,9 +175,12 @@ Copy `.env.example` to `.env`. Both local runs and the bundled `docker-compose.y
 Full example:
 
 ```dotenv
-# Required: RPlay account credentials
-AUTH_TOKEN=your_auth_token
+# Required: new login credentials
 USER_OID=your_user_oid
+# Legacy alternative: leave REFRESH_TOKEN empty and set AUTH_TOKEN instead
+AUTH_TOKEN=
+REFRESH_TOKEN=your_refresh_token
+TOKEN_REFRESH_LEEWAY_SECONDS=300
 
 # Optional: monitor poll interval in seconds (10-3600)
 INTERVAL=60
@@ -200,8 +208,10 @@ Environment variables:
 
 | Variable | Required | Default | Validation / accepted values | Purpose |
 | --- | --- | --- | --- | --- |
-| `AUTH_TOKEN` | yes | none | non-empty | RPlay auth token used for API and stream access |
 | `USER_OID` | yes | none | non-empty | Your RPlay user identifier |
+| `AUTH_TOKEN` | without `REFRESH_TOKEN` | empty | required when refresh token is empty | Existing static-token flow; ignored when `REFRESH_TOKEN` is set |
+| `REFRESH_TOKEN` | for new logins | empty | non-empty selects refresh flow | Acquires and renews access JWTs; takes precedence over `AUTH_TOKEN` |
+| `TOKEN_REFRESH_LEEWAY_SECONDS` | no | `300` | non-negative integer | Renew before key2 when JWT has fewer seconds remaining; `0` renews only when expired |
 | `INTERVAL` | no | `60` | integer `10`-`3600` | Poll interval in seconds |
 | `MIN_FREE_DISK_GB` | no | `5` | non-negative number; `0` disables the guard; invalid/negative values abort startup | Skip starting a new recording when free space on the output volume is below this many GiB |
 | `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; invalid values abort startup with a non-zero exit | Console and file log verbosity |
@@ -216,6 +226,16 @@ Notes:
 - local runs load from `.env` or process environment variables
 - the bundled Docker Compose file loads `.env` through `env_file`, so its values become real container environment variables
 - `LOG_YTDLP_INTERNAL=true` is only for deep diagnosis; it is intentionally noisy
+
+| Configuration | Behavior |
+| --- | --- |
+| `REFRESH_TOKEN` set | Acquire and renew JWTs automatically; `AUTH_TOKEN` is ignored |
+| Only `AUTH_TOKEN` set | Use the existing static token |
+| Neither token set | Fail startup with a configuration error |
+
+A non-empty `REFRESH_TOKEN` selects the refresh flow, even if `AUTH_TOKEN` is also set. Startup obtains a JWT and validates key2 with `loginType=rplay`; monitoring reuses that client. JWTs stay in memory and are never written to `.env`. Before another key2 request, the client refreshes if the JWT has expired or has fewer than the configured seconds remaining. There is no periodic refresh timer, and refreshing does not restart an active recording.
+
+Without `REFRESH_TOKEN`, the existing `AUTH_TOKEN` is used with `loginType=plax`, without JWT parsing or automatic renewal. `USER_OID` is required in either flow; supplying neither token fails startup. See [authentication behavior and verification](docs/authentication.md) for protocol details and limitations.
 
 #### Creator configuration
 
@@ -392,7 +412,7 @@ Fix:
 
 Check:
 
-- `AUTH_TOKEN` is still valid
+- the configured `REFRESH_TOKEN` (or legacy `AUTH_TOKEN`) is still valid
 - `USER_OID` is correct
 - creator ID is correct
 - there is enough free disk space
@@ -402,7 +422,7 @@ Check:
 
 Behavior:
 
-- `401` usually means `AUTH_TOKEN` is missing, expired, or invalid
+- `401` indicates an authentication failure; check the configured credential and `USER_OID`
 - `403` is treated as immediate blocked/private/paid access
 - `404` can appear for a few seconds right after stream start; the downloader retries automatically before marking the current session blocked
 - timeout-like transport errors also retry automatically within the same download task
@@ -411,9 +431,12 @@ Behavior:
 
 Check:
 
-- refresh `AUTH_TOKEN` if logs show `401`
+- if token refresh is rejected (`401` / `403`), sign in to the website, copy the current `REFRESH_TOKEN`, verify `USER_OID`, and recreate the container with `docker compose up -d --force-recreate` (or restart the local process)
+- for the static flow, replace an invalid `AUTH_TOKEN`; new login sessions should use `REFRESH_TOKEN`
 - if repeated `403` persists, confirm the stream is not paid/private for your account
 - if repeated `404` persists after the automatic retries, wait a few seconds and confirm the stream actually remained live
+
+Refresh request rejection is an account credential error, separate from a playlist's paid/private access failure. Transient refresh failures (timeouts, connection errors, or HTTP `429`, `500`, `502`, `503`, `504`) retry up to three attempts. An invalid refresh response is reported explicitly. Refresh-token lifetime, revocation, and rotation rules are unverified; automatic JWT renewal does not guarantee indefinite unattended operation. If the service starts rotating refresh tokens, obtain the current value from the browser and update the configuration.
 
 #### 4. Merge failed
 
