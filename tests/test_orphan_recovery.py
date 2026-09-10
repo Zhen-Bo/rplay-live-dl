@@ -21,7 +21,9 @@ def archive(tmp_path, monkeypatch):
     return creator_dir
 
 
-def _fake_merge(monkeypatch, *, writes=b"mp4", error=None, captured=None):
+def _fake_merge(
+    monkeypatch, *, writes: bytes | None = b"mp4", error=None, captured=None
+):
     """
     Replace the ffmpeg seam with a writer that never spawns a process.
 

@@ -37,7 +37,7 @@ def load_env() -> EnvConfig:
         ValueError: If environment variables have invalid values
     """
     try:
-        return EnvConfig()
+        return EnvConfig.model_validate({})
     except ValidationError as e:
         # Extract missing field names from validation errors
         missing_vars = []
@@ -56,9 +56,10 @@ def load_env() -> EnvConfig:
                 other_errors.append(f"{env_var}: {error.get('msg', str(error))}")
 
         if missing_vars:
+            details = f" {'; '.join(other_errors)}" if other_errors else ""
             raise EnvConfigError(
                 f"Missing required environment variable(s): {', '.join(missing_vars)}. "
-                f"Please set them in .env file or as system environment variables."
+                f"Please set them in .env file or as system environment variables.{details}"
             ) from e
 
         if other_errors:

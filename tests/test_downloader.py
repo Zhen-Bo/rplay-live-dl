@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yt_dlp
+import yt_dlp.utils
 from freezegun import freeze_time
 
 from core.downloader import StreamDownloader
@@ -34,6 +35,7 @@ class TestStreamDownloaderInit:
     def test_init_sets_log_prefix(self):
         """Test that the log adapter is bound to the creator name."""
         downloader = StreamDownloader("TestCreator")
+        assert downloader.log.extra is not None
         assert downloader.log.extra["context"] == "TestCreator"
 
     def test_init_creates_logger(self):
@@ -321,13 +323,18 @@ class TestLiveHlsDownloaderSelection:
         from yt_dlp.downloader import get_suitable_downloader
         from yt_dlp.downloader.external import FFmpegFD
 
-        info_dict = {
-            "url": "https://example.invalid/live.m3u8",
-            "protocol": "m3u8_native",
-            "is_live": True,
-        }
-
-        assert get_suitable_downloader(info_dict, params={}) is FFmpegFD
+        assert (
+            get_suitable_downloader(
+                {
+                    "id": "test-live",
+                    "url": "https://example.invalid/live.m3u8",
+                    "is_live": True,
+                },
+                params={},
+                protocol="m3u8_native",
+            )
+            is FFmpegFD
+        )
 
 
 class TestDownloadMethod:

@@ -1,4 +1,4 @@
-﻿"""Tests for event-driven monitor behavior."""
+"""Tests for event-driven monitor behavior."""
 
 import inspect
 from datetime import datetime
@@ -6,12 +6,13 @@ from threading import Event as ThreadEvent
 from threading import Thread
 from time import monotonic
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.downloader import StreamDownloader
-from core.live_stream_monitor import LiveStreamMonitor, _PollRequested
+from core.live_stream_monitor import LiveStreamMonitor, SessionEvent, _PollRequested
 from core.rplay import RPlayAPI
 from models.config import AppConfig, CreatorProfile
 from models.download import (
@@ -37,7 +38,7 @@ def plenty_of_free_disk(monkeypatch):
 def test_raw_completion_event_immediately_submits_merge(tmp_path):
     """Test raw completion queues merge work without waiting for another poll."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     session_key = "creator1:2026-03-06T12:00:00"
     monitor.sessions[session_key] = DownloadSession(
         session_key=session_key,
@@ -64,7 +65,7 @@ def test_raw_completion_event_immediately_submits_merge(tmp_path):
 def test_raw_failure_event_allows_same_session_retry(tmp_path):
     """Test a failed raw download clears the stuck session so the next poll can retry."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     session_key = "creator1:2026-03-06T12:00:00"
     monitor.monitored_creators["creator1"] = CreatorProfile(
         creator_name="Creator1",
@@ -104,7 +105,7 @@ def test_raw_failure_event_allows_same_session_retry(tmp_path):
 def test_get_active_downloads_uses_session_state_only(tmp_path):
     """Test active downloads are derived from session state, not downloader liveness fallback."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     monitor.sessions["creator1:2026-03-06T12:00:00"] = DownloadSession(
         session_key="creator1:2026-03-06T12:00:00",
         creator_oid="creator1",
@@ -123,7 +124,7 @@ def test_get_active_downloads_uses_session_state_only(tmp_path):
 def test_no_session_means_no_active_downloads_even_if_template_downloader_alive():
     """Test session state is the sole source for active download reporting."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
 
     assert monitor.get_active_downloads() == []
     monitor.shutdown()
@@ -141,7 +142,7 @@ def test_session_download_error_callback_accepts_only_session_key():
 def test_unhandled_session_event_logs_error(tmp_path):
     """Test unknown session events are logged instead of being silently ignored."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     session_key = "creator1:2026-03-06T12:00:00"
     monitor.sessions[session_key] = DownloadSession(
         session_key=session_key,
@@ -159,7 +160,9 @@ def test_unhandled_session_event_logs_error(tmp_path):
             self.session_key = session_key
 
     with patch.object(monitor.logger, "error") as mock_error:
-        monitor._handle_monitor_event(UnknownSessionEvent(session_key))
+        monitor._handle_monitor_event(
+            cast(SessionEvent, UnknownSessionEvent(session_key))
+        )
 
     mock_error.assert_called_once()
     assert "Unhandled session event type" in mock_error.call_args.args[0]
@@ -169,7 +172,7 @@ def test_unhandled_session_event_logs_error(tmp_path):
 def test_check_returns_immediately_when_poll_not_queued():
     """Test poll requests rejected during shutdown do not block on the local done event."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
 
     with (
         patch.object(monitor, "_queue_monitor_event", return_value=False),
@@ -187,7 +190,7 @@ def test_check_returns_immediately_when_poll_not_queued():
 def test_shutdown_drains_pending_raw_completion_before_executor_shutdown(tmp_path):
     """Test shutdown lets a queued raw completion submit merge work before the merge executor closes."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     session_key = "creator1:2026-03-06T12:00:00"
     monitor.sessions[session_key] = DownloadSession(
         session_key=session_key,
@@ -310,10 +313,10 @@ def _make_running_session(
 def test_shutdown_merges_recording_that_was_active_at_shutdown(tmp_path):
     """Test a recording stopped by shutdown still gets its raw output merged."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     session_key = _make_running_session(monitor, tmp_path)
     recording = _FakeRecording(monitor, session_key, tmp_path)
-    monitor._active_downloaders[session_key] = recording
+    monitor._active_downloaders[session_key] = cast(StreamDownloader, recording)
 
     with (
         patch(
@@ -341,10 +344,10 @@ def test_shutdown_merges_recording_that_was_active_at_shutdown(tmp_path):
 def test_shutdown_spares_a_running_merge_from_the_recording_sweep(tmp_path):
     """Test the recording sweep excludes pids of merges that are still running."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     session_key = _make_running_session(monitor, tmp_path)
-    monitor._active_downloaders[session_key] = _FakeRecording(
-        monitor, session_key, tmp_path
+    monitor._active_downloaders[session_key] = cast(
+        StreamDownloader, _FakeRecording(monitor, session_key, tmp_path)
     )
     merge_pid = 424242
     monitor._merge_process_pids.add(merge_pid)
@@ -376,19 +379,19 @@ def test_shutdown_spares_a_running_merge_from_the_recording_sweep(tmp_path):
 def test_shutdown_is_idempotent(tmp_path):
     """Test a second shutdown neither raises nor repeats the teardown."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
 
     with patch("core.live_stream_monitor.terminate_child_processes"):
         monitor.shutdown()
         monitor.shutdown()
 
-    mock_api.close.assert_called_once()
+    mock_api.close.assert_not_called()
 
 
 def test_shutdown_rejects_new_download_sessions(tmp_path):
     """Test no session is started once shutdown has begun."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     monitor.monitored_creators["creator1"] = CreatorProfile(
         creator_name="Creator1",
         creator_oid="creator1",
@@ -409,7 +412,7 @@ def test_shutdown_rejects_new_download_sessions(tmp_path):
 def test_late_terminal_event_after_drain_is_ignored_idempotently(tmp_path):
     """Test a recording reporting after the join budget warns instead of raising."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
 
     with patch("core.live_stream_monitor.terminate_child_processes"):
         monitor.shutdown()
@@ -439,7 +442,7 @@ def test_in_flight_poll_does_not_start_recording_after_shutdown(tmp_path, monkey
     """Test a poll blocked on the stream URL during shutdown starts nothing."""
     monkeypatch.chdir(tmp_path)
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     monitor.monitored_creators["creator1"] = CreatorProfile(
         creator_name="Creator1",
         creator_oid="creator1",
@@ -501,13 +504,15 @@ class _StuckMergeExecutor:
         self.shutdown_calls.append((wait, cancel_futures))
 
 
-def test_shutdown_returns_within_budget_when_merge_never_finishes(tmp_path):
+def test_shutdown_returns_within_budget_when_merge_never_finishes(
+    tmp_path, monkeypatch
+):
     """Test the aggregate deadline bounds shutdown even with a wedged merge."""
     mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     monitor.SHUTDOWN_BUDGET_SECONDS = 0.5
     stuck_executor = _StuckMergeExecutor()
-    monitor.merge_executor = stuck_executor
+    monkeypatch.setattr(monitor, "merge_executor", stuck_executor)
 
     finished = ThreadEvent()
 
@@ -529,7 +534,7 @@ def test_shutdown_returns_within_budget_when_merge_never_finishes(tmp_path):
 
     # wait=True here would hand the wedged merge veto power over process exit.
     assert stuck_executor.shutdown_calls == [(False, True)]
-    mock_api.close.assert_called_once()
+    mock_api.close.assert_not_called()
 
 
 def _live_stream(creator_oid, stream_oid="stream-1"):
@@ -567,7 +572,7 @@ def test_failure_while_creator_still_live_earns_one_immediate_extra_poll(repoll_
     # mid-stream failure cost that whole window; the re-poll must not scale
     # with it, so the interval only ever appears here as the bound to beat.
     largest_interval = EnvConfig(
-        auth_token="token", user_oid="oid", interval=3600
+        user_oid="oid", auth_token="token", interval=3600
     ).interval
 
     mock_api = MagicMock(spec=RPlayAPI)
@@ -581,7 +586,7 @@ def test_failure_while_creator_still_live_earns_one_immediate_extra_poll(repoll_
         return [_live_stream("creator1")]
 
     mock_api.get_livestream_status.side_effect = read_live_list
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
 
     monitor.check_live_streams_and_start_download()
     session_key = next(iter(monitor.sessions))
@@ -621,7 +626,7 @@ def test_failure_after_creator_went_offline_schedules_no_extra_poll(repoll_env):
     """Test a failure for a creator no longer in the live list re-polls nothing."""
     mock_api = MagicMock(spec=RPlayAPI)
     mock_api.get_livestream_status.side_effect = [[_live_stream("creator1")], []]
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
 
     monitor.check_live_streams_and_start_download()
     session_key = next(iter(monitor.sessions))
@@ -646,7 +651,7 @@ def test_concurrent_failures_merge_into_one_extra_poll(repoll_env):
         _live_stream("creator1", "stream-1"),
         _live_stream("creator2", "stream-2"),
     ]
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
 
     monitor.check_live_streams_and_start_download()
     session_key_by_creator = {
@@ -740,7 +745,7 @@ def test_retry_enqueue_is_atomic_against_a_shutdown_landing_mid_request(repoll_e
         return [_live_stream("creator1")]
 
     mock_api.get_livestream_status.side_effect = read_live_list
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     shutdown_begun = _signal_shutdown_begun(monitor)
 
     monitor.check_live_streams_and_start_download()
@@ -773,7 +778,7 @@ def test_scheduler_poll_enqueue_is_atomic_against_a_shutdown_landing_mid_request
     """Test the refusal window is closed for every poll requester, not just the retry."""
     mock_api = MagicMock(spec=RPlayAPI)
     mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     shutdown_begun = _signal_shutdown_begun(monitor)
 
     monitor.check_live_streams_and_start_download()
@@ -804,7 +809,7 @@ def test_retry_poll_queued_before_shutdown_is_skipped_when_dequeued(repoll_env):
     """Test the control loop drops an already-queued retry poll once shutdown has begun."""
     mock_api = MagicMock(spec=RPlayAPI)
     mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
-    monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=mock_api)
+    monitor = LiveStreamMonitor(api_client=mock_api)
     shutdown_begun = _signal_shutdown_begun(monitor)
 
     monitor.check_live_streams_and_start_download()

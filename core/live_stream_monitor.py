@@ -12,13 +12,8 @@ from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
 
-from core.constants import (
-    DEFAULT_MERGE_TIMEOUT_SECONDS as _DEFAULT_MERGE_TIMEOUT_SECONDS,
-)
-from core.constants import (
-    DEFAULT_MIN_FREE_DISK_GB,
-    DEFAULT_RPLAY_API_BASE_URL,
-)
+from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS as _MERGE_TIMEOUT_SECONDS
+from core.constants import DEFAULT_MIN_FREE_DISK_GB
 from models.config import CreatorProfile
 from models.download import (
     DownloadSession,
@@ -99,7 +94,7 @@ class LiveStreamMonitor:
     - Automatic cleanup of inactive downloaders which are not monitored
     """
 
-    DEFAULT_MERGE_TIMEOUT_SECONDS = _DEFAULT_MERGE_TIMEOUT_SECONDS
+    DEFAULT_MERGE_TIMEOUT_SECONDS = _MERGE_TIMEOUT_SECONDS
     POLL_WAIT_TIMEOUT_SECONDS = 30.0
     # One aggregate budget for the whole shutdown, not a per-step timeout that
     # the next step can extend: every wait below draws from the same deadline,
@@ -118,33 +113,21 @@ class LiveStreamMonitor:
 
     def __init__(
         self,
-        auth_token: str,
-        user_oid: str,
+        api_client: RPlayAPI,
         config_path: str = DEFAULT_CONFIG_PATH,
-        api: Optional[RPlayAPI] = None,
-        merge_timeout_seconds: int = DEFAULT_MERGE_TIMEOUT_SECONDS,
+        merge_timeout_seconds: float = DEFAULT_MERGE_TIMEOUT_SECONDS,
         min_free_disk_gb: float = DEFAULT_MIN_FREE_DISK_GB,
     ) -> None:
         """
-        Initialize monitor with authentication and configuration.
+        Initialize monitor with a shared API client and configuration.
 
         Args:
-            auth_token: JWT token for API auth
-            user_oid: User's identifier
+            api_client: RPlay client owned by the caller
             config_path: Path to creator profiles YAML config
-            api: Optional RPlayAPI instance for dependency injection (testing)
             merge_timeout_seconds: Timeout for ffmpeg merge commands
             min_free_disk_gb: Minimum free disk space in GiB before recording; 0 disables
         """
-        self.api = (
-            api
-            if api is not None
-            else RPlayAPI(
-                base_url=DEFAULT_RPLAY_API_BASE_URL,
-                user_oid=user_oid,
-                auth_token=auth_token,
-            )
-        )
+        self.api_client = api_client
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
         self.min_free_disk_gb = min_free_disk_gb
@@ -240,7 +223,7 @@ class LiveStreamMonitor:
                             # Queued before shutdown began. A recording it
                             # started would be refused anyway, so serving it
                             # only adds a live-list read to the window
-                            # api.close() is about to close.
+                            # the caller's API client shutdown is about to close.
                             event.done.set()
                             continue
                     try:
@@ -267,7 +250,7 @@ class LiveStreamMonitor:
         """Enqueue work for the monitor control loop."""
         # Refusal and enqueue as one step, under the lock shutdown takes to set
         # its flag. Checked unlocked, shutdown slips its whole drain in between
-        # and the poll is served after it: a live-list read racing api.close().
+        # and the poll is served after it: a live-list read racing the caller's API client shutdown.
         # Put on an unbounded Queue never blocks, so this holds the lock only
         # for the append.
         with self._state_lock:
@@ -325,7 +308,7 @@ class LiveStreamMonitor:
         self._cycle_key_fetch_auth_failed = False
         try:
             self._update_downloaders()
-            live_streams = self.api.get_livestream_status()
+            live_streams = self.api_client.get_livestream_status()
             # Recorded before any download starts, so a session that fails fast
             # is judged against the list this very poll read.
             with self._state_lock:
@@ -349,7 +332,7 @@ class LiveStreamMonitor:
         except RPlayAuthError as exc:
             self._log_auth_error(
                 f"Authentication error: {exc}. "
-                "Please update your AUTH_TOKEN in .env file"
+                "Please verify USER_OID and your AUTH_TOKEN or REFRESH_TOKEN in .env."
             )
             self._mark_check_failed()
         except RPlayConnectionError as exc:
@@ -535,14 +518,16 @@ class LiveStreamMonitor:
                 stream_key = self._cycle_stream_key
             else:
                 # Real fetch: only successes are cached; failures leave the slot empty.
-                stream_key = self.api._get_stream_key()
+                stream_key = self.api_client._get_stream_key()
                 self._cycle_stream_key = stream_key
                 # A later success clears an earlier unrecovered auth failure this cycle.
                 self._cycle_key_fetch_auth_failed = False
                 # Successful key2 re-arms auth-error logging for the next failure streak.
                 # Cache hits skip re-arm — they follow a success already in this cycle.
                 self._auth_error_notified = False
-            stream_url = self.api.get_stream_url(creator_oid, stream_key=stream_key)
+            stream_url = self.api_client.get_stream_url(
+                creator_oid, stream_key=stream_key
+            )
             self._launch_session_downloader(
                 session=session,
                 stream_url=stream_url,
@@ -609,7 +594,7 @@ class LiveStreamMonitor:
             self._cycle_key_fetch_auth_failed = True
             self._log_auth_error(
                 f"Auth error for {creator_name}: {exc}. "
-                "Please verify AUTH_TOKEN and USER_OID credentials."
+                "Please verify USER_OID and your AUTH_TOKEN or REFRESH_TOKEN in .env."
             )
             return
 
@@ -654,7 +639,7 @@ class LiveStreamMonitor:
     def _update_downloaders(self) -> None:
         """Refresh monitored creator metadata from the current config file."""
         runtime_config = read_config(self.config_path)
-        self.api.set_base_url(runtime_config.api_base_url)
+        self.api_client.set_base_url(runtime_config.api_base_url)
         creator_profiles = runtime_config.creators
 
         with self._state_lock:
@@ -1010,7 +995,8 @@ class LiveStreamMonitor:
         self._mark_check_failed()
         self._log_auth_error(
             f"🔐 Authentication error while downloading {session.creator_name}: "
-            f"{event.error_message}. Please verify AUTH_TOKEN and USER_OID credentials."
+            f"{event.error_message}. Please verify USER_OID and your "
+            "AUTH_TOKEN or REFRESH_TOKEN in .env."
         )
 
     def _log_auth_error(self, message: str) -> None:
@@ -1284,7 +1270,7 @@ class LiveStreamMonitor:
         #    refused in _handle_raw_download_completed.
         self._close_merge_executor()
 
-        # 5. Merge result events, then the control loop and the API client.
+        # 5. Merge result events, then stop the control loop.
         self._drain_monitor_events(
             self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
         )
@@ -1292,7 +1278,6 @@ class LiveStreamMonitor:
         self._control_thread.join(
             timeout=self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
         )
-        self.api.close()
 
     def _close_merge_executor(self) -> None:
         """Flush queued merges within the remaining budget, then close the pool."""

@@ -83,7 +83,7 @@ def _format_ffconcat_input_path(ts_file: Path) -> str:
 def merge_ts_files_to_mp4(
     ts_files: List[Path],
     output_path: Path,
-    run_command: Callable[[List[str]], None],
+    run_command: Callable[[List[str]], object],
 ) -> None:
     """
     Merge ts fragments into one mp4 file using ffmpeg concat.

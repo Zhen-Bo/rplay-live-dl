@@ -193,6 +193,23 @@ def test_main_success_order(monkeypatch):
     api.close.assert_called_once_with()
 
 
+def test_main_passes_open_validated_client_to_scheduler(monkeypatch):
+    api, scheduler = _patch_main_startup(monkeypatch)
+    monkeypatch.delenv("AUTH_TOKEN")
+    monkeypatch.setenv("REFRESH_TOKEN", "test-refresh")
+
+    def run(**kwargs):
+        assert kwargs["api_client"] is api
+        assert kwargs["env"].auth_token == ""
+        api.validate_credentials.assert_called_once()
+        api.close.assert_not_called()
+
+    scheduler.side_effect = run
+    main()
+    scheduler.assert_called_once()
+    api.close.assert_called_once()
+
+
 def test_main_auth_failure_exits_once_and_never_starts_scheduler(monkeypatch):
     """Test auth failure exits 1 with exactly one ERROR; scheduler never starts."""
     logger = MagicMock(spec=logging.Logger)

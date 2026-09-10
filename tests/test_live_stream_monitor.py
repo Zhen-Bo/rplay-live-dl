@@ -46,38 +46,16 @@ def mock_api():
 @pytest.fixture
 def monitor(mock_api):
     """Create a LiveStreamMonitor with mock API."""
-    return LiveStreamMonitor(
-        auth_token="test_token",
-        user_oid="test_oid",
-        api=mock_api,
-    )
+    return LiveStreamMonitor(api_client=mock_api)
 
 
 class TestLiveStreamMonitorInit:
     """Tests for LiveStreamMonitor initialization."""
 
-    @patch("core.live_stream_monitor.RPlayAPI")
-    def test_init_creates_api_if_not_provided(self, mock_api_class):
-        """Test that API is created when not provided."""
-        mock_api_class.return_value = MagicMock()
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-        )
-        mock_api_class.assert_called_once_with(
-            base_url="https://api.rplay.live",
-            user_oid="test_oid",
-            auth_token="test_token",
-        )
-
     def test_init_uses_injected_api(self, mock_api):
         """Test that injected API is used instead of creating new one."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
-        assert monitor.api is mock_api
+        monitor = LiveStreamMonitor(api_client=mock_api)
+        assert monitor.api_client is mock_api
 
     def test_init_empty_monitored_creators(self, monitor):
         """Test that monitored creators dict is empty on init."""
@@ -86,10 +64,7 @@ class TestLiveStreamMonitorInit:
     def test_init_sets_config_path(self, mock_api):
         """Test that config path is set correctly."""
         monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            config_path="/custom/path.yaml",
-            api=mock_api,
+            api_client=mock_api, config_path="/custom/path.yaml"
         )
         assert monitor.config_path == "/custom/path.yaml"
 
@@ -132,11 +107,7 @@ class TestSessionAwareMonitoring:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         monitor.check_live_streams_and_start_download()
         monitor.check_live_streams_and_start_download()
@@ -172,11 +143,7 @@ class TestSessionAwareMonitoring:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         monitor.check_live_streams_and_start_download()
         first_session_key = next(iter(monitor.sessions))
@@ -217,11 +184,7 @@ class TestSessionAwareMonitoring:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         monitor.check_live_streams_and_start_download()
 
@@ -251,11 +214,7 @@ class TestSessionAwareMonitoring:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         def assert_eager_state(creator_oid: str, stream_key: str) -> str:
             active_session_key = monitor._active_raw_session_by_creator[creator_oid]
@@ -298,11 +257,7 @@ class TestSessionAwareMonitoring:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:2026-03-06T12:00:00"] = DownloadSession(
             session_key="creator1:2026-03-06T12:00:00",
             creator_oid="creator1",
@@ -324,11 +279,7 @@ class TestSessionAwareMonitoring:
         self, mock_api, tmp_path
     ):
         """Test a newer session prunes older terminal sessions for the same creator."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         old_session_key = "creator1:1772798400"
         monitor.monitored_creators["creator1"] = CreatorProfile(
             creator_name="Creator1",
@@ -362,11 +313,7 @@ class TestSessionAwareMonitoring:
         self, mock_api, tmp_path
     ):
         """Test offline creators drop terminal sessions during cleanup."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         offline_session_key = "creator1:2026-03-06T12:00:00"
         active_session_key = "creator2:2026-03-06T12:05:00"
         monitor.sessions[offline_session_key] = DownloadSession(
@@ -421,11 +368,7 @@ class TestSessionAwareMonitoring:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:1772798400"] = DownloadSession(
             session_key="creator1:1772798400",
             creator_oid="creator1",
@@ -446,11 +389,7 @@ class TestSessionAwareMonitoring:
     def test_raw_completion_queues_merge(self, mock_api, tmp_path):
         """Test raw completion marks the session queued and submits merge work."""
         session_key = "creator1:2026-03-06T12:00:00"
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions[session_key] = DownloadSession(
             session_key=session_key,
             creator_oid="creator1",
@@ -775,11 +714,7 @@ class TestCycleStreamKeyCache:
                 CreatorProfile(creator_name="C2", creator_oid="c2"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         monitor.check_live_streams_and_start_download()
         assert mock_api._get_stream_key.call_count == 1
@@ -924,11 +859,7 @@ class TestCheckLiveStreams:
         mock_api = MagicMock(spec=RPlayAPI)
         mock_api.get_livestream_status.return_value = []
         mock_read_config.return_value = _runtime_config([])
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is True
 
@@ -941,11 +872,7 @@ class TestCheckLiveStreams:
         mock_stream.stream_state = StreamState.LIVE
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_read_config.return_value = _runtime_config([])
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         mock_api.get_stream_url.assert_not_called()
 
@@ -965,11 +892,7 @@ class TestCheckLiveStreams:
                 CreatorProfile(creator_name="Creator", creator_oid="creator_oid"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         # Without this the monitor spawns a real yt-dlp thread against
         # example.com. Its failure callback lands after this test returns and
         # logs through the process-wide "Monitor" logger, which is how it used
@@ -998,11 +921,7 @@ class TestCheckLiveStreams:
                 CreatorProfile(creator_name="Creator", creator_oid="creator_oid"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator_oid:1772798400"] = DownloadSession(
             session_key="creator_oid:1772798400",
             creator_oid="creator_oid",
@@ -1032,11 +951,7 @@ class TestCheckLiveStreams:
                 CreatorProfile(creator_name="Creator", creator_oid="creator_oid"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         mock_api.get_stream_url.assert_not_called()
 
@@ -1049,11 +964,7 @@ class TestCheckLiveStreamsErrorHandling:
         """Test ConfigError sets healthy=False."""
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.side_effect = ConfigError("Config error")
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
 
@@ -1063,11 +974,7 @@ class TestCheckLiveStreamsErrorHandling:
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RPlayAuthError("Unauthorized")
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
 
@@ -1089,11 +996,7 @@ class TestCheckLiveStreamsErrorHandling:
                 CreatorProfile(creator_name="C1", creator_oid="c1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         monitor.check_live_streams_and_start_download()
 
@@ -1126,11 +1029,7 @@ class TestCheckLiveStreamsErrorHandling:
                 CreatorProfile(creator_name="C2", creator_oid="c2"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         monitor.check_live_streams_and_start_download()
 
@@ -1146,11 +1045,7 @@ class TestCheckLiveStreamsErrorHandling:
         mock_api.get_livestream_status.side_effect = RPlayConnectionError(
             "Network error"
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
 
@@ -1160,11 +1055,7 @@ class TestCheckLiveStreamsErrorHandling:
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RPlayAPIError("API error")
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
 
@@ -1174,11 +1065,7 @@ class TestCheckLiveStreamsErrorHandling:
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RuntimeError("Unexpected")
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
 
@@ -1188,11 +1075,7 @@ class TestCheckLiveStreamsErrorHandling:
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.return_value = []
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         # Force unhealthy state
         monitor._last_check_success = False
         assert monitor.is_healthy is False
@@ -1206,11 +1089,7 @@ class TestCheckLiveStreamsErrorHandling:
         """Test config failures are logged once at the poll-cycle boundary."""
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.side_effect = ConfigError("Config file not found")
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         with patch.object(monitor.logger, "warning") as mock_warning:
             monitor.check_live_streams_and_start_download()
@@ -1225,11 +1104,7 @@ class TestCheckLiveStreamsErrorHandling:
         """Test unexpected update failures are logged once at the poll-cycle boundary."""
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.side_effect = RuntimeError("boom")
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         with patch.object(monitor.logger, "exception") as mock_exception:
             monitor.check_live_streams_and_start_download()
@@ -1250,11 +1125,7 @@ class TestAuthErrorDedup:
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.return_value = _runtime_config([])
         mock_api.get_livestream_status.side_effect = RPlayAuthError("Unauthorized")
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         with caplog.at_level(logging.DEBUG, logger="Monitor"):
             monitor.check_live_streams_and_start_download()
@@ -1319,21 +1190,13 @@ class TestGetActiveDownloads:
     def test_empty_list_when_no_downloads(self):
         """Test returns empty list when no downloaders."""
         mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         assert monitor.get_active_downloads() == []
 
     def test_empty_list_when_all_inactive(self, tmp_path):
         """Test returns empty list when no raw-running sessions exist."""
         mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["oid1:2026-03-06T12:00:00"] = DownloadSession(
             session_key="oid1:2026-03-06T12:00:00",
             creator_oid="oid1",
@@ -1350,11 +1213,7 @@ class TestGetActiveDownloads:
     def test_returns_active_creator_names(self, tmp_path):
         """Test returns list of creator names with active raw sessions."""
         mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["active:2026-03-06T12:00:00"] = DownloadSession(
             session_key="active:2026-03-06T12:00:00",
             creator_oid="active",
@@ -1382,11 +1241,7 @@ class TestGetActiveDownloads:
     def test_returns_multiple_active(self, tmp_path):
         """Test returns multiple active creator names from raw-running sessions."""
         mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         for i in range(3):
             monitor.sessions[f"oid{i}:2026-03-06T12:0{i}:00"] = DownloadSession(
                 session_key=f"oid{i}:2026-03-06T12:0{i}:00",
@@ -1411,20 +1266,12 @@ class TestCreatorStateTracking:
 
     def test_init_has_empty_creator_states(self, mock_api):
         """Test that creator states dict is empty on init."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         assert monitor._creator_states == {}
 
     def test_update_creator_stream_state_creates_new_state(self, mock_api):
         """Test that updating state creates new entry if none exists."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         mock_stream = MagicMock()
         mock_stream.oid = "stream-1"
         mock_stream.creator_oid = "creator1"
@@ -1437,11 +1284,7 @@ class TestCreatorStateTracking:
 
     def test_update_creator_stream_state_updates_existing(self, mock_api):
         """Test that updating state modifies existing entry."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_oid="stream-1",
             is_current_stream_blocked=True,
@@ -1457,11 +1300,7 @@ class TestCreatorStateTracking:
 
     def test_clear_creator_stream_state(self, mock_api):
         """Test clearing state for a creator."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_oid="stream-1",
             is_current_stream_blocked=True,
@@ -1473,22 +1312,14 @@ class TestCreatorStateTracking:
 
     def test_clear_creator_stream_state_nonexistent(self, mock_api):
         """Test clearing state for nonexistent creator does not raise."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         # Should not raise
         monitor._clear_creator_stream_state("nonexistent")
 
     def test_clear_creator_stream_state_logs_offline_cleanup(self, mock_api, tmp_path):
         """Test offline cleanup logs what state was released for the creator."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.monitored_creators["creator1"] = CreatorProfile(
             creator_name="Creator1",
             creator_oid="creator1",
@@ -1522,11 +1353,7 @@ class TestCreatorStateTracking:
         self, mock_api, tmp_path
     ):
         """Test blocked raw downloads create creator state when absent."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:2026-01-26T12:00:00"] = DownloadSession(
             session_key="creator1:2026-01-26T12:00:00",
             creator_oid="creator1",
@@ -1566,11 +1393,7 @@ class TestM3u8ValidationIntegration:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         # Pre-populate state as blocked
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
@@ -1600,11 +1423,7 @@ class TestM3u8ValidationIntegration:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
             last_stream_oid="stream-1",
@@ -1624,11 +1443,7 @@ class TestM3u8ValidationIntegration:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         # Pre-populate state
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_oid="stream-1",
@@ -1646,11 +1461,7 @@ class TestSessionDownloadBlockedHandling:
 
     def test_blocked_event_marks_stream_as_blocked(self, mock_api, tmp_path):
         """Test that a blocked raw download updates session and creator state."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:2026-01-26T12:00:00"] = DownloadSession(
             session_key="creator1:2026-01-26T12:00:00",
             creator_oid="creator1",
@@ -1680,11 +1491,7 @@ class TestSessionDownloadBlockedHandling:
 
     def test_blocked_event_logs_warning_only_once(self, mock_api, tmp_path):
         """Test repeated blocked events log only once for the same creator state."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:2026-01-26T12:00:00"] = DownloadSession(
             session_key="creator1:2026-01-26T12:00:00",
             creator_oid="creator1",
@@ -1727,11 +1534,7 @@ class TestSessionDownloadBlockedHandling:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:1769428800"] = DownloadSession(
             session_key="creator1:1769428800",
             creator_oid="creator1",
@@ -1766,11 +1569,7 @@ class TestPlaylistHttpAuthRouting:
     SESSION_KEY = "creator1:2026-01-26T12:00:00"
 
     def _monitor_with_raw_session(self, mock_api, tmp_path):
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions[self.SESSION_KEY] = DownloadSession(
             session_key=self.SESSION_KEY,
             creator_oid="creator1",
@@ -1847,11 +1646,7 @@ class TestHeartbeatLogOptimization:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         with patch.object(monitor.logger, "info") as mock_info:
             monitor.check_live_streams_and_start_download()
@@ -1878,11 +1673,7 @@ class TestHeartbeatLogOptimization:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         with patch.object(monitor.logger, "info") as mock_info:
             monitor.check_live_streams_and_start_download()
@@ -1899,11 +1690,7 @@ class TestHeartbeatLogOptimization:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         # Simulate previous state with active downloads
         monitor._last_status = {"active_downloads": 1, "monitored_live": 1}
         mock_api.get_livestream_status.return_value = []
@@ -1924,11 +1711,7 @@ class TestHeartbeatLogOptimization:
                 CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
             ]
         )
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
 
         with patch.object(monitor.logger, "debug") as mock_debug:
             # Run multiple checks
@@ -1948,11 +1731,7 @@ class TestSessionLifecycleLogging:
         self, mock_api, tmp_path
     ):
         """Test creator-lock skip logs include the local recording start timestamp."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.monitored_creators["creator1"] = CreatorProfile(
             creator_name="Creator1",
             creator_oid="creator1",
@@ -1991,11 +1770,7 @@ class TestSessionLifecycleLogging:
         self, mock_api, tmp_path
     ):
         """Test skip debug logs include a concrete reason for creator-level raw gating."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.monitored_creators["creator1"] = CreatorProfile(
             creator_name="Creator1",
             creator_oid="creator1",
@@ -2029,11 +1804,7 @@ class TestSessionLifecycleLogging:
 
     def test_raw_download_completion_logs_merge_queue(self, mock_api, tmp_path):
         """Test raw completion logs that merge work has been queued."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:stream-1"] = DownloadSession(
             session_key="creator1:stream-1",
             creator_oid="creator1",
@@ -2059,11 +1830,7 @@ class TestSessionLifecycleLogging:
 
     def test_merge_completed_logs_final_output_path(self, mock_api, tmp_path):
         """Test merge completion logs the final output path."""
-        monitor = LiveStreamMonitor(
-            auth_token="test_token",
-            user_oid="test_oid",
-            api=mock_api,
-        )
+        monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.sessions["creator1:stream-1"] = DownloadSession(
             session_key="creator1:stream-1",
             creator_oid="creator1",

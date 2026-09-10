@@ -118,33 +118,41 @@ def main() -> None:
         )
         api_base_url = DEFAULT_RPLAY_API_BASE_URL
 
-    api = RPlayAPI(
-        base_url=api_base_url, user_oid=env.user_oid, auth_token=env.auth_token
+    api_client = RPlayAPI(
+        base_url=api_base_url,
+        user_oid=env.user_oid,
+        auth_token=env.auth_token,
+        refresh_token=env.refresh_token,
+        token_refresh_leeway_seconds=env.token_refresh_leeway_seconds,
     )
     try:
-        api.validate_credentials()
-        logger.info("API credentials validated successfully")
-    except RPlayAuthError as exc:
-        logger.error(
-            f"Authentication failed: {exc}. "
-            "Please update AUTH_TOKEN and USER_OID in your .env file, then restart."
-        )
-        sys.exit(1)
-    except RPlayAPIError as exc:
-        # RPlayConnectionError is an RPlayAPIError; monitor owns retries.
-        logger.warning(
-            f"Could not verify credentials due to API error "
-            f"(continuing; will retry while running): {exc}"
-        )
-    finally:
-        api.close()
+        try:
+            api_client.validate_credentials()
+            logger.info("API credentials validated successfully")
+        except RPlayAuthError as exc:
+            credential = "REFRESH_TOKEN" if env.refresh_token else "AUTH_TOKEN"
+            logger.error(
+                f"Authentication failed: {exc}. "
+                f"Please update {credential} and USER_OID in your .env file, then restart."
+            )
+            sys.exit(1)
+        except RPlayAPIError as exc:
+            # RPlayConnectionError is an RPlayAPIError; monitor owns retries.
+            logger.warning(
+                f"Could not verify credentials due to API error "
+                f"(continuing; will retry while running): {exc}"
+            )
 
-    # Start the scheduler
-    try:
-        run_scheduler(env=env, logger=logger, version=__version__)
-    except Exception as e:
-        logger.exception(f"Scheduler error: {e}")
-        sys.exit(1)
+        # Share the validated client so monitoring retains its acquired JWT.
+        try:
+            run_scheduler(
+                env=env, logger=logger, version=__version__, api_client=api_client
+            )
+        except Exception as e:
+            logger.exception(f"Scheduler error: {e}")
+            sys.exit(1)
+    finally:
+        api_client.close()
 
 
 if __name__ == "__main__":

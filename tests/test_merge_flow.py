@@ -5,11 +5,12 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.live_stream_monitor import LiveStreamMonitor
+from core.rplay import RPlayAPI
 from models.download import MergeCompleted, MergeFailed, MergeJobSpec
 
 
@@ -36,7 +37,7 @@ class TestMergeFlow:
     def test_merge_uses_stream_start_time_for_mp4_name(self, tmp_path, monkeypatch):
         """Test one session merges to a mp4 file named after stream start time."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         output_dir = tmp_path / "archive" / "Creator"
         output_dir.mkdir(parents=True)
         prefix = "20260306_120000_"
@@ -77,7 +78,7 @@ class TestMergeFlow:
         final_dir.mkdir(parents=True)
         (final_dir / "#Creator 2026-03-06 123.mp4").write_bytes(b"existing")
 
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         prefix = "20260306_123000_"
         ts_file = final_dir / f"{prefix}#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
@@ -106,7 +107,7 @@ class TestMergeFlow:
     def test_failed_merge_leaves_ts_files_in_output_dir(self, tmp_path, monkeypatch):
         """Test failed merges leave raw ts files in place — no _failed/ directory."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         output_dir = tmp_path / "archive" / "Creator"
         output_dir.mkdir(parents=True)
         prefix = "20260306_120000_"
@@ -139,7 +140,7 @@ class TestMergeFlow:
     ):
         """Test a failed merge removes partial mp4 output but keeps raw ts input."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         output_dir = tmp_path / "archive" / "Creator"
         output_dir.mkdir(parents=True)
         prefix = "20260306_120000_"
@@ -177,7 +178,7 @@ class TestMergeFlow:
         so a locked .ts made the discard step delete a perfectly good mp4.
         """
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         output_dir = tmp_path / "archive" / "Creator"
         output_dir.mkdir(parents=True)
         prefix = "20260306_120000_"
@@ -217,7 +218,7 @@ class TestMergeFlow:
     def test_merge_timeout_returns_failure_event(self, tmp_path, monkeypatch):
         """Test ffmpeg timeout becomes a merge failure event."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         output_dir = tmp_path / "archive" / "Creator"
         output_dir.mkdir(parents=True)
         prefix = "20260306_120000_"
@@ -248,7 +249,7 @@ class TestMergeFlow:
     ):
         """Test merge globs only ts files with the correct session prefix."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         output_dir = tmp_path / "archive" / "Creator"
         output_dir.mkdir(parents=True)
 
@@ -289,7 +290,7 @@ class TestMergeFlow:
     ):
         """Test concat input escapes apostrophes in fragment paths."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
         output_dir = tmp_path / "archive" / "Creator"
         output_dir.mkdir(parents=True)
         ts_file = output_dir / "#Creator 2026-03-06 it's live.ts"
@@ -313,7 +314,7 @@ class TestMergeFlow:
     ):
         """Test a timed-out merge child raises with its timeout and leaves no tracked pid."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
 
         # _merge_session_to_mp4 reads exc.timeout, so it has to survive the
         # switch from subprocess.run to Popen.communicate.
@@ -333,7 +334,7 @@ class TestMergeFlow:
     ):
         """Test the mp4 filename date uses local time, not raw UTC (tz regression guard)."""
         monkeypatch.chdir(tmp_path)
-        monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
 
         # 2026-03-06 23:50 UTC is 2026-03-07 07:50 in Asia/Taipei (UTC+8).
         stream_start_time = datetime(2026, 3, 6, 23, 50, 0, tzinfo=timezone.utc)

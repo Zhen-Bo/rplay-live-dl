@@ -65,8 +65,8 @@ class TestSetupLogger:
 
         configure_logging(
             EnvConfig(
-                auth_token="token",
                 user_oid="oid",
+                auth_token="token",
                 log_level="DEBUG",
                 log_ytdlp_internal=True,
             )

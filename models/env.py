@@ -5,7 +5,7 @@ Defines the Pydantic Settings model for environment-based configuration
 used by the rplay-live-dl application.
 """
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.constants import (
@@ -16,6 +16,7 @@ from core.constants import (
     DEFAULT_LOG_RETENTION_DAYS,
     DEFAULT_LOG_YTDLP_INTERNAL,
     DEFAULT_MIN_FREE_DISK_GB,
+    DEFAULT_TOKEN_REFRESH_LEEWAY_SECONDS,
 )
 
 # Validation vocabulary lives beside the only consumer (this model).
@@ -32,20 +33,32 @@ class EnvConfig(BaseSettings):
     All fields are validated using Pydantic for type safety and constraints.
 
     Attributes:
-        auth_token: JWT authentication token for RPlay API access
         user_oid: User's unique identifier on the RPlay platform
+        auth_token: Static JWT used when refresh_token is empty
+        refresh_token: Credential for acquiring and renewing access JWTs
+        token_refresh_leeway_seconds: Renewal threshold before key2 requests
         interval: Monitoring check interval in seconds
     """
 
-    auth_token: str = Field(
-        ...,
-        description="JWT authentication token for API access",
-        min_length=1,
-    )
     user_oid: str = Field(
         ...,
         description="User's unique identifier (OID)",
         min_length=1,
+    )
+    auth_token: str = Field(
+        default="",
+        description="Static JWT; required only when REFRESH_TOKEN is not set",
+        repr=False,
+    )
+    refresh_token: str = Field(
+        default="",
+        description="Enables automatic JWT renewal; takes precedence over AUTH_TOKEN",
+        repr=False,
+    )
+    token_refresh_leeway_seconds: int = Field(
+        default=DEFAULT_TOKEN_REFRESH_LEEWAY_SECONDS,
+        description="Refresh before key2 when the JWT has fewer seconds remaining",
+        ge=0,
     )
     interval: int = Field(
         default=DEFAULT_INTERVAL,
@@ -92,15 +105,16 @@ class EnvConfig(BaseSettings):
         env_file_encoding="utf-8",
         str_strip_whitespace=True,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
-    @field_validator("auth_token")
+    @field_validator("refresh_token")
     @classmethod
-    def validate_auth_token(cls, v: str) -> str:
-        """Validate that auth token is not just whitespace."""
-        if not v.strip():
-            raise ValueError("AUTH_TOKEN cannot be empty or whitespace")
-        return v.strip()
+    def validate_credentials(cls, v: str, info: ValidationInfo) -> str:
+        """Require one credential after trimming both settings."""
+        if not v and not info.data.get("auth_token"):
+            raise ValueError("Set REFRESH_TOKEN or AUTH_TOKEN in .env")
+        return v
 
     @field_validator("user_oid")
     @classmethod

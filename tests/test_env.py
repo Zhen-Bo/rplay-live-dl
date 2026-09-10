@@ -3,21 +3,6 @@
 import pytest
 
 from core.env import EnvConfigError, load_env
-from models.env import EnvConfig
-
-
-@pytest.fixture
-def no_dotenv_file(monkeypatch):
-    """Prevent pydantic-settings from reading .env file.
-
-    This fixture patches EnvConfig.model_config to disable .env file reading,
-    ensuring tests only use environment variables set via monkeypatch.
-    """
-    original_config = EnvConfig.model_config.copy()
-    patched_config = original_config.copy()
-    patched_config["env_file"] = None
-    monkeypatch.setattr(EnvConfig, "model_config", patched_config)
-    return monkeypatch
 
 
 class TestLoadEnv:
@@ -46,16 +31,17 @@ class TestLoadEnv:
         assert config.interval == 60
 
     def test_load_env_missing_auth_token(self, no_dotenv_file):
-        """Test that missing AUTH_TOKEN raises EnvConfigError."""
+        """With neither credential, explain both supported configuration choices."""
         # Clear any existing env vars
         no_dotenv_file.delenv("AUTH_TOKEN", raising=False)
         no_dotenv_file.setenv("USER_OID", "test_oid")
 
-        with pytest.raises(EnvConfigError) as exc_info:
+        with pytest.raises(ValueError) as exc_info:
             load_env()
 
         assert "AUTH_TOKEN" in str(exc_info.value)
-        assert "Missing required" in str(exc_info.value)
+        assert "REFRESH_TOKEN" in str(exc_info.value)
+        assert "Invalid environment configuration" in str(exc_info.value)
 
     def test_load_env_missing_user_oid(self, no_dotenv_file):
         """Test that missing USER_OID raises EnvConfigError."""
@@ -151,6 +137,51 @@ class TestLoadEnv:
         config = load_env()
 
         assert config.interval == 3600
+
+
+class TestRefreshConfig:
+    @pytest.mark.parametrize("auth", [None, "", "  ", "unused-token"])
+    def test_refresh_token_does_not_require_auth_token(self, monkeypatch, auth):
+        monkeypatch.delenv("AUTH_TOKEN", raising=False)
+        if auth is not None:
+            monkeypatch.setenv("AUTH_TOKEN", auth)
+        monkeypatch.setenv("USER_OID", "test-oid")
+        monkeypatch.setenv("REFRESH_TOKEN", "  test-refresh  ")
+        config = load_env()
+        assert config.refresh_token == "test-refresh"
+        assert config.token_refresh_leeway_seconds == 300
+        assert "test-refresh" not in repr(config)
+        assert "unused-token" not in repr(config)
+
+    def test_blank_refresh_token_uses_static_flow(self, monkeypatch):
+        monkeypatch.setenv("AUTH_TOKEN", "static")
+        monkeypatch.setenv("USER_OID", "test-oid")
+        monkeypatch.setenv("REFRESH_TOKEN", "  ")
+        assert load_env().refresh_token == ""
+
+    def test_refresh_only_still_requires_user_oid(self, monkeypatch):
+        monkeypatch.delenv("AUTH_TOKEN", raising=False)
+        monkeypatch.delenv("USER_OID", raising=False)
+        monkeypatch.setenv("REFRESH_TOKEN", "private-refresh")
+        with pytest.raises(EnvConfigError, match="USER_OID") as caught:
+            load_env()
+        assert "private-refresh" not in str(caught.value)
+
+    @pytest.mark.parametrize("value", ["0", "60", "300"])
+    def test_valid_leeway(self, monkeypatch, value):
+        monkeypatch.setenv("AUTH_TOKEN", "static")
+        monkeypatch.setenv("USER_OID", "test-oid")
+        monkeypatch.setenv("TOKEN_REFRESH_LEEWAY_SECONDS", value)
+        assert load_env().token_refresh_leeway_seconds == int(value)
+
+    @pytest.mark.parametrize("value", ["-1", "", "nan", "1.5"])
+    def test_invalid_leeway(self, monkeypatch, value):
+        monkeypatch.setenv("REFRESH_TOKEN", "private-refresh")
+        monkeypatch.setenv("USER_OID", "test-oid")
+        monkeypatch.setenv("TOKEN_REFRESH_LEEWAY_SECONDS", value)
+        with pytest.raises(ValueError, match="TOKEN_REFRESH_LEEWAY_SECONDS") as caught:
+            load_env()
+        assert "private-refresh" not in str(caught.value)
 
 
 class TestLogConfigEnvVars:
