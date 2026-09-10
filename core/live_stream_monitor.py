@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Queue
 from threading import Event, RLock, Thread
 from time import monotonic
 from typing import Callable, Dict, List, Optional, Set, Union
@@ -14,6 +14,8 @@ from pathvalidate import sanitize_filename
 
 from core.constants import (
     DEFAULT_MERGE_TIMEOUT_SECONDS as _DEFAULT_MERGE_TIMEOUT_SECONDS,
+)
+from core.constants import (
     DEFAULT_MIN_FREE_DISK_GB,
 )
 from models.config import CreatorProfile
@@ -31,7 +33,8 @@ from models.download import (
 )
 from models.rplay import CreatorStreamState, LiveStream, StreamState
 
-from .config import ConfigError, DEFAULT_CONFIG_PATH, read_app_config as read_config
+from .config import DEFAULT_CONFIG_PATH, ConfigError
+from .config import read_app_config as read_config
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
@@ -401,7 +404,9 @@ class LiveStreamMonitor:
                 and creator_state.last_stream_start_time is not None
                 else "None"
             )
-            active_session_key = self._active_raw_session_by_creator.get(stream.creator_oid)
+            active_session_key = self._active_raw_session_by_creator.get(
+                stream.creator_oid
+            )
             active_session = (
                 self.sessions.get(active_session_key)
                 if active_session_key is not None
@@ -419,7 +424,10 @@ class LiveStreamMonitor:
             f'title="{stream.title}"'
         )
 
-        if active_session is not None and active_session.state == SessionState.RAW_RUNNING:
+        if (
+            active_session is not None
+            and active_session.state == SessionState.RAW_RUNNING
+        ):
             active_recording_started_at = (
                 active_session.recording_started_at.isoformat()
                 if active_session.recording_started_at is not None
@@ -457,7 +465,9 @@ class LiveStreamMonitor:
     def _cleanup_offline_creator_states(self, live_creator_oids: Set[str]) -> None:
         """Clear state for creators no longer in the live list."""
         with self._state_lock:
-            offline_creators = [oid for oid in self._creator_states if oid not in live_creator_oids]
+            offline_creators = [
+                oid for oid in self._creator_states if oid not in live_creator_oids
+            ]
         for creator_oid in offline_creators:
             self._clear_creator_stream_state(creator_oid)
 
@@ -489,9 +499,9 @@ class LiveStreamMonitor:
                     f"(via {check_path}): {exc}; allowing session"
                 )
             else:
-                required_bytes = int(self.min_free_disk_gb * (1024 ** 3))
+                required_bytes = int(self.min_free_disk_gb * (1024**3))
                 if free_bytes < required_bytes:
-                    free_gb = free_bytes / (1024 ** 3)
+                    free_gb = free_bytes / (1024**3)
                     self.logger.error(
                         f"Insufficient free disk space to start recording: "
                         f"path={output_dir}, free={free_gb:.4f} GiB "
@@ -598,7 +608,9 @@ class LiveStreamMonitor:
             self.logger.warning(f"Failed to get stream URL for {creator_name}: {exc}")
             return
 
-        self.logger.error(f"Error starting download for {creator_name}: {exc}", exc_info=exc)
+        self.logger.error(
+            f"Error starting download for {creator_name}: {exc}", exc_info=exc
+        )
 
     def _log_status_summary(self, total_live: int, monitored_live: int) -> None:
         """Log a summary of the current monitoring status."""
@@ -718,12 +730,16 @@ class LiveStreamMonitor:
             creator_name = self._resolve_creator_name_locked(creator_oid)
             creator_state = self._creator_states.pop(creator_oid, None)
             self.latest_stream_oid_by_creator.pop(creator_oid, None)
-            released_raw_lock = self._active_raw_session_by_creator.pop(creator_oid, None)
+            released_raw_lock = self._active_raw_session_by_creator.pop(
+                creator_oid, None
+            )
             pruned_terminal_sessions = self._prune_terminal_sessions_for_creator_locked(
                 creator_oid
             )
             blocked = (
-                creator_state.is_current_stream_blocked if creator_state is not None else False
+                creator_state.is_current_stream_blocked
+                if creator_state is not None
+                else False
             )
             should_log = (
                 creator_state is not None
@@ -781,7 +797,9 @@ class LiveStreamMonitor:
     ) -> DownloadSession:
         """Create a new local recording session and acquire the creator raw lock."""
         with self._state_lock:
-            session_key = self._make_session_key(stream.creator_oid, recording_started_at)
+            session_key = self._make_session_key(
+                stream.creator_oid, recording_started_at
+            )
             if session_key in self.sessions:
                 suffix = 1
                 base_session_key = session_key
@@ -893,17 +911,13 @@ class LiveStreamMonitor:
             if isinstance(event, MergeStarted):
                 session.state = SessionState.MERGING
                 log_method = self.logger.info
-                log_message = (
-                    f"🎬 Merge started for {session.creator_name}: {session.session_key}"
-                )
+                log_message = f"🎬 Merge started for {session.creator_name}: {session.session_key}"
             elif isinstance(event, MergeCompleted):
                 session.final_output_path = event.output_path
                 session.last_error = None
                 session.state = SessionState.DONE
                 log_method = self.logger.info
-                log_message = (
-                    f"✅ Merge completed for {session.creator_name}: {event.output_path}"
-                )
+                log_message = f"✅ Merge completed for {session.creator_name}: {event.output_path}"
             elif isinstance(event, MergeFailed):
                 session.last_error = event.error_message
                 session.state = SessionState.MERGE_FAILED
@@ -927,7 +941,9 @@ class LiveStreamMonitor:
                 return
 
             session.state = SessionState.MERGE_QUEUED
-            active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
+            active_session_key = self._active_raw_session_by_creator.get(
+                session.creator_oid
+            )
             if active_session_key == session.session_key:
                 self._active_raw_session_by_creator.pop(session.creator_oid, None)
             merge_job = MergeJobSpec(
@@ -1019,7 +1035,9 @@ class LiveStreamMonitor:
         # with no backoff behind it, so that mode re-polls as fast as it fails.
         # Add a budget if failures are seen recurring faster than the backoff.
         retried_now = self._request_retry_poll(session.creator_oid)
-        next_attempt = "retrying immediately" if retried_now else "will retry on next poll"
+        next_attempt = (
+            "retrying immediately" if retried_now else "will retry on next poll"
+        )
         self.logger.warning(
             f"⚠️ Raw download failed for {session.creator_name}; {next_attempt}: "
             f"{event.error_message}"
@@ -1037,7 +1055,9 @@ class LiveStreamMonitor:
 
             session.last_error = event.error_message
             session.state = SessionState.BLOCKED
-            active_session_key = self._active_raw_session_by_creator.get(session.creator_oid)
+            active_session_key = self._active_raw_session_by_creator.get(
+                session.creator_oid
+            )
             if active_session_key == session.session_key:
                 self._active_raw_session_by_creator.pop(session.creator_oid, None)
             creator_name = session.creator_name
@@ -1061,7 +1081,9 @@ class LiveStreamMonitor:
         result = self._merge_session_to_mp4(merge_job)
         self._queue_monitor_event(result)
 
-    def _merge_session_to_mp4(self, merge_job: MergeJobSpec) -> Union[MergeCompleted, MergeFailed]:
+    def _merge_session_to_mp4(
+        self, merge_job: MergeJobSpec
+    ) -> Union[MergeCompleted, MergeFailed]:
         """Merge one session's raw ts outputs into the final mp4 artifact."""
         ts_files = sorted(merge_job.output_dir.glob(f"{merge_job.session_prefix}*.ts"))
         output_path: Optional[Path] = None
@@ -1099,7 +1121,11 @@ class LiveStreamMonitor:
 
         except subprocess.TimeoutExpired as exc:
             self._discard_partial_merge_output(output_path)
-            timeout_value = int(exc.timeout) if exc.timeout is not None else self.merge_timeout_seconds
+            timeout_value = (
+                int(exc.timeout)
+                if exc.timeout is not None
+                else self.merge_timeout_seconds
+            )
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
@@ -1148,7 +1174,9 @@ class LiveStreamMonitor:
 
         counter = 1
         while True:
-            candidate = base_dir / f"#{creator_name} {date_str} {safe_title}_{counter}.mp4"
+            candidate = (
+                base_dir / f"#{creator_name} {date_str} {safe_title}_{counter}.mp4"
+            )
             if not candidate.exists():
                 return candidate
             counter += 1
@@ -1319,7 +1347,9 @@ class LiveStreamMonitor:
                 f"{join_budget:.0f}s: {', '.join(unfinished)}"
             )
 
-    def _make_session_download_error_callback(self, session_key: str) -> Callable[[str], None]:
+    def _make_session_download_error_callback(
+        self, session_key: str
+    ) -> Callable[[str], None]:
         """Create a callback for a specific session download failure."""
 
         def _on_error(error_message: str) -> None:
@@ -1331,4 +1361,3 @@ class LiveStreamMonitor:
             )
 
         return _on_error
-

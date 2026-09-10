@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
 from requests.exceptions import ConnectionError, HTTPError, JSONDecodeError, Timeout
 
 from core.rplay import (
@@ -95,7 +94,9 @@ class TestGetLivestreamStatus:
         """Test that connection errors raise RPlayConnectionError."""
         api = RPlayAPI(auth_token="test", user_oid="test")
 
-        with patch.object(api._session, "get", side_effect=ConnectionError("Network unreachable")):
+        with patch.object(
+            api._session, "get", side_effect=ConnectionError("Network unreachable")
+        ):
             with pytest.raises(RPlayConnectionError, match="Connection failed"):
                 api.get_livestream_status()
 
@@ -233,9 +234,7 @@ class TestGetStreamKey:
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
-        mock_response.json.side_effect = JSONDecodeError(
-            "Expecting value", "doc", 0
-        )
+        mock_response.json.side_effect = JSONDecodeError("Expecting value", "doc", 0)
 
         with patch.object(api._session, "get", return_value=mock_response):
             with pytest.raises(RPlayAPIError, match="Unexpected error"):
@@ -246,9 +245,7 @@ class TestGetStreamKey:
         api = RPlayAPI(auth_token="test", user_oid="test")
         secret = "Bearer sekrit-token"
 
-        with patch.object(
-            api._session, "get", side_effect=RuntimeError(secret)
-        ):
+        with patch.object(api._session, "get", side_effect=RuntimeError(secret)):
             with caplog.at_level("ERROR"):
                 with pytest.raises(RPlayAPIError) as exc_info:
                     api._get_stream_key()
@@ -297,7 +294,11 @@ class TestTransientRetry:
             patch.object(
                 api._session,
                 "get",
-                side_effect=[ConnectionError("boom"), ConnectionError("boom"), success_response],
+                side_effect=[
+                    ConnectionError("boom"),
+                    ConnectionError("boom"),
+                    success_response,
+                ],
             ) as mock_get,
             patch("time.sleep") as mock_sleep,
         ):
@@ -318,7 +319,11 @@ class TestTransientRetry:
             patch.object(
                 api._session,
                 "get",
-                side_effect=[ConnectionError("boom"), ConnectionError("boom"), success_response],
+                side_effect=[
+                    ConnectionError("boom"),
+                    ConnectionError("boom"),
+                    success_response,
+                ],
             ) as mock_get,
             patch("time.sleep") as mock_sleep,
         ):

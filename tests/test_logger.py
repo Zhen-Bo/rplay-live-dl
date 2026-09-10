@@ -6,9 +6,11 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import pytest
-
 from core.logger import (
+    DEFAULT_LOG_LEVEL,
+    LOG_COLORS,
+    AlignedFormatter,
+    ColoredAlignedFormatter,
     _display_width,
     bind,
     cleanup_old_logs,
@@ -17,13 +19,6 @@ from core.logger import (
     get_logs_dir,
     is_ytdlp_internal_logging_enabled,
     setup_logger,
-    AlignedFormatter,
-    ColoredAlignedFormatter,
-    DEFAULT_LOG_LEVEL,
-    LOGGER_NAME_WIDTH,
-    LOG_LEVEL_WIDTH,
-    LOG_TEXT_MAX_COLUMNS,
-    LOG_COLORS,
 )
 from models.env import EnvConfig
 
@@ -303,7 +298,9 @@ class TestRotatingFileHandlerLazyCreation:
                 handler.close()
                 logger.removeHandler(handler)
 
-    def test_rollover_does_not_crash_or_lose_messages(self, tmp_path, monkeypatch, capsys):
+    def test_rollover_does_not_crash_or_lose_messages(
+        self, tmp_path, monkeypatch, capsys
+    ):
         from core import logger as logger_module
 
         monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)

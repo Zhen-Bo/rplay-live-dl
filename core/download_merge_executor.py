@@ -1,6 +1,7 @@
 ﻿"""Dedicated executor for asynchronous merge jobs."""
 
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from threading import Lock
 from typing import Callable, Optional
 
@@ -9,7 +10,9 @@ class DownloadMergeExecutor:
     """Small wrapper around ThreadPoolExecutor for merge tasks."""
 
     def __init__(self, max_workers: int = 1) -> None:
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="merge")
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="merge"
+        )
         self._lock = Lock()
         self._closed = False
 

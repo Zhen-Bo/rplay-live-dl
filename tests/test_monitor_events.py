@@ -1,32 +1,30 @@
 ﻿"""Tests for event-driven monitor behavior."""
 
 import inspect
-
-from threading import Event as ThreadEvent, Thread
+from datetime import datetime
+from threading import Event as ThreadEvent
+from threading import Thread
 from time import monotonic
 from types import SimpleNamespace
-
-from models.download import MergeCompleted
-
-from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.downloader import StreamDownloader
 from core.live_stream_monitor import LiveStreamMonitor, _PollRequested
-from models.config import AppConfig, CreatorProfile
-from models.env import EnvConfig
 from core.rplay import RPlayAPI
+from models.config import AppConfig, CreatorProfile
 from models.download import (
     DownloadSession,
+    MergeCompleted,
     RawDownloadCompleted,
     RawDownloadFailed,
     SessionState,
 )
+from models.env import EnvConfig
 from models.rplay import StreamState
 
-_GIB = 1024 ** 3
+_GIB = 1024**3
 
 
 @pytest.fixture(autouse=True)
@@ -175,7 +173,11 @@ def test_check_returns_immediately_when_poll_not_queued():
 
     with (
         patch.object(monitor, "_queue_monitor_event", return_value=False),
-        patch("core.live_stream_monitor.Event.wait", autospec=True, side_effect=AssertionError("wait should not be called")),
+        patch(
+            "core.live_stream_monitor.Event.wait",
+            autospec=True,
+            side_effect=AssertionError("wait should not be called"),
+        ),
     ):
         monitor.check_live_streams_and_start_download()
 
@@ -288,7 +290,9 @@ class _FakeRecording:
         )
 
 
-def _make_running_session(monitor, tmp_path, session_key="creator1:2026-03-06T12:00:00"):
+def _make_running_session(
+    monitor, tmp_path, session_key="creator1:2026-03-06T12:00:00"
+):
     """Register a RAW_RUNNING session for shutdown tests."""
     monitor.sessions[session_key] = DownloadSession(
         session_key=session_key,
@@ -742,7 +746,9 @@ def test_retry_enqueue_is_atomic_against_a_shutdown_landing_mid_request(repoll_e
     monitor.check_live_streams_and_start_download()
     session_key = next(iter(monitor.sessions))
 
-    reached_enqueue, shutdown_flag_at_enqueue = _gate_poll_enqueue(monitor, shutdown_begun)
+    reached_enqueue, shutdown_flag_at_enqueue = _gate_poll_enqueue(
+        monitor, shutdown_begun
+    )
     monitor._on_raw_download_failed(
         RawDownloadFailed(session_key=session_key, error_message="ffmpeg exited 1")
     )
@@ -761,7 +767,9 @@ def test_retry_enqueue_is_atomic_against_a_shutdown_landing_mid_request(repoll_e
     assert True not in shutdown_flag_at_read
 
 
-def test_scheduler_poll_enqueue_is_atomic_against_a_shutdown_landing_mid_request(repoll_env):
+def test_scheduler_poll_enqueue_is_atomic_against_a_shutdown_landing_mid_request(
+    repoll_env,
+):
     """Test the refusal window is closed for every poll requester, not just the retry."""
     mock_api = MagicMock(spec=RPlayAPI)
     mock_api.get_livestream_status.return_value = [_live_stream("creator1")]
@@ -770,11 +778,15 @@ def test_scheduler_poll_enqueue_is_atomic_against_a_shutdown_landing_mid_request
 
     monitor.check_live_streams_and_start_download()
 
-    reached_enqueue, shutdown_flag_at_enqueue = _gate_poll_enqueue(monitor, shutdown_begun)
+    reached_enqueue, shutdown_flag_at_enqueue = _gate_poll_enqueue(
+        monitor, shutdown_begun
+    )
     # The scheduler asking for its next poll at the worst possible moment. Both
     # requesters share one enqueue, which is where the window has to be closed:
     # guarding only the retry path leaves this one racing api.close().
-    scheduler = Thread(target=monitor.check_live_streams_and_start_download, daemon=True)
+    scheduler = Thread(
+        target=monitor.check_live_streams_and_start_download, daemon=True
+    )
     scheduler.start()
     assert reached_enqueue.wait(timeout=5)
 

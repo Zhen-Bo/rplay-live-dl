@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from core.config import DEFAULT_CONFIG_PATH, ConfigError, read_app_config
 from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.downloader import StreamDownloader
-from core.env import EnvConfig, EnvConfigError, load_env
+from core.env import EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
 from core.orphan_recovery import recover_orphaned_sessions
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError
@@ -51,11 +51,15 @@ def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
     # *.part* covers .part, .part-FragN and .part-FragN.part in one pattern,
     # so the three patterns are disjoint and need no dedup.
     patterns = ("[0-9]*_*.ts", "*.part*", "*.ytdl")
-    orphans = sorted(path for pattern in patterns for path in archive.glob(f"*/{pattern}"))
+    orphans = sorted(
+        path for pattern in patterns for path in archive.glob(f"*/{pattern}")
+    )
     if not orphans:
         return
 
-    logger.warning(f"Found {len(orphans)} file(s) left behind by interrupted recordings:")
+    logger.warning(
+        f"Found {len(orphans)} file(s) left behind by interrupted recordings:"
+    )
     for path in orphans[:10]:
         logger.warning(f"  {path.relative_to(archive)}")
     if len(orphans) > 10:

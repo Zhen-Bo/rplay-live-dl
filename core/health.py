@@ -53,7 +53,9 @@ def main() -> int:
 
     age = time.time() - mtime
     if age < 0:
-        print(f"heartbeat clock skew: mtime in the future by {-age:.0f}s", file=sys.stderr)
+        print(
+            f"heartbeat clock skew: mtime in the future by {-age:.0f}s", file=sys.stderr
+        )
         return 1
     if age >= max_age:
         print(f"heartbeat stale: age={age:.0f}s max={max_age}s", file=sys.stderr)

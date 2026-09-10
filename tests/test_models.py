@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from models.config import CreatorProfile
 from models.env import EnvConfig
-from models.rplay import LiveStream, MultiLangNick, StreamState
+from models.rplay import MultiLangNick, StreamState
 
 
 class TestCreatorProfile:

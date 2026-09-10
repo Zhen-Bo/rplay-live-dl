@@ -3,10 +3,10 @@
 import pytest
 
 from core.config import (
-    ConfigError,
     DEFAULT_CONFIG_PATH,
     DEFAULT_RPLAY_API_BASE_URL,
     LEGACY_CONFIG_PATH,
+    ConfigError,
     read_app_config,
     validate_startup_config_path,
 )
@@ -148,7 +148,9 @@ class TestValidateStartupConfigPath:
 
         validate_startup_config_path(DEFAULT_CONFIG_PATH)
 
-    def test_raises_migration_error_when_only_legacy_config_exists(self, tmp_path, monkeypatch):
+    def test_raises_migration_error_when_only_legacy_config_exists(
+        self, tmp_path, monkeypatch
+    ):
         """Test startup validation points users to the new config location."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "config.yaml").write_text("creators: []", encoding="utf-8")

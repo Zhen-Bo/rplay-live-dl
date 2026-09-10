@@ -119,7 +119,10 @@ class TestOrphanRecovery:
         final_path = archive / "#Creator 2026-03-06 123.mp4"
         captured = []
         _fake_merge(
-            monkeypatch, writes=b"partial", error=RuntimeError("killed"), captured=captured
+            monkeypatch,
+            writes=b"partial",
+            error=RuntimeError("killed"),
+            captured=captured,
         )
 
         recover_orphaned_sessions(LOGGER)
@@ -127,7 +130,7 @@ class TestOrphanRecovery:
         # ffmpeg must never write the collision-significant final name directly:
         # a partial left there is read as a finished recording, and the session
         # is skipped on every later startup instead of being recovered.
-        (_, temp_path), = captured
+        ((_, temp_path),) = captured
         assert temp_path != final_path
 
         # A killed process runs no cleanup, so its partial temp survives.
@@ -303,7 +306,9 @@ class TestOrphanRecovery:
             "x20260306_120000_#Creator leading junk.ts.part",
         ],
     )
-    def test_non_canonical_names_are_ignored(self, archive, monkeypatch, filename, caplog):
+    def test_non_canonical_names_are_ignored(
+        self, archive, monkeypatch, filename, caplog
+    ):
         """Test only the canonical YYYYMMDD_HHMMSS_ session pattern is recovered."""
         stray = archive / filename
         stray.write_bytes(b"ts")

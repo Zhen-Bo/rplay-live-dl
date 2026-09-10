@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from core.utils import format_file_size, merge_ts_files_to_mp4, terminate_child_processes
+from core.utils import (
+    format_file_size,
+    merge_ts_files_to_mp4,
+    terminate_child_processes,
+)
 
 
 class TestFormatFileSize:
@@ -78,8 +82,17 @@ class TestMergeTsFilesToMp4:
         merge_ts_files_to_mp4([ts_file], output_path, fake_run)
 
         assert captured["command"] == [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
-            "-c", "copy", str(output_path),
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_path),
+            "-c",
+            "copy",
+            str(output_path),
         ]
         # Apostrophes must survive into the concat list, or ffmpeg reads a
         # truncated path and the recording is lost.
@@ -98,7 +111,9 @@ class TestTerminateChildProcesses:
 
     def test_excluded_child_survives_the_sweep(self):
         """Test a protected pid is left running while everything else is reaped."""
-        protected = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        protected = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"]
+        )
         doomed = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         try:
             reaped = terminate_child_processes(

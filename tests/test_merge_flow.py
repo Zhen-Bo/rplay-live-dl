@@ -3,9 +3,9 @@
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
-from datetime import datetime, timezone
 
 import pytest
 
@@ -61,11 +61,16 @@ class TestMergeFlow:
         )
 
         assert isinstance(event, MergeCompleted)
-        assert event.output_path == tmp_path / "archive" / "Creator" / "#Creator 2026-03-06 123.mp4"
+        assert (
+            event.output_path
+            == tmp_path / "archive" / "Creator" / "#Creator 2026-03-06 123.mp4"
+        )
         assert not ts_file.exists()
         monitor.shutdown()
 
-    def test_second_session_same_title_increments_mp4_suffix(self, tmp_path, monkeypatch):
+    def test_second_session_same_title_increments_mp4_suffix(
+        self, tmp_path, monkeypatch
+    ):
         """Test a second session with the same title gets a suffixed mp4 name."""
         monkeypatch.chdir(tmp_path)
         final_dir = tmp_path / "archive" / "Creator"
@@ -129,7 +134,9 @@ class TestMergeFlow:
         assert not (tmp_path / "archive" / "Creator" / "_failed").exists()
         monitor.shutdown()
 
-    def test_failed_merge_discards_partial_mp4_and_keeps_ts(self, tmp_path, monkeypatch):
+    def test_failed_merge_discards_partial_mp4_and_keeps_ts(
+        self, tmp_path, monkeypatch
+    ):
         """Test a failed merge removes partial mp4 output but keeps raw ts input."""
         monkeypatch.chdir(tmp_path)
         monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
@@ -236,7 +243,9 @@ class TestMergeFlow:
         assert "timeout" in event.error_message.lower()
         monitor.shutdown()
 
-    def test_merge_only_picks_up_ts_files_matching_session_prefix(self, tmp_path, monkeypatch):
+    def test_merge_only_picks_up_ts_files_matching_session_prefix(
+        self, tmp_path, monkeypatch
+    ):
         """Test merge globs only ts files with the correct session prefix."""
         monkeypatch.chdir(tmp_path)
         monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
@@ -275,7 +284,9 @@ class TestMergeFlow:
         assert other_ts.exists()  # untouched
         monitor.shutdown()
 
-    def test_run_ffmpeg_merge_escapes_single_quotes_in_concat_paths(self, tmp_path, monkeypatch):
+    def test_run_ffmpeg_merge_escapes_single_quotes_in_concat_paths(
+        self, tmp_path, monkeypatch
+    ):
         """Test concat input escapes apostrophes in fragment paths."""
         monkeypatch.chdir(tmp_path)
         monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)
@@ -297,7 +308,9 @@ class TestMergeFlow:
         assert r"it'\''s live.ts" in captured["content"]
         monitor.shutdown()
 
-    def test_run_merge_subprocess_times_out_and_releases_its_pid(self, tmp_path, monkeypatch):
+    def test_run_merge_subprocess_times_out_and_releases_its_pid(
+        self, tmp_path, monkeypatch
+    ):
         """Test a timed-out merge child raises with its timeout and leaves no tracked pid."""
         monkeypatch.chdir(tmp_path)
         monitor = LiveStreamMonitor(auth_token="token", user_oid="oid", api=None)

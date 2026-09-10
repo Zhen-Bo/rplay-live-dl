@@ -99,7 +99,7 @@ def _recover_one_session(
     # the raw output name, so recovering it is the same subtraction. Deriving
     # it from the file on disk also keeps whatever title sanitization the
     # original run applied, which post-restart state can no longer supply.
-    final_stem = ts_files[0].stem[len(session_prefix):]
+    final_stem = ts_files[0].stem[len(session_prefix) :]
     if not final_stem:
         logger.warning(
             f"⚠️ Skipping orphan recovery for session {session_id}: "

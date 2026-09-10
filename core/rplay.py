@@ -10,7 +10,12 @@ from typing import List
 from urllib.parse import urlencode
 
 import requests
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    Retrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from core.constants import (
     DEFAULT_HTTP_HEADERS,
@@ -192,7 +197,9 @@ class RPlayAPI:
             raise RPlayConnectionError("Request timed out")
 
         except requests.exceptions.ConnectionError as exc:
-            self.logger.error(f"Connection error while fetching livestream status: {exc}")
+            self.logger.error(
+                f"Connection error while fetching livestream status: {exc}"
+            )
             raise RPlayConnectionError(f"Connection failed: {exc}")
 
         except _RetryableStatusCodeError as exc:
@@ -207,7 +214,9 @@ class RPlayAPI:
             raise
 
         except Exception as exc:
-            self.logger.exception(f"Unexpected error while fetching livestream status: {exc}")
+            self.logger.exception(
+                f"Unexpected error while fetching livestream status: {exc}"
+            )
             raise RPlayAPIError(f"Unexpected error: {exc}")
 
         return []
@@ -223,10 +232,12 @@ class RPlayAPI:
         Returns:
             str: Complete M3U8 format stream URL with authentication parameters
         """
-        params = urlencode({
-            "creatorOid": creator_oid,
-            "key2": stream_key,
-        })
+        params = urlencode(
+            {
+                "creatorOid": creator_oid,
+                "key2": stream_key,
+            }
+        )
 
         return f"{self.base_url}/live/stream/playlist.m3u8?{params}"
 

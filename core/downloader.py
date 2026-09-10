@@ -16,7 +16,12 @@ from typing import Any, Callable, Dict, Optional
 import yt_dlp
 import yt_dlp.utils
 from pathvalidate import sanitize_filename
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    Retrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from core.constants import (
     DEFAULT_DOWNLOAD_RETRIES,
@@ -206,8 +211,11 @@ class StreamDownloader:
         # three lines. The session prefix is what ties this log to a file on disk.
         session_prefix = (self.filename_prefix or "").rstrip("_")
         self.log.info(
-            f"📥 Recording started (session {session_prefix})" if session_prefix
-            else "📥 Recording started",
+            (
+                f"📥 Recording started (session {session_prefix})"
+                if session_prefix
+                else "📥 Recording started"
+            ),
         )
 
     def is_alive(self) -> bool:
@@ -276,13 +284,20 @@ class StreamDownloader:
             # omitted on purpose — HLS segment reads hit EOF by design.
             "external_downloader_args": {
                 "ffmpeg_i": [
-                    "-rw_timeout", "30000000",
-                    "-reconnect", "1",
-                    "-reconnect_streamed", "1",
-                    "-reconnect_on_network_error", "1",
-                    "-reconnect_on_http_error", "429,5xx",
-                    "-reconnect_delay_max", "30",
-                    "-seg_max_retry", "20",
+                    "-rw_timeout",
+                    "30000000",
+                    "-reconnect",
+                    "1",
+                    "-reconnect_streamed",
+                    "1",
+                    "-reconnect_on_network_error",
+                    "1",
+                    "-reconnect_on_http_error",
+                    "429,5xx",
+                    "-reconnect_delay_max",
+                    "30",
+                    "-seg_max_retry",
+                    "20",
                 ],
             },
         }
@@ -399,15 +414,9 @@ class StreamDownloader:
         """Path-free human summary for WARNING/ERROR logs."""
         state = self._inspect_output_state(output_path)
         output = (
-            f"present ({state['output_size']})"
-            if state["output_exists"]
-            else "missing"
+            f"present ({state['output_size']})" if state["output_exists"] else "missing"
         )
-        part = (
-            f"present ({state['part_size']})"
-            if state["part_exists"]
-            else "missing"
-        )
+        part = f"present ({state['part_size']})" if state["part_exists"] else "missing"
         fragments = "yes" if state["sibling_fragments"] else "no"
         return f"output={output}, part={part}, fragments={fragments}"
 
@@ -491,7 +500,9 @@ class StreamDownloader:
                 # retryable would drop the session and orphan whatever raw
                 # output already reached disk.
                 session_prefix = (self.filename_prefix or "").rstrip("_")
-                if output_path.exists() or self._has_sibling_fragment_outputs(output_path):
+                if output_path.exists() or self._has_sibling_fragment_outputs(
+                    output_path
+                ):
                     self.log.info(
                         f"⏹️ Recording stopped for shutdown (session {session_prefix}); "
                         f"handing raw output to merge: {output_path.name}",
@@ -534,7 +545,9 @@ class StreamDownloader:
                 f"❌ Download failed after {attempts} attempts: "
                 f"{short_reason}; {compact}",
             )
-            self._log_output_state_debug("Download failed: ", error_message, output_path)
+            self._log_output_state_debug(
+                "Download failed: ", error_message, output_path
+            )
             if self._is_auth_error(error_message):
                 self._notify_auth_error(error_message)
             elif self._is_m3u8_access_error(error_message):
@@ -661,7 +674,11 @@ class StreamDownloader:
                             f"{self._build_output_state_details(output_path)}",
                         )
                     try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # pyright: ignore[reportArgumentType]
+                        # yt-dlp accepts dynamic options and our logger bridge;
+                        # its stubs require a narrower TypedDict/logger protocol.
+                        with yt_dlp.YoutubeDL(
+                            ydl_opts,  # pyright: ignore[reportArgumentType]
+                        ) as ydl:
                             ydl.download([stream_url])
                     except yt_dlp.utils.DownloadError as exc:
                         error_message = str(exc)
@@ -745,4 +762,3 @@ class StreamDownloader:
             )
         except Exception as e:
             self.log.exception(f"Error in download failure callback: {e}")
-

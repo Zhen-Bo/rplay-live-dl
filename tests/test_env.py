@@ -214,7 +214,9 @@ class TestLogConfigEnvVars:
         for value, expected in cases:
             monkeypatch.setenv("LOG_YTDLP_INTERNAL", value)
             config = load_env()
-            assert config.log_ytdlp_internal is expected, f"expected {expected} for {value!r}"
+            assert (
+                config.log_ytdlp_internal is expected
+            ), f"expected {expected} for {value!r}"
 
         for value in ("y", "t", "maybe", "2"):
             monkeypatch.setenv("LOG_YTDLP_INTERNAL", value)
