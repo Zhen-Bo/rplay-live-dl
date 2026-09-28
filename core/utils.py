@@ -10,10 +10,43 @@ from typing import Callable, List, Optional
 import psutil
 
 __all__ = [
+    "MAX_FILENAME_COMPONENT_BYTES",
     "format_file_size",
+    "fit_filename_component_bytes",
     "merge_ts_files_to_mp4",
     "terminate_child_processes",
 ]
+
+
+MAX_FILENAME_COMPONENT_BYTES = 255
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    """Truncate text to a UTF-8 byte budget without splitting a character."""
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def fit_filename_component_bytes(
+    path: Path,
+    appended_suffix: str = "",
+    max_bytes: int = MAX_FILENAME_COMPONENT_BYTES,
+) -> Path:
+    """Fit a filename component to a byte limit while preserving its extension.
+
+    ``appended_suffix`` is reserved space for a collision suffix such as
+    ``_1``.  Keeping it outside the truncated stem ensures the uniqueness
+    marker is never cut off when a long title is shortened.
+    """
+    extension = path.suffix
+    stem = path.name[: -len(extension)] if extension else path.name
+    reserved_bytes = len((appended_suffix + extension).encode("utf-8"))
+    stem = _truncate_utf8(stem, max_bytes - reserved_bytes)
+    return path.parent / f"{stem}{appended_suffix}{extension}"
 
 
 def terminate_child_processes(
