@@ -348,3 +348,20 @@ class TestMergeFlow:
         assert "2026-03-07" in output_path.name
         assert "2026-03-06" not in output_path.name
         monitor.shutdown()
+
+    def test_reserve_final_output_path_limits_long_unicode_title(
+        self, tmp_path, monkeypatch
+    ):
+        """The final mp4 name stays within the filesystem filename limit."""
+        monkeypatch.chdir(tmp_path)
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+
+        output_path = monitor._reserve_final_output_path(
+            creator_name="Creator",
+            title="標題" * 200,
+            stream_start_time=datetime(2026, 3, 7, tzinfo=timezone.utc),
+        )
+
+        assert len(output_path.name.encode("utf-8")) <= 255
+        assert output_path.suffix == ".mp4"
+        monitor.shutdown()
