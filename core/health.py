@@ -21,6 +21,7 @@ __all__ = [
 ]
 
 HEARTBEAT_FILE = "/tmp/rplay-live-dl-heartbeat"
+_FUTURE_MTIME_TOLERANCE_SECONDS = 0.001
 
 
 def touch_heartbeat() -> None:
@@ -51,14 +52,20 @@ def main() -> int:
         print(f"heartbeat unreadable: {exc}", file=sys.stderr)
         return 1
 
-    age = time.time() - mtime
-    if age < 0:
+    now = time.time()
+    future_offset_seconds = mtime - now
+    if future_offset_seconds > _FUTURE_MTIME_TOLERANCE_SECONDS:
         print(
-            f"heartbeat clock skew: mtime in the future by {-age:.0f}s", file=sys.stderr
+            f"heartbeat clock skew: mtime in the future by {future_offset_seconds:.0f}s",
+            file=sys.stderr,
         )
         return 1
-    if age >= max_age:
-        print(f"heartbeat stale: age={age:.0f}s max={max_age}s", file=sys.stderr)
+    heartbeat_age_seconds = now - mtime
+    if heartbeat_age_seconds >= max_age:
+        print(
+            f"heartbeat stale: age={heartbeat_age_seconds:.0f}s max={max_age}s",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
