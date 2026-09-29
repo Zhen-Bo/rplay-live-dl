@@ -35,8 +35,13 @@ from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
 from .logger import bind, clip, setup_logger
+from .orphan_recovery import install_merge_output_without_overwrite
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
-from .utils import merge_ts_files_to_mp4, terminate_child_processes
+from .utils import (
+    fit_filename_component_bytes,
+    merge_ts_files_to_mp4,
+    terminate_child_processes,
+)
 
 __all__ = [
     "LiveStreamMonitor",
@@ -1082,6 +1087,7 @@ class LiveStreamMonitor:
         """Merge one session's raw ts outputs into the final mp4 artifact."""
         ts_files = sorted(merge_job.output_dir.glob(f"{merge_job.session_prefix}*.ts"))
         output_path: Optional[Path] = None
+        temp_path: Optional[Path] = None
 
         try:
             if not ts_files:
@@ -1090,12 +1096,31 @@ class LiveStreamMonitor:
                     f"(prefix={merge_job.session_prefix})"
                 )
 
-            output_path = self._reserve_final_output_path(
+            # Reserve the *base* name only for deriving a stable output stem.
+            # FFmpeg must never write directly to this collision-significant
+            # path: a creator can finish another session while this merge is
+            # running, and ``-y`` would otherwise clobber that recording.
+            base_output_path = self._build_final_output_base_path(
                 creator_name=merge_job.creator_name,
                 title=merge_job.title,
                 stream_start_time=merge_job.stream_start_time,
             )
-            self._run_ffmpeg_merge(ts_files, output_path)
+            temp_path = self._build_merge_temp_path(base_output_path)
+            self._clear_stale_merge_temp(temp_path)
+            self._run_ffmpeg_merge(ts_files, temp_path)
+
+            # A successful ffmpeg exit is not enough to prove an artifact was
+            # produced. Keep the raw inputs when a stub, muxer, or interrupted
+            # process leaves no bytes to install.
+            if not temp_path.is_file() or temp_path.stat().st_size == 0:
+                raise RuntimeError(f"merge produced no output at {temp_path.name}")
+
+            # Install only after ffmpeg is done. The shared recovery helper
+            # uses an atomic hardlink (or O_EXCL copy fallback) and retries a
+            # suffix when another writer claims the name during the merge.
+            output_path = install_merge_output_without_overwrite(
+                self.logger, temp_path, base_output_path
+            )
 
             # The merge succeeded: from here the mp4 is the artifact of record.
             # A locked .ts must neither fail the merge nor reach the except
@@ -1115,7 +1140,7 @@ class LiveStreamMonitor:
             )
 
         except subprocess.TimeoutExpired as exc:
-            self._discard_partial_merge_output(output_path)
+            self._discard_partial_merge_output(temp_path)
             timeout_value = (
                 int(exc.timeout)
                 if exc.timeout is not None
@@ -1126,7 +1151,7 @@ class LiveStreamMonitor:
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
             )
         except Exception as exc:
-            self._discard_partial_merge_output(output_path)
+            self._discard_partial_merge_output(temp_path)
             self.logger.exception(f"Merge failed for session {merge_job.session_key}")
             return MergeFailed(
                 session_key=merge_job.session_key,
@@ -1158,13 +1183,48 @@ class LiveStreamMonitor:
         stream_start_time: datetime,
     ) -> Path:
         """Reserve the next available final mp4 output path."""
+        return StreamDownloader.get_unique_path(
+            self._build_final_output_base_path(
+                creator_name=creator_name,
+                title=title,
+                stream_start_time=stream_start_time,
+            )
+        )
+
+    def _build_final_output_base_path(
+        self,
+        creator_name: str,
+        title: str,
+        stream_start_time: datetime,
+    ) -> Path:
+        """Build the unsuffixed final path used as the install base name."""
         safe_title = sanitize_filename(title, replacement_text="_") or "untitled"
         date_str = stream_start_time.astimezone().strftime("%Y-%m-%d")
         base_dir = Path.cwd() / StreamDownloader.ARCHIVE_DIR / creator_name
         base_dir.mkdir(parents=True, exist_ok=True)
 
-        base_path = base_dir / f"#{creator_name} {date_str} {safe_title}.mp4"
-        return StreamDownloader.get_unique_path(base_path)
+        return fit_filename_component_bytes(
+            base_dir / f"#{creator_name} {date_str} {safe_title}.mp4"
+        )
+
+    @staticmethod
+    def _build_merge_temp_path(base_output_path: Path) -> Path:
+        """Return a same-directory path that is safe for ffmpeg to overwrite."""
+        # Reserve the marker before truncating the base stem. Otherwise a
+        # title near the filesystem limit can cut off ``.merging`` entirely,
+        # making stale-temp inspection and cleanup ambiguous.
+        temp_seed = base_output_path.with_name(f".{base_output_path.stem}.mp4")
+        return fit_filename_component_bytes(temp_seed, appended_suffix=".merging")
+
+    @staticmethod
+    def _clear_stale_merge_temp(temp_path: Path) -> None:
+        """Remove a prior interrupted merge before accepting new output bytes."""
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not clear stale merge output {temp_path.name}: {exc}"
+            ) from exc
 
     def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
         """Merge ts fragments into one mp4 file using ffmpeg concat."""

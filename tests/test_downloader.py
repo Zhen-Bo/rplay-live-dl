@@ -155,6 +155,21 @@ class TestGetUniquePath:
         result = StreamDownloader.get_unique_path(path)
         assert result == tmp_path / "test_1.mp4"
 
+    def test_dangling_symlink_is_treated_as_a_conflict(self, tmp_path, monkeypatch):
+        """Test a dangling symlink cannot be selected for a no-overwrite install."""
+        path = tmp_path / "test.mp4"
+
+        # Simulate ``lexists`` seeing a dangling link while ``Path.exists``
+        # would report False. This works on Windows without symlink privileges.
+        monkeypatch.setattr(
+            "core.downloader.os.path.lexists",
+            lambda candidate: Path(candidate) == path,
+        )
+
+        result = StreamDownloader.get_unique_path(path)
+
+        assert result == tmp_path / "test_1.mp4"
+
     def test_multiple_conflicts_increments_counter(self, tmp_path):
         """Test increments counter for multiple conflicts."""
         path = tmp_path / "test.mp4"

@@ -18,9 +18,10 @@ from typing import Dict, List, Tuple
 
 from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS
 from core.downloader import StreamDownloader
-from core.utils import merge_ts_files_to_mp4
+from core.utils import fit_filename_component_bytes, merge_ts_files_to_mp4
 
 __all__ = [
+    "install_merge_output_without_overwrite",
     "recover_orphaned_sessions",
 ]
 
@@ -110,10 +111,24 @@ def _recover_one_session(
 
     # ffmpeg writes a temp in the same directory so a death mid-merge cannot
     # leave a partial mp4 under a final name, which the suffix policy below
-    # would then read as a real recording. The .mp4 suffix keeps ffmpeg's muxer
-    # inference; a stale temp from an interrupted attempt is overwritten by -y.
-    temp_path = output_dir / f".{final_stem}.recovering.mp4"
+    # would then read as a real recording. Reserve the marker before fitting
+    # the stem, so long names retain ``.recovering.mp4`` and stay within the
+    # filesystem's component byte limit.
+    temp_seed = output_dir / f".{final_stem}.mp4"
+    temp_path = fit_filename_component_bytes(
+        temp_seed, appended_suffix=".recovering"
+    )
     try:
+        try:
+            # A prior process may have been killed after ffmpeg opened this
+            # temp. Never allow those stale bytes to satisfy this run's output
+            # validation when a new merge returns without writing anything.
+            temp_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not clear stale recovery output {temp_path.name}: {exc}"
+            ) from exc
+
         merge_ts_files_to_mp4(
             ts_files,
             temp_path,
@@ -137,7 +152,7 @@ def _recover_one_session(
         # produces two sessions with identical titles in one directory.
         # Reserved at install time rather than before the merge, which can run
         # for hours.
-        output_path = _install_without_overwrite(
+        output_path = install_merge_output_without_overwrite(
             logger, temp_path, output_dir / f"{final_stem}.mp4"
         )
     except Exception as exc:
@@ -168,10 +183,10 @@ def _recover_one_session(
     )
 
 
-def _install_without_overwrite(
+def install_merge_output_without_overwrite(
     logger: logging.Logger, temp_path: Path, base_path: Path
 ) -> Path:
-    """Install the merged mp4 under the first free name, never clobbering one.
+    """Install a validated merge under the first free name, never clobbering one.
 
     Hardlinks are the fast path: creating one is an atomic no-overwrite
     install, and both paths refer to the already validated bytes. Some
@@ -209,7 +224,7 @@ def _install_without_overwrite(
                 # can still salvage the already-validated output.
                 hardlink_supported = False
                 logger.debug(
-                    "Hardlink install unavailable for recovery output "
+                    "Hardlink install unavailable for merge output "
                     f"{candidate.name}: {exc}; using exclusive copy"
                 )
             else:
@@ -262,7 +277,7 @@ def _copy_without_overwrite(
             # claimed name, so a later run will select a suffix instead of
             # overwriting it.
             logger.warning(
-                "Could not remove failed recovery copy "
+                "Could not remove failed merge copy "
                 f"{destination_path.name}: {cleanup_error}"
             )
         raise
@@ -274,5 +289,11 @@ def _discard_partial_output(logger: logging.Logger, temp_path: Path) -> None:
         temp_path.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning(
-            f"Could not remove partial recovery output {temp_path.name}: {exc}"
+            f"Could not remove partial merge output {temp_path.name}: {exc}"
         )
+
+
+# Kept for callers that imported the original private name while this helper
+# was recovery-only. New live and startup merge code uses the descriptive
+# public API above.
+_install_without_overwrite = install_merge_output_without_overwrite

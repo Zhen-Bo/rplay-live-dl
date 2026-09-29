@@ -107,6 +107,38 @@ class TestOrphanRecovery:
 
         assert list(archive.iterdir()) == [ts_file]
 
+    def test_stale_recovery_temp_is_cleared_before_noop_merge(
+        self, archive, monkeypatch
+    ):
+        """Test stale recovery bytes cannot be mistaken for a new merge result."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        stale = archive / ".#Creator 2026-03-06 123.recovering.mp4"
+        stale.write_bytes(b"stale bytes from a killed recovery")
+        _fake_merge(monkeypatch, writes=None)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert list(archive.iterdir()) == [ts_file]
+
+    def test_long_recovery_temp_preserves_marker_and_byte_limit(
+        self, archive, monkeypatch
+    ):
+        """Test a near-limit raw name keeps ``.recovering.mp4`` intact."""
+        final_stem = "x" * 236
+        ts_file = archive / f"20260306_120000_{final_stem}.ts"
+        ts_file.write_bytes(b"ts")
+        captured = []
+        _fake_merge(monkeypatch, captured=captured)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert captured
+        temp_path = captured[0][1]
+        assert temp_path.name.endswith(".recovering.mp4")
+        assert len(temp_path.name.encode("utf-8")) <= 255
+        assert (archive / f"{final_stem}.mp4").exists()
+
     def test_merge_producing_an_empty_output_keeps_the_inputs(
         self, archive, monkeypatch
     ):

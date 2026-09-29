@@ -6,6 +6,7 @@ with support for concurrent downloads and automatic file management.
 """
 
 import logging
+import os
 import re
 import threading
 import time
@@ -338,7 +339,10 @@ class StreamDownloader:
             RuntimeError: If more than MAX_DUPLICATE_FILES duplicates exist
         """
         base_path = fit_filename_component_bytes(base_path, max_bytes=max_bytes)
-        if not base_path.exists():
+        # ``Path.exists()`` follows symlinks and returns False for a dangling
+        # link. Treat that link as occupied: the no-overwrite install path may
+        # race with it, and repeatedly selecting it would spin on FileExistsError.
+        if not os.path.lexists(base_path):
             return base_path
 
         counter = 1
@@ -349,7 +353,7 @@ class StreamDownloader:
                 f"_{counter}",
                 max_bytes=max_bytes,
             )
-            if not new_path.exists():
+            if not os.path.lexists(new_path):
                 return new_path
             counter += 1
             # Safety limit to prevent infinite loop
