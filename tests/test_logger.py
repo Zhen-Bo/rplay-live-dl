@@ -76,6 +76,40 @@ class TestSetupLogger:
         assert logger.level == logging.DEBUG
         assert is_ytdlp_internal_logging_enabled() is True
 
+    def test_configure_logging_applies_rotation_settings(self, tmp_path, monkeypatch):
+        """Validated EnvConfig values control handlers and cleanup defaults."""
+        import core.logger as logger_module
+
+        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
+        config = EnvConfig(
+            user_oid="oid",
+            auth_token="token",
+            log_max_size_mb=7,
+            log_backup_count=3,
+            log_retention_days=42,
+        )
+        configure_logging(config)
+
+        logger_name = "test_logger_env_rotation"
+        logger = setup_logger(logger_name, log_to_console=False)
+        try:
+            handler = next(
+                h for h in logger.handlers if isinstance(h, RotatingFileHandler)
+            )
+            assert handler.maxBytes == 7 * 1024 * 1024
+            assert handler.backupCount == 3
+        finally:
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
+
+        # The retention value is also sourced from the same validated config.
+        old_file = tmp_path / "old.log"
+        old_file.write_text("old")
+        old_time = time.time() - (43 * 24 * 60 * 60)
+        os.utime(old_file, (old_time, old_time))
+        assert cleanup_old_logs() == 1
+
 
 class TestGetLogsDir:
     """Tests for get_logs_dir function."""

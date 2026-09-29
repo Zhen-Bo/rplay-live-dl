@@ -10,7 +10,6 @@ Provides a unified logging system with:
 """
 
 import logging
-import os
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -48,27 +47,39 @@ __all__ = [
 DEFAULT_LOG_LEVEL = logging.getLevelNamesMapping()[DEFAULT_LOG_LEVEL_NAME]
 
 # Process-wide settings; start at constants defaults, overridden by configure_logging.
+# Rotation values are deliberately configured here rather than read from the
+# process environment by each handler.  EnvConfig is the single place where
+# environment values are parsed and validated, and startup calls
+# configure_logging() only after that validation succeeds.
 _configured_log_level: int = DEFAULT_LOG_LEVEL
 _configured_ytdlp_internal: bool = DEFAULT_LOG_YTDLP_INTERNAL
+_configured_log_max_size_mb: int = DEFAULT_LOG_MAX_SIZE_MB
+_configured_log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
+_configured_log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS
 
 
 def _get_log_max_bytes() -> int:
-    return int(os.getenv("LOG_MAX_SIZE_MB", str(DEFAULT_LOG_MAX_SIZE_MB))) * 1024 * 1024
+    return _configured_log_max_size_mb * 1024 * 1024
 
 
 def _get_log_backup_count() -> int:
-    return int(os.getenv("LOG_BACKUP_COUNT", str(DEFAULT_LOG_BACKUP_COUNT)))
+    return _configured_log_backup_count
 
 
 def _get_log_retention_days() -> int:
-    return int(os.getenv("LOG_RETENTION_DAYS", str(DEFAULT_LOG_RETENTION_DAYS)))
+    return _configured_log_retention_days
 
 
 def configure_logging(env: "EnvConfig") -> None:
     """Apply validated env log settings as process-wide logging configuration."""
     global _configured_log_level, _configured_ytdlp_internal
+    global _configured_log_max_size_mb, _configured_log_backup_count
+    global _configured_log_retention_days
     _configured_log_level = logging.getLevelNamesMapping()[env.log_level]
     _configured_ytdlp_internal = env.log_ytdlp_internal
+    _configured_log_max_size_mb = env.log_max_size_mb
+    _configured_log_backup_count = env.log_backup_count
+    _configured_log_retention_days = env.log_retention_days
 
 
 def is_ytdlp_internal_logging_enabled() -> bool:
@@ -328,7 +339,8 @@ def cleanup_old_logs(retention_days: Optional[int] = None) -> int:
     Remove log files older than the specified retention period.
 
     Args:
-        retention_days: Number of days to retain log files (default from env or 30)
+        retention_days: Number of days to retain log files (configured
+            EnvConfig retention, or explicit argument)
 
     Returns:
         int: Number of files removed
