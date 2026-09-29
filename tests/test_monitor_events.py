@@ -537,13 +537,13 @@ def test_shutdown_returns_within_budget_when_merge_never_finishes(
     mock_api.close.assert_not_called()
 
 
-def _live_stream(creator_oid, stream_oid="stream-1"):
+def _live_stream(creator_oid, stream_oid="stream-1", stream_start_time=None):
     """Build a live-stream stand-in the monitor will accept as recordable."""
     stream = MagicMock()
     stream.oid = stream_oid
     stream.creator_oid = creator_oid
     stream.stream_state = StreamState.LIVE
-    stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
+    stream.stream_start_time = stream_start_time or datetime(2026, 3, 6, 12, 0, 0)
     stream.title = f"Stream {creator_oid}"
     return stream
 
@@ -692,6 +692,97 @@ def test_concurrent_failures_merge_into_one_extra_poll(repoll_env):
     # One re-poll re-reads the whole live list, so two failures must not buy
     # two polls on top of the initial one.
     assert mock_api.get_livestream_status.call_count == 2
+    monitor.shutdown()
+
+
+def test_repeated_failure_enters_creator_cooldown_and_other_creator_can_retry(
+    repoll_env,
+):
+    """A no-output-style failure is throttled per creator after one fast retry."""
+    monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+    first = _live_stream("creator1")
+    second = _live_stream("creator2")
+    with monitor._state_lock:
+        monitor._reset_download_retry_for_new_stream_locked(first)
+        monitor._reset_download_retry_for_new_stream_locked(second)
+
+    with patch("core.live_stream_monitor.monotonic", return_value=100.0):
+        assert monitor._record_download_failure("creator1") is True
+        assert monitor._record_download_failure("creator1") is False
+        assert monitor._should_attempt_download(first) is False
+        assert monitor._should_attempt_download(second) is True
+
+    with patch("core.live_stream_monitor.monotonic", return_value=129.9):
+        assert monitor._should_attempt_download(first) is False
+    with patch("core.live_stream_monitor.monotonic", return_value=130.0):
+        assert monitor._should_attempt_download(first) is True
+    monitor.shutdown()
+
+
+def test_late_failure_from_previous_stream_does_not_consume_new_budget(repoll_env):
+    """A stale downloader event cannot throttle or re-poll a new stream."""
+    monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+    old_stream = _live_stream("creator1", "old")
+    new_stream = _live_stream(
+        "creator1", "new", datetime(2026, 3, 6, 13, 0, 0)
+    )
+    monitor._update_creator_stream_state(old_stream)
+    session = monitor._get_or_create_session(
+        old_stream,
+        "Creator1",
+        datetime(2026, 3, 6, 12, 1, 0),
+    )
+    monitor._update_creator_stream_state(new_stream)
+    with patch.object(monitor, "_request_retry_poll") as request_retry:
+        monitor._handle_raw_download_failed(
+            RawDownloadFailed(session_key=session.session_key, error_message="late")
+        )
+    request_retry.assert_not_called()
+    assert monitor._download_retry_failures == {}
+    monitor.shutdown()
+
+
+def test_late_failure_ignored_when_new_stream_is_in_cooldown(repoll_env):
+    """An observed stream switch updates the stale marker before start is allowed."""
+    monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+    old_stream = _live_stream("creator1", "old")
+    new_stream = _live_stream(
+        "creator1", "new", datetime(2026, 3, 6, 13, 0, 0)
+    )
+    with monitor._state_lock:
+        monitor._reset_download_retry_for_new_stream_locked(old_stream)
+        monitor._record_download_failure("creator1")
+        monitor._record_download_failure("creator1")
+    # The poll observes the new stream, but its cooldown prevents _start_download.
+    with patch.object(monitor, "_start_download") as start_download:
+        monitor._process_live_stream(new_stream)
+    start_download.assert_not_called()
+
+    session = monitor._get_or_create_session(
+        old_stream,
+        "Creator1",
+        datetime(2026, 3, 6, 12, 1, 0),
+    )
+    with patch.object(monitor, "_request_retry_poll") as request_retry:
+        monitor._handle_raw_download_failed(
+            RawDownloadFailed(session_key=session.session_key, error_message="late")
+        )
+    request_retry.assert_not_called()
+    assert monitor._download_retry_failures == {}
+    monitor.shutdown()
+
+
+def test_success_clears_download_retry_budget(repoll_env):
+    """A later successful raw completion re-arms the creator for its stream."""
+    monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+    stream = _live_stream("creator1")
+    with monitor._state_lock:
+        monitor._reset_download_retry_for_new_stream_locked(stream)
+        monitor._record_download_failure("creator1")
+        monitor._record_download_failure("creator1")
+        monitor._clear_download_retry_locked("creator1")
+    assert monitor._should_attempt_download(stream) is True
+    assert monitor._download_retry_failures == {}
     monitor.shutdown()
 
 

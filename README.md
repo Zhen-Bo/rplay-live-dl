@@ -286,6 +286,7 @@ The v2 runtime uses a session-aware download pipeline.
    - yt-dlp writes raw outputs as `.ts` directly into `archive/<creator>/`
    - each download task uses a `10`-second socket timeout
    - transient task failures automatically retry up to `3` attempts total with exponential backoff
+   - after a raw task failure, the monitor permits one immediate recovery poll per creator; repeated failures are throttled with a per-creator cooldown (30 seconds, doubling to a 5-minute cap) so a no-output failure cannot create a hot retry loop
    - `HTTP 404` on the stream playlist is retried with exponential backoff before the session is marked blocked
    - `HTTP 403` is still treated as immediate blocked/private access
    - `HTTP 401` is treated as an authentication failure instead of a blocked session
