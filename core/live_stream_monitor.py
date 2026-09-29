@@ -1112,14 +1112,22 @@ class LiveStreamMonitor:
             # A successful ffmpeg exit is not enough to prove an artifact was
             # produced. Keep the raw inputs when a stub, muxer, or interrupted
             # process leaves no bytes to install.
-            if not temp_path.is_file() or temp_path.stat().st_size == 0:
-                raise RuntimeError(f"merge produced no output at {temp_path.name}")
+            self._validate_merge_output(temp_path, "merge produced no output")
 
             # Install only after ffmpeg is done. The shared recovery helper
             # uses an atomic hardlink (or O_EXCL copy fallback) and retries a
             # suffix when another writer claims the name during the merge.
             output_path = install_merge_output_without_overwrite(
                 self.logger, temp_path, base_output_path
+            )
+
+            # The installer may use a filesystem-specific copy fallback. Do
+            # not delete the only recoverable inputs until the final path is
+            # present and non-empty as well. This also keeps a broken artifact
+            # from being mistaken for a completed recording after a copy or
+            # external filesystem failure.
+            self._validate_merge_output(
+                output_path, "installed merge output is invalid"
             )
 
             # The merge succeeded: from here the mp4 is the artifact of record.
@@ -1141,6 +1149,8 @@ class LiveStreamMonitor:
 
         except subprocess.TimeoutExpired as exc:
             self._discard_partial_merge_output(temp_path)
+            if output_path is not None and output_path != temp_path:
+                self._discard_partial_merge_output(output_path)
             timeout_value = (
                 int(exc.timeout)
                 if exc.timeout is not None
@@ -1152,11 +1162,27 @@ class LiveStreamMonitor:
             )
         except Exception as exc:
             self._discard_partial_merge_output(temp_path)
+            if output_path is not None and output_path != temp_path:
+                self._discard_partial_merge_output(output_path)
             self.logger.exception(f"Merge failed for session {merge_job.session_key}")
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=str(exc),
             )
+
+    @staticmethod
+    def _validate_merge_output(output_path: Path, error_prefix: str) -> None:
+        """Require a regular, non-empty merge artifact before raw cleanup."""
+        try:
+            is_file = output_path.is_file()
+            size = output_path.stat().st_size if is_file else 0
+        except OSError as exc:
+            raise RuntimeError(
+                f"{error_prefix} at {output_path.name}: {exc}"
+            ) from exc
+
+        if not is_file or size == 0:
+            raise RuntimeError(f"{error_prefix} at {output_path.name}")
 
     def _discard_partial_merge_output(self, output_path: Optional[Path]) -> None:
         """

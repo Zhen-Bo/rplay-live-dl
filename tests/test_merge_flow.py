@@ -264,6 +264,55 @@ class TestMergeFlow:
         assert not list(output_dir.glob("*.mp4"))
         monitor.shutdown()
 
+    @pytest.mark.parametrize(
+        "installed_bytes",
+        [b"", None],
+        ids=["empty-installed-output", "missing-installed-output"],
+    )
+    def test_invalid_installed_output_keeps_raw_inputs(
+        self, tmp_path, monkeypatch, installed_bytes
+    ):
+        """Test raw inputs survive when the final install is not usable."""
+        monkeypatch.chdir(tmp_path)
+        output_dir = tmp_path / "archive" / "Creator"
+        output_dir.mkdir(parents=True)
+        prefix = "20260306_120000_"
+        ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+
+        def fake_merge(ts_files, output_path):
+            output_path.write_bytes(b"mp4")
+
+        def fake_install(logger, temp_path, base_path):
+            if installed_bytes is not None:
+                base_path.write_bytes(installed_bytes)
+            temp_path.unlink()
+            return base_path
+
+        monitor._run_ffmpeg_merge = fake_merge
+        monkeypatch.setattr(
+            "core.live_stream_monitor.install_merge_output_without_overwrite",
+            fake_install,
+        )
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:00:00",
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                output_dir=output_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeFailed)
+        assert "installed merge output is invalid" in event.error_message
+        assert ts_file.exists()
+        assert not (output_dir / "#Creator 2026-03-06 123.mp4").exists()
+        monitor.shutdown()
+
     def test_failed_merge_leaves_ts_files_in_output_dir(self, tmp_path, monkeypatch):
         """Test failed merges leave raw ts files in place — no _failed/ directory."""
         monkeypatch.chdir(tmp_path)
