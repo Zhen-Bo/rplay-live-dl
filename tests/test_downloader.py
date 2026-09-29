@@ -173,6 +173,35 @@ class TestGetUniquePath:
         with pytest.raises(RuntimeError, match="Too many duplicate files"):
             StreamDownloader.get_unique_path(path)
 
+    def test_long_filename_is_limited_in_utf8_bytes(self, tmp_path):
+        """Long Unicode names are shortened before filesystem inspection."""
+        path = tmp_path / ("前綴_" + "標題" * 200 + ".ts")
+
+        result = StreamDownloader.get_unique_path(path)
+
+        assert len(result.name.encode("utf-8")) <= 255
+        assert result.suffix == ".ts"
+
+    def test_collision_suffix_is_preserved_with_long_filename(self, tmp_path):
+        """A duplicate counter remains present after byte-aware shortening."""
+        path = tmp_path / ("前綴_" + "標題" * 200 + ".ts")
+        StreamDownloader.get_unique_path(path).touch()
+
+        result = StreamDownloader.get_unique_path(path)
+
+        assert result.stem.endswith("_1")
+        assert len(result.name.encode("utf-8")) <= 255
+
+    def test_collision_suffix_respects_custom_byte_limit(self, tmp_path):
+        """Collision names stay safe for a raw .ts.part download."""
+        path = tmp_path / ("前綴_" + "標題" * 200 + ".ts")
+        StreamDownloader.get_unique_path(path, max_bytes=250).touch()
+
+        result = StreamDownloader.get_unique_path(path, max_bytes=250)
+
+        assert result.stem.endswith("_1")
+        assert len(f"{result.name}.part".encode("utf-8")) <= 255
+
 
 class TestYtDlpLoggerBridge:
     """Tests for filtering noisy yt-dlp internal logs."""
@@ -375,6 +404,24 @@ class TestDownloadMethod:
         downloader.download("http://example.com/stream.m3u8", "Test Stream")
         assert downloader._current_output_path is not None
         assert downloader._current_output_path.suffix == ".mp4"
+
+    @patch.object(StreamDownloader, "_download_worker")
+    def test_download_reserves_space_for_part_suffix(
+        self, mock_worker, tmp_path, monkeypatch
+    ):
+        """Raw output leaves room for yt-dlp's temporary .part suffix."""
+        monkeypatch.chdir(tmp_path)
+        downloader = StreamDownloader(
+            "TestCreator",
+            output_extension=".ts",
+        )
+
+        downloader.download("http://example.com/stream.m3u8", "標題" * 200)
+        downloader.download_thread.join(timeout=1)
+
+        output_path = downloader._current_output_path
+        assert output_path is not None
+        assert len(f"{output_path.name}.part".encode("utf-8")) <= 255
 
     @patch.object(StreamDownloader, "_download_worker")
     def test_download_sets_start_time(self, mock_worker, tmp_path, monkeypatch):

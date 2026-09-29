@@ -70,6 +70,18 @@ class TestHealthCLI:
         assert main() == 1
         assert "clock skew" in capsys.readouterr().err
 
+    def test_subsecond_future_mtime_is_healthy(self, tmp_path, monkeypatch):
+        """Tiny filesystem timestamp rounding does not make a fresh file unhealthy."""
+        path = tmp_path / "heartbeat"
+        monkeypatch.setattr(health, "HEARTBEAT_FILE", str(path))
+        touch_heartbeat()
+
+        now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: now)
+        os.utime(path, (now + 0.0005, now + 0.0005))
+
+        assert main() == 0
+
     def test_threshold_respects_interval_env(self, tmp_path, monkeypatch, capsys):
         """Staleness threshold scales with INTERVAL from the environment."""
         path = tmp_path / "heartbeat"

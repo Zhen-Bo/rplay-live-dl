@@ -1164,17 +1164,7 @@ class LiveStreamMonitor:
         base_dir.mkdir(parents=True, exist_ok=True)
 
         base_path = base_dir / f"#{creator_name} {date_str} {safe_title}.mp4"
-        if not base_path.exists():
-            return base_path
-
-        counter = 1
-        while True:
-            candidate = (
-                base_dir / f"#{creator_name} {date_str} {safe_title}_{counter}.mp4"
-            )
-            if not candidate.exists():
-                return candidate
-            counter += 1
+        return StreamDownloader.get_unique_path(base_path)
 
     def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
         """Merge ts fragments into one mp4 file using ffmpeg concat."""

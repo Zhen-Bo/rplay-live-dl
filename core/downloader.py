@@ -32,7 +32,11 @@ from core.constants import (
     DEFAULT_MAX_RETRIES,
 )
 from core.logger import bind, is_ytdlp_internal_logging_enabled, setup_logger
-from core.utils import format_file_size
+from core.utils import (
+    MAX_FILENAME_COMPONENT_BYTES,
+    fit_filename_component_bytes,
+    format_file_size,
+)
 from models.download import (
     RawDownloadAuthFailed,
     RawDownloadCompleted,
@@ -45,6 +49,10 @@ __all__ = [
 
 # Playlist URLs embed key2; mask before any yt-dlp message reaches the logger.
 _KEY2_QUERY_RE = re.compile(r"key2=[^&\s\"']+")
+# yt-dlp appends this suffix while downloading raw output.
+_DOWNLOAD_FILENAME_MAX_BYTES = MAX_FILENAME_COMPONENT_BYTES - len(
+    ".part".encode("utf-8")
+)
 
 
 class _RetryableDownloadTaskError(Exception):
@@ -179,7 +187,10 @@ class StreamDownloader:
         output_path = self._build_output_path(safe_title)
 
         # Ensure unique file path and create directories
-        output_path = self.get_unique_path(output_path)
+        output_path = self.get_unique_path(
+            output_path,
+            max_bytes=_DOWNLOAD_FILENAME_MAX_BYTES,
+        )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Store current download info
@@ -308,12 +319,17 @@ class StreamDownloader:
         return options
 
     @classmethod
-    def get_unique_path(cls, base_path: Path) -> Path:
+    def get_unique_path(
+        cls,
+        base_path: Path,
+        max_bytes: int = MAX_FILENAME_COMPONENT_BYTES,
+    ) -> Path:
         """
         Generate a unique file path by appending a counter if file exists.
 
         Args:
             base_path: Initial desired file path
+            max_bytes: Maximum UTF-8 byte length for the filename component
 
         Returns:
             Unique file path that doesn't exist
@@ -321,22 +337,24 @@ class StreamDownloader:
         Raises:
             RuntimeError: If more than MAX_DUPLICATE_FILES duplicates exist
         """
+        base_path = fit_filename_component_bytes(base_path, max_bytes=max_bytes)
         if not base_path.exists():
             return base_path
 
-        directory = base_path.parent
-        stem = base_path.stem
-        suffix = base_path.suffix
         counter = 1
 
         while True:
-            new_path = directory / f"{stem}_{counter}{suffix}"
+            new_path = fit_filename_component_bytes(
+                base_path,
+                f"_{counter}",
+                max_bytes=max_bytes,
+            )
             if not new_path.exists():
                 return new_path
             counter += 1
             # Safety limit to prevent infinite loop
             if counter > cls.MAX_DUPLICATE_FILES:
-                raise RuntimeError(f"Too many duplicate files for {stem}")
+                raise RuntimeError(f"Too many duplicate files for {base_path.stem}")
 
     @staticmethod
     def _has_sibling_fragment_outputs(output_path: Path) -> bool:
