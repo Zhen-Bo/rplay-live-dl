@@ -5,53 +5,181 @@ import math
 import re
 import time
 from collections import OrderedDict
+from datetime import datetime
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from typing import Iterable, Optional
 
 import requests
 
+from core.logger import redact_sensitive_text
+from core.constants import RPLAY_PROFILE_PHOTO_BASE_URL, RPLAY_SITE_URL
+
 from models.notification import EVENT_KINDS, Notification
 
-_LABELS = {
-    "live": "Live stream detected",
-    "blocked": "Stream inaccessible (possibly paid/private)",
-    "auth_failed": "RPlay credentials rejected",
-    "download_failed": "Recording repeatedly failed",
-    "merge_failed": "Merge failed; raw recordings retained",
-    "disk_warning": "Disk capacity warning",
-    "disk_critical": "Disk capacity CRITICAL",
-    "disk_recovered": "Disk capacity recovered",
+_CARD_COPY = {
+    "live": {
+        "title": "Live now",
+        "description": "",
+        "color": 0xE11D48,
+        "action": "",
+    },
+    "offline": {
+        "title": "Stream ended",
+        "description": "Recording finalization may still be in progress.",
+        "color": 0x64748B,
+        "action": "",
+    },
+    "blocked": {
+        "title": "Stream access restricted",
+        "description": "",
+        "color": 0xF59E0B,
+        "action": "Check subscription or viewing permissions. No automatic retry for this stream.",
+    },
+    "auth_failed": {
+        "title": "🔑 Authentication failed",
+        "description": "",
+        "color": 0xEF4444,
+        "action": "Update `REFRESH_TOKEN`, check `USER_OID`, and restart with the updated settings.",
+    },
+    "download_failed": {
+        "title": "Recording retries delayed",
+        "description": "",
+        "color": 0x3B82F6,
+        "action": "Retrying automatically while live. Check logs if failures continue.",
+    },
+    "merge_failed": {
+        "title": "Recording merge incomplete",
+        "description": "Available raw fragments are kept.",
+        "color": 0xA855F7,
+        "action": "Check logs, fix the cause, then restart to retry.",
+    },
+    "disk_warning": {
+        "title": "Disk space low",
+        "description": "",
+        "color": 0xEAB308,
+        "action": "Free up space soon.",
+    },
+    "disk_critical": {
+        "title": "Disk space critically low",
+        "description": "",
+        "color": 0xDC2626,
+        "action": "Free up space now. Recordings are not stopped automatically; writes may fail.",
+    },
+    "merge_completed": {
+        "title": "Merge complete",
+        "description": "Recording saved as MP4.",
+        "color": 0x14B8A6,
+        "action": "",
+    },
 }
 
 
-def format_discord_message(event: Notification, secrets: Iterable[str] = ()) -> dict:
-    """The single place to change presentation later; never enables mentions."""
-    lines = [f"[rplay-live-dl] {_LABELS[event.kind]}"]
-    for label, value in (
-        ("Creator", event.creator),
-        ("Title", event.title),
-        ("Stream started (UTC)", event.started_at),
-        ("Details", event.detail),
-    ):
-        if value:
-            lines.append(f"{label}: {value}")
-    text = "\n".join(lines)
-    for secret in sorted((s for s in secrets if s), key=len, reverse=True):
+def _safe_embed_value(text: str, secrets: tuple[str, ...], limit: int) -> str:
+    for secret in secrets:
         text = text.replace(secret, "[REDACTED]")
-    # No authenticated URLs or arbitrary upstream exception bodies in messages.
+    text = redact_sensitive_text(text)
     text = re.sub(r"https?://[^\s]+", "[URL REDACTED]", text, flags=re.IGNORECASE)
-    text = re.sub(
-        r"(?i)(key2|refresh[_-]?token|access[_-]?token)\s*[=:]\s*[^\s&]+",
-        r"\1=[REDACTED]",
-        text,
-    )
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
-    # Bound UTF-16 units too, including emoji; leave headroom below 2000.
-    text = text.encode("utf-16-le", errors="replace")[:3800].decode(
-        "utf-16-le", errors="ignore"
+    # Creator names and stream titles are data, not Markdown or mention markup.
+    text = re.sub(r"([\\`*_~|<>\[\]])", lambda match: "\\" + match.group(0), text)
+    text = text.replace("@", "@\u200b").strip()
+    encoded = text.encode("utf-16-le", errors="replace")
+    if len(encoded) <= limit * 2:
+        return text
+    return (
+        encoded[: (limit - 1) * 2].decode("utf-16-le", errors="ignore").rstrip("\\")
+        + "…"
     )
-    return {"content": text, "allowed_mentions": {"parse": []}, "flags": 4}
+
+
+def _stream_started_value(value: str, secrets: tuple[str, ...]) -> str:
+    try:
+        started = datetime.fromisoformat(value)
+        if started.tzinfo is not None:
+            return f"<t:{int(started.timestamp())}:f>"
+    except (ValueError, OverflowError, OSError):
+        pass
+    return _safe_embed_value(value, secrets, 128)
+
+
+def format_discord_message(event: Notification, secrets: Iterable[str] = ()) -> dict:
+    """One rich embed per event; copy and layout can change without touching delivery."""
+    card_copy = _CARD_COPY[event.kind]
+    secret_values = tuple(
+        sorted({value for value in secrets if value}, key=len, reverse=True)
+    )
+    fields = []
+    started = _stream_started_value(event.started_at, secret_values)
+    if started and event.kind == "live":
+        fields.append({"name": "🕒 Started", "value": started, "inline": True})
+    if event.kind.startswith("disk_") and event.free_bytes is not None:
+        fields.append(
+            {
+                "name": "💾 Free space",
+                "value": f"**{event.free_bytes / 1024**3:,.2f} GiB**",
+                "inline": False,
+            }
+        )
+    threshold = {
+        "disk_warning": ("⚠️ Warning level", event.warning_bytes),
+        "disk_critical": ("🚨 Critical level", event.critical_bytes),
+    }.get(event.kind)
+    if threshold is not None and threshold[1] is not None:
+        fields.append(
+            {
+                "name": threshold[0],
+                "value": f"{threshold[1] / 1024**3:,.2f} GiB",
+                "inline": False,
+            }
+        )
+    stream_title = _safe_embed_value(event.title, secret_values, 1024)
+    if event.kind == "merge_completed" and event.output_file:
+        fields.append(
+            {
+                "name": "File",
+                "value": _safe_embed_value(event.output_file, secret_values, 1024),
+                "inline": False,
+            }
+        )
+    guidance = " ".join(
+        text for text in (card_copy["description"], card_copy["action"]) if text
+    ).replace(". ", ".\n")
+    description = "\n\n".join(
+        text
+        for text in (
+            f"**🎬 Stream title**\n**{stream_title}**" if stream_title else "",
+            guidance,
+        )
+        if text
+    )
+    embed = {
+        "title": card_copy["title"],
+        "color": card_copy["color"],
+    }
+    if description:
+        embed["description"] = description
+    if fields:
+        embed["fields"] = fields
+    creator = _safe_embed_value(event.creator, secret_values, 256)
+    if creator:
+        embed["author"] = {"name": creator}
+    # Observed public creator routes only; never accept arbitrary or signed URLs.
+    if re.fullmatch(r"[0-9a-fA-F]{24}", event.creator_oid):
+        creator_oid = event.creator_oid.lower()
+        avatar_url = (
+            f"{RPLAY_PROFILE_PHOTO_BASE_URL}/{creator_oid}-small/"
+            "cdn-cgi/image/width=128,height=128,fit=cover,quality=90,format=auto"
+        )
+        embed["thumbnail"] = {"url": avatar_url}
+        if creator:
+            embed["author"]["icon_url"] = avatar_url
+        if event.kind in {"live", "blocked"}:
+            stream_url = f"{RPLAY_SITE_URL}/live/{creator_oid}"
+            embed["url"] = stream_url
+    # Do not set SUPPRESS_EMBEDS (4): it would hide these cards.
+    # Bounded fields above keep even worst-case cards well below 6000 characters.
+    return {"embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
 class DiscordNotifier:

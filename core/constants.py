@@ -1,6 +1,7 @@
 """Shared constants used across modules."""
 
 RPLAY_SITE_URL = "https://rplay.live"
+RPLAY_PROFILE_PHOTO_BASE_URL = "https://pb3.rplay.live/profilePhoto"
 DEFAULT_RPLAY_API_BASE_URL = "https://api.rplay.live"
 
 DEFAULT_USER_AGENT = (
@@ -42,6 +43,7 @@ DEFAULT_INTERVAL = 60
 
 __all__ = [
     "RPLAY_SITE_URL",
+    "RPLAY_PROFILE_PHOTO_BASE_URL",
     "DEFAULT_RPLAY_API_BASE_URL",
     "DEFAULT_USER_AGENT",
     "DEFAULT_HTTP_HEADERS",

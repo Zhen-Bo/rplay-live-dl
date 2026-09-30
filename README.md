@@ -312,30 +312,87 @@ message sending. Never commit it or paste it into logs. Only HTTPS Discord webho
 URLs are accepted; URL query parameters (including thread targets) are not supported.
 
 `DISCORD_WEBHOOK_EVENTS` is a comma-separated selection (all events below by
-default); an empty value disables all events. Messages are plain text, with
-mentions and automatic link embeds disabled. Message presentation is isolated in
-`core/notifications.py::format_discord_message`; event data lives in
-`models/notification.py`. No changes to the recorder are needed to revise the format.
+default); an empty value disables all events. Each notification is one English
+Discord rich-embed card: a short title, status color, relevant fields, and a next
+step when action is useful. Main event titles have no emoji except
+`🔑 Authentication failed`; field headings use contextual icons. Each event has
+a distinct side color: live is rose, ended streams are slate gray, restricted
+access is amber, authentication failure is coral red, retries are blue, incomplete
+merges are violet, completed merges are teal, low capacity is yellow, and
+critical capacity is deep red.
+No bot or extra credentials are required.
+
+Creator and stream title appear when available; only live cards include the
+stream start time. Valid
+timezone-aware stream times use Discord's native timestamps, displayed in the
+reader's timezone and locale. The creator appears in an author row with a small
+avatar; a larger avatar thumbnail appears at the right. Main embed titles retain
+the event name, such as `Live now`, `Stream ended`, or `Merge complete`, without
+emoji (apart from the authentication exception). The actual stream title appears
+in bold in the body under the bold `🎬 Stream title` label.
+Only live and restricted-access cards link the main event title to the public
+stream page. Stream-name text and creator names are not hyperlinks. Ended-stream, retry,
+merge-failure, and merge-completion cards keep the avatars but no headline link.
+Both live and ended-stream cards use the creator's avatar. Disk
+cards stack emoji-labelled remaining free space above the current event's
+configured warning or critical level in GiB, rather than placing them side by side.
+Absent values are omitted, not shown
+as zero. Cards omit diagnostic context, unrelated threshold settings, repeated status
+explanations, and footer timestamps. Errors include concise recovery guidance
+directly in the body rather than a separate next-step field, with each sentence
+on its own line (decimals and filenames stay intact). Merge-completion cards
+include the saved filename, not the full local path. Live/ended cards
+report stream state, not recording or merge completion. Disk alerts still use
+the configured hysteresis; recovery does not restart skipped merges or prove
+recordings are healthy. Active recordings are not stopped by disk alerts.
+
+Avatar URLs use the public `pb3.rplay.live/profilePhoto/<creator ID>-small/`
+route observed on RPlay's creator cards. Only validated 24-digit hexadecimal
+creator IDs produce links; arbitrary image URLs and signed stream URLs are not
+accepted. Discord fetches the public image without RPlay credentials. If identity
+is unavailable (for example, old orphan recovery), the image is omitted. The
+recorder does not fetch a profile for every poll or scrape browser login data.
+
+Edit `_CARD_COPY` in `core/notifications.py` for English titles, descriptions,
+colors, and actions; edit `format_discord_message` there for layout. Event data
+lives in `models/notification.py`. Delivery, retries, and deduplication are unchanged.
+Dynamic fields are redacted, Markdown-escaped, and truncated to embed field limits;
+the bounded layout stays below Discord's 6,000-character aggregate limit. Mentions
+remain disabled. Authenticated URLs are never included; `SUPPRESS_EMBEDS` is not
+set, so it does not hide the cards.
 
 | Event | Trigger |
 | --- | --- |
 | `live` | A monitored RPlay stream is first observed, including already-live streams at startup; not proof recording started |
+| `offline` | A previously observed RPlay stream is absent from two successful status polls, or is replaced by a new stream start time; not proof recording/merge completed |
 | `blocked` | Download access is denied under the existing 403/404 retry policy; possibly paid/private, not a confirmed paid classification |
 | `auth_failed` | Startup or runtime RPlay credentials are rejected |
 | `download_failed` | Repeated raw download failures enter the existing retry cooldown |
 | `merge_failed` | Normal merge or startup recovery fails, including insufficient merge space; raw inputs retained |
+| `merge_completed` | Normal merge or startup recovery installs a validated, nonempty MP4; includes its filename |
 | `disk_warning` | Archive space enters warning level, de-escalates from critical, or reminder is due |
 | `disk_critical` | Archive space enters critical level or reminder is due |
-| `disk_recovered` | Space returns above warning plus the recovery margin |
+
+Disk recovery still clears the internal alert state and is logged, but sends no
+webhook. The retired `disk_recovered` event is ignored in older configurations.
+If you explicitly set `DISCORD_WEBHOOK_EVENTS`, add `merge_completed` to receive
+completion notices; otherwise it is enabled by default.
 
 For capacity alerts only:
 
 ```dotenv
-DISCORD_WEBHOOK_EVENTS=disk_warning,disk_critical,disk_recovered,merge_failed
+DISCORD_WEBHOOK_EVENTS=disk_warning,disk_critical
 ```
 
 Live detection is deduplicated by creator and stream start time, independent of
-title changes. Other errors are deduplicated when queued (one hour per event/key);
+title changes. Ended-stream notices retain the last observed title and identity.
+An API failure does not count as an offline poll; removing a creator from the
+monitor list does not send an ended notice. Detection is polling-based, not an
+exact end timestamp. A new start time closes the prior stream before its new
+live notice. This changes notifications only, not the recording shutdown policy.
+If you already set `DISCORD_WEBHOOK_EVENTS`, add `offline` to enable ended notices
+and recreate the container; existing environment files are not edited automatically.
+Other errors are deduplicated when queued (one hour per event/key);
 disk reminders follow `DISK_REMINDER_SECONDS` instead. All state is in memory and
 resets on restart. Startup can therefore notify again about ongoing streams.
 

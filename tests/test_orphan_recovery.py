@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -64,6 +65,38 @@ def _fake_merge(
 
 class TestOrphanRecovery:
     """Recovery of session .ts files left behind by an interrupted run."""
+
+    @pytest.mark.parametrize(
+        "writes,expected",
+        [(b"mp4", "merge_completed"), (b"", "merge_failed"), (None, "merge_failed")],
+    )
+    def test_notification_matches_validated_recovery_result(
+        self, archive, monkeypatch, writes, expected
+    ):
+        raw = _write_raw(archive)
+        _fake_merge(monkeypatch, writes=writes)
+        notifier = Mock()
+        recover_orphaned_sessions(LOGGER, notifier=notifier)
+        notifier.notify.assert_called_once()
+        notice = notifier.notify.call_args.args[0]
+        assert notice.kind == expected
+        if expected == "merge_completed":
+            assert (archive / notice.output_file).read_bytes() == b"mp4"
+            assert notice.creator == "Creator"
+            assert not raw.exists()
+        else:
+            assert raw.exists()
+
+    def test_notification_failure_does_not_undo_successful_recovery(
+        self, archive, monkeypatch
+    ):
+        _write_raw(archive)
+        _fake_merge(monkeypatch)
+        notifier = Mock()
+        notifier.notify.side_effect = RuntimeError("private transport error")
+        recover_orphaned_sessions(LOGGER, notifier=notifier)
+        assert len(list(archive.glob("*.mp4"))) == 1
+        assert not list(archive.glob("*.ts"))
 
     def test_recovery_reports_safe_ffmpeg_reason_and_keeps_raw(
         self, archive, monkeypatch, caplog

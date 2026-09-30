@@ -138,7 +138,7 @@ def _run_application(
             notifier.notify(
                 Notification(
                     "auth_failed",
-                    detail="Startup credential validation failed. Update REFRESH_TOKEN and verify USER_OID, then recreate the container.",
+                    detail="This happened during startup credential validation.",
                 )
             )
             logger.error(

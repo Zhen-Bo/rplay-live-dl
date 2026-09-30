@@ -5,16 +5,17 @@ from dataclasses import dataclass
 EVENT_KINDS = frozenset(
     {
         "live",
+        "offline",
         "blocked",
         "auth_failed",
         "download_failed",
         "merge_failed",
+        "merge_completed",
         "disk_warning",
         "disk_critical",
-        "disk_recovered",
     }
 )
-DEFAULT_EVENTS = "live,blocked,auth_failed,download_failed,merge_failed,disk_warning,disk_critical,disk_recovered"
+DEFAULT_EVENTS = "live,offline,blocked,auth_failed,download_failed,merge_failed,merge_completed,disk_warning,disk_critical"
 
 
 @dataclass(frozen=True)
@@ -24,3 +25,9 @@ class Notification:
     title: str = ""
     started_at: str = ""
     detail: str = ""
+    free_bytes: int | None = None
+    warning_bytes: int | None = None
+    critical_bytes: int | None = None
+    recovery_bytes: int | None = None
+    creator_oid: str = ""
+    output_file: str = ""

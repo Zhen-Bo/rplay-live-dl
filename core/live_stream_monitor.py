@@ -2,7 +2,7 @@
 
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Queue
@@ -61,6 +61,13 @@ class _PollRequested:
     retry: bool = False
 
 
+@dataclass
+class _ObservedStream:
+    notice: Notification
+    live_notified: bool = False
+    missing_polls: int = 0
+
+
 @dataclass(frozen=True)
 class _DrainRequested:
     """Internal control-loop marker signalling that earlier events were handled."""
@@ -111,6 +118,7 @@ class LiveStreamMonitor:
     DOWNLOAD_RETRY_IMMEDIATE_BUDGET = 1
     DOWNLOAD_RETRY_COOLDOWN_BASE_SECONDS = 30.0
     DOWNLOAD_RETRY_COOLDOWN_MAX_SECONDS = 300.0
+    OFFLINE_CONFIRMATION_POLLS = 2
     TERMINAL_SESSION_STATES = {
         SessionState.BLOCKED,
         SessionState.DONE,
@@ -137,7 +145,7 @@ class LiveStreamMonitor:
         self.merge_reserve_gb = merge_reserve_gb
         self.merge_space_multiplier = merge_space_multiplier
         self.notifier = notifier
-        self._notified_live: Dict[str, str] = {}
+        self._observed_streams: Dict[str, _ObservedStream] = {}
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
         self.latest_stream_oid_by_creator: Dict[str, str] = {}
@@ -308,16 +316,14 @@ class LiveStreamMonitor:
         alert = self.disk_monitor.check(
             Path.cwd() / StreamDownloader.ARCHIVE_DIR, self.logger
         )
-        if alert is not None:
+        if alert is not None and alert.level != "recovered":
             self._notify(
                 Notification(
                     kind=f"disk_{alert.level}",
-                    detail=(
-                        f"{alert.free_bytes / 1024**3:.2f} GiB free; "
-                        f"warning below {self.disk_monitor.warning / 1024**3:g} GiB, "
-                        f"critical below {self.disk_monitor.critical / 1024**3:g} GiB. "
-                        "Active recordings are not stopped automatically."
-                    ),
+                    free_bytes=alert.free_bytes,
+                    warning_bytes=self.disk_monitor.warning,
+                    critical_bytes=self.disk_monitor.critical,
+                    recovery_bytes=self.disk_monitor.warning + self.disk_monitor.margin,
                 ),
                 cooldown=0,
             )
@@ -391,12 +397,13 @@ class LiveStreamMonitor:
             return False
 
     def _process_live_streams(self, live_streams: List[LiveStream]) -> int:
-        self._notified_live = {
-            creator: start
-            for creator, start in self._notified_live.items()
+        self._observed_streams = {
+            creator: state
+            for creator, state in self._observed_streams.items()
             if creator in self.monitored_creators
         }
         monitored_live = 0
+        seen = set()
         for stream in live_streams:
             if stream.stream_state != StreamState.LIVE:
                 continue
@@ -408,25 +415,49 @@ class LiveStreamMonitor:
                 continue
 
             monitored_live += 1
-            started_at = utc_timestamp(stream.stream_start_time)
-            if self._notified_live.get(stream.creator_oid) != started_at:
-                if self._notify(
-                    Notification(
-                        "live",
-                        creator=self.monitored_creators[
-                            stream.creator_oid
-                        ].creator_name,
-                        title=stream.title,
-                        started_at=started_at,
-                        detail="Detected live; this is not confirmation that recording has started.",
-                    ),
+            seen.add(stream.creator_oid)
+            notice = Notification(
+                "live",
+                creator=self.monitored_creators[stream.creator_oid].creator_name,
+                creator_oid=stream.creator_oid,
+                title=stream.title,
+                started_at=utc_timestamp(stream.stream_start_time),
+            )
+            state = self._observed_streams.get(stream.creator_oid)
+            if state is None or state.notice.started_at != notice.started_at:
+                if state is not None:
+                    self._notify_stream_ended(state)
+                state = _ObservedStream(notice)
+                self._observed_streams[stream.creator_oid] = state
+            else:
+                state.notice = notice
+            state.missing_polls = 0
+            if not state.live_notified:
+                state.live_notified = self._notify(
+                    notice,
                     key=stream.creator_oid,
                     cooldown=0,
-                ):
-                    self._notified_live[stream.creator_oid] = started_at
+                )
             self._process_live_stream(stream)
 
+        # This runs only after a complete successful status fetch and processing.
+        # API errors and removal from the monitor list are not stream-end evidence.
+        for creator_oid, state in list(self._observed_streams.items()):
+            if creator_oid in seen:
+                continue
+            state.missing_polls = min(
+                self.OFFLINE_CONFIRMATION_POLLS, state.missing_polls + 1
+            )
+            if state.missing_polls >= self.OFFLINE_CONFIRMATION_POLLS:
+                if self._notify_stream_ended(state):
+                    del self._observed_streams[creator_oid]
         return monitored_live
+
+    def _notify_stream_ended(self, state: _ObservedStream) -> bool:
+        notice = replace(state.notice, kind="offline")
+        return self._notify(
+            notice, key=f"{notice.creator_oid}:{notice.started_at}", cooldown=0
+        )
 
     def _process_live_stream(self, stream: LiveStream) -> None:
         with self._state_lock:
@@ -917,6 +948,17 @@ class LiveStreamMonitor:
                 log_method = self.logger.info
                 log_message = f"🎬 Merge started for {session.creator_name}: {session.session_key}"
             elif isinstance(event, MergeCompleted):
+                if session.state != SessionState.DONE:
+                    self._notify(
+                        Notification(
+                            "merge_completed",
+                            creator=session.creator_name,
+                            creator_oid=session.creator_oid,
+                            title=session.title,
+                            output_file=event.output_path.name,
+                        ),
+                        key=event.session_key,
+                    )
                 session.state = SessionState.DONE
                 log_method = self.logger.info
                 log_message = f"✅ Merge completed for {session.creator_name}: {event.output_path}"
@@ -926,8 +968,8 @@ class LiveStreamMonitor:
                         Notification(
                             "merge_failed",
                             creator=session.creator_name,
+                            creator_oid=session.creator_oid,
                             title=session.title,
-                            detail="Raw TS files retained. Check logs for the cause; free disk space if needed and restart to retry recovery.",
                         ),
                         key=event.session_key,
                     )
@@ -1020,12 +1062,7 @@ class LiveStreamMonitor:
     def _log_auth_error(self, message: str) -> None:
         """Log auth errors once per failure streak; repeats go to DEBUG."""
         if not self._auth_error_notified:
-            self._notify(
-                Notification(
-                    "auth_failed",
-                    detail="Update REFRESH_TOKEN and verify USER_OID, then recreate the container.",
-                )
-            )
+            self._notify(Notification("auth_failed"))
         log = self.logger.debug if self._auth_error_notified else self.logger.error
         self._auth_error_notified = True
         log(message)
@@ -1080,8 +1117,8 @@ class LiveStreamMonitor:
                 Notification(
                     "download_failed",
                     creator=session.creator_name,
+                    creator_oid=session.creator_oid,
                     title=session.title,
-                    detail="Repeated failures entered retry cooldown. Automatic retries continue; check logs.",
                 ),
                 key=f"{session.creator_oid}:{session.stream_start_time.isoformat()}",
             )
@@ -1168,8 +1205,8 @@ class LiveStreamMonitor:
                 Notification(
                     "blocked",
                     creator=creator_name,
+                    creator_oid=creator_oid,
                     title=session.title,
-                    detail="Access was denied after the configured retry policy. Paid/private access is possible, not confirmed.",
                 ),
                 key=f"{creator_oid}:{session.stream_start_time.isoformat()}",
             )

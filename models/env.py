@@ -111,6 +111,8 @@ class EnvConfig(BaseSettings):
     @classmethod
     def validate_discord_events(cls, value: str) -> str:
         events = [item.strip() for item in value.split(",") if item.strip()]
+        # Retired notification: older .env files must still start successfully.
+        events = [item for item in events if item != "disk_recovered"]
         if set(events) - EVENT_KINDS:
             raise ValueError("DISCORD_WEBHOOK_EVENTS contains an unsupported event")
         return ",".join(dict.fromkeys(events))

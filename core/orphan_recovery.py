@@ -169,7 +169,7 @@ def _recover_one_session(
                     Notification(
                         "merge_failed",
                         creator=output_dir.name,
-                        detail="Startup recovery failed. Raw TS files retained; check logs, free space if needed, and restart to retry.",
+                        detail="This happened during startup recovery.",
                     ),
                     key=f"recovery:{output_dir.name}:{session_prefix}",
                 )
@@ -200,6 +200,20 @@ def _recover_one_session(
         f"🛟 Recovered interrupted recording (session {session_id}): "
         f"merged {len(ts_files)} raw file(s) into {output_path}"
     )
+    if notifier is not None:
+        try:
+            notifier.notify(
+                Notification(
+                    "merge_completed",
+                    creator=output_dir.name,
+                    output_file=output_path.name,
+                ),
+                key=f"recovery:{output_dir.name}:{session_prefix}",
+            )
+        except Exception:
+            logger.warning(
+                "Could not queue merge completion notification; MP4 retained"
+            )
 
 
 def install_merge_output_without_overwrite(
