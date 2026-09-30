@@ -34,7 +34,7 @@ class EnvConfig(BaseSettings):
 
     Attributes:
         user_oid: User's unique identifier on the RPlay platform
-        auth_token: Static JWT used when refresh_token is empty
+        auth_token: Removed in v2.5.0, read only to explain the migration
         refresh_token: Credential for acquiring and renewing access JWTs
         token_refresh_leeway_seconds: Renewal threshold before key2 requests
         interval: Monitoring check interval in seconds
@@ -47,12 +47,12 @@ class EnvConfig(BaseSettings):
     )
     auth_token: str = Field(
         default="",
-        description="Static JWT; required only when REFRESH_TOKEN is not set",
+        description="No longer supported; read only to explain the migration",
         repr=False,
     )
     refresh_token: str = Field(
         default="",
-        description="Enables automatic JWT renewal; takes precedence over AUTH_TOKEN",
+        description="Required credential for acquiring and renewing access JWTs",
         repr=False,
     )
     token_refresh_leeway_seconds: int = Field(
@@ -111,10 +111,15 @@ class EnvConfig(BaseSettings):
     @field_validator("refresh_token")
     @classmethod
     def validate_credentials(cls, v: str, info: ValidationInfo) -> str:
-        """Require one credential after trimming both settings."""
-        if not v and not info.data.get("auth_token"):
-            raise ValueError("Set REFRESH_TOKEN or AUTH_TOKEN in .env")
-        return v
+        """Require REFRESH_TOKEN, and explain the removal of AUTH_TOKEN."""
+        if v:
+            return v
+        if info.data.get("auth_token"):
+            raise ValueError(
+                "AUTH_TOKEN is no longer supported. "
+                "Set REFRESH_TOKEN in .env instead (see README, Account credentials)"
+            )
+        raise ValueError("Set REFRESH_TOKEN in .env")
 
     @field_validator("user_oid")
     @classmethod

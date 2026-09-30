@@ -17,7 +17,7 @@ from models.env import EnvConfig
 @pytest.fixture
 def mock_env():
     """Create mock EnvConfig."""
-    return EnvConfig(user_oid="test_oid", auth_token="test_token", interval=60)
+    return EnvConfig(user_oid="test_oid", refresh_token="test_token", interval=60)
 
 
 @pytest.fixture

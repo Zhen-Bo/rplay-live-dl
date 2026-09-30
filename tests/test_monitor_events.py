@@ -572,7 +572,7 @@ def test_failure_while_creator_still_live_earns_one_immediate_extra_poll(repoll_
     # mid-stream failure cost that whole window; the re-poll must not scale
     # with it, so the interval only ever appears here as the bound to beat.
     largest_interval = EnvConfig(
-        user_oid="oid", auth_token="token", interval=3600
+        user_oid="oid", refresh_token="token", interval=3600
     ).interval
 
     mock_api = MagicMock(spec=RPlayAPI)

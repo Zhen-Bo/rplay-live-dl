@@ -111,7 +111,6 @@ def test_recording_survives_refresh_boundary(tmp_path, monkeypatch):
     api = RPlayAPI(
         base_url=f"http://127.0.0.1:{server.server_port}",
         user_oid="synthetic-user",
-        auth_token="",
         refresh_token="synthetic-refresh",
     )
     monitor = LiveStreamMonitor(api_client=api)

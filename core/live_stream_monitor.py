@@ -351,7 +351,7 @@ class LiveStreamMonitor:
         except RPlayAuthError as exc:
             self._log_auth_error(
                 f"Authentication error: {exc}. "
-                "Please verify USER_OID and your AUTH_TOKEN or REFRESH_TOKEN in .env."
+                "Please verify USER_OID and REFRESH_TOKEN in .env."
             )
             self._mark_check_failed()
         except RPlayConnectionError as exc:
@@ -616,7 +616,7 @@ class LiveStreamMonitor:
             self._cycle_key_fetch_auth_failed = True
             self._log_auth_error(
                 f"Auth error for {creator_name}: {exc}. "
-                "Please verify USER_OID and your AUTH_TOKEN or REFRESH_TOKEN in .env."
+                "Please verify USER_OID and REFRESH_TOKEN in .env."
             )
             return
 
@@ -1019,8 +1019,8 @@ class LiveStreamMonitor:
         self._mark_check_failed()
         self._log_auth_error(
             f"🔐 Authentication error while downloading {session.creator_name}: "
-            f"{event.error_message}. Please verify USER_OID and your "
-            "AUTH_TOKEN or REFRESH_TOKEN in .env."
+            f"{event.error_message}. Please verify USER_OID and "
+            "REFRESH_TOKEN in .env."
         )
 
     def _log_auth_error(self, message: str) -> None:
