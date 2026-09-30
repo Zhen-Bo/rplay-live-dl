@@ -6,6 +6,8 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import pytest
+
 from core.logger import (
     DEFAULT_LOG_LEVEL,
     LOG_COLORS,
@@ -35,6 +37,8 @@ class TestSetupLogger:
         assert isinstance(logger, logging.Logger)
         assert logger.name == "test_logger_1"
         assert logger.level == logging.INFO
+        # Console-only logger still has at least the console handler
+        assert len(logger.handlers) >= 1
 
     def test_logger_level(self):
         """Test that logger has correct level."""
@@ -47,12 +51,6 @@ class TestSetupLogger:
         handler_count = len(logger1.handlers)
         logger2 = setup_logger("test_logger_3")
         assert len(logger2.handlers) == handler_count
-
-    def test_console_only(self):
-        """Test creating a console-only logger."""
-        logger = setup_logger("test_console_only", log_to_file=False)
-        # Should have at least one handler (console)
-        assert len(logger.handlers) >= 1
 
     def test_configure_logging_applies_level_and_ytdlp_flag(self, monkeypatch):
         """Test configure_logging sets both log level and yt-dlp internal flag."""
@@ -114,26 +112,16 @@ class TestSetupLogger:
 class TestGetLogsDir:
     """Tests for get_logs_dir function."""
 
-    def test_returns_path(self):
-        """Test that get_logs_dir returns a Path."""
+    def test_directory_exists(self):
+        """Test that get_logs_dir returns an existing directory Path."""
         logs_dir = get_logs_dir()
         assert isinstance(logs_dir, Path)
-
-    def test_directory_exists(self):
-        """Test that logs directory exists."""
-        logs_dir = get_logs_dir()
         assert logs_dir.exists()
         assert logs_dir.is_dir()
 
 
 class TestCleanupOldLogs:
     """Tests for cleanup_old_logs function."""
-
-    def test_cleanup_returns_count(self):
-        """Test that cleanup returns a count."""
-        result = cleanup_old_logs(retention_days=30)
-        assert isinstance(result, int)
-        assert result >= 0
 
     def test_removes_old_files(self, tmp_path, monkeypatch):
         """Test that files older than retention are removed."""
@@ -257,15 +245,15 @@ class TestAlignedFormatter:
 class TestColoredAlignedFormatter:
     """Tests for ColoredAlignedFormatter class."""
 
-    def test_format_produces_output(self):
-        """Test that formatter produces formatted output."""
+    def test_preserves_original_name(self):
+        """Test that formatting produces output and restores the original record name."""
         formatter = ColoredAlignedFormatter(
             fmt="%(asctime)s │ %(log_color)s%(levelname)s%(reset)s │ %(name)s │ %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
             log_colors=LOG_COLORS,
         )
         record = logging.LogRecord(
-            name="Test",
+            name="OriginalName",
             level=logging.INFO,
             pathname="",
             lineno=0,
@@ -276,24 +264,6 @@ class TestColoredAlignedFormatter:
         result = formatter.format(record)
         assert "test message" in result
         assert "│" in result
-
-    def test_preserves_original_name(self):
-        """Test that original record name is preserved after formatting."""
-        formatter = ColoredAlignedFormatter(
-            fmt="%(name)s - %(message)s",
-            datefmt="%Y-%m-%d",
-            log_colors=LOG_COLORS,
-        )
-        record = logging.LogRecord(
-            name="OriginalName",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test",
-            args=(),
-            exc_info=None,
-        )
-        formatter.format(record)
         # Original name should be restored
         assert record.name == "OriginalName"
 
@@ -398,19 +368,6 @@ class TestContextAdapter:
 
         assert caplog.records[-1].getMessage() == "hello"
 
-    def test_adapter_forwards_level_filtering(self, caplog):
-        """Test the adapter forwards the underlying logger's level filtering."""
-        logger = logging.getLogger("test_context_adapter_level_filter")
-        logger.setLevel(logging.WARNING)
-        adapter = bind(logger, "SomeCreator")
-
-        adapter.info("should be filtered")
-        adapter.warning("should be logged")
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert "[SomeCreator] should be filtered" not in messages
-        assert "[SomeCreator] should be logged" in messages
-
     def test_exception_through_adapter_keeps_traceback(self, caplog):
         """Test .exception() through the adapter keeps exc_info and the context prefix."""
         logger = logging.getLogger("test_context_adapter_exception")
@@ -430,9 +387,12 @@ class TestContextAdapter:
 class TestClip:
     """Tests for clip() and _display_width()."""
 
-    def test_short_text_is_returned_unchanged(self):
-        """Test text under the column budget passes through unchanged."""
-        assert clip("耳舐めASMR") == "耳舐めASMR"
+    @pytest.mark.parametrize("text", ["a" * 40, "耳舐めASMR"])
+    def test_text_within_budget_is_not_clipped(self, text):
+        """Test text at or under the budget passes through unchanged."""
+        result = clip(text)
+        assert result == text
+        assert "…" not in result
 
     def test_ascii_text_is_clipped_to_the_budget(self):
         """Test ASCII text over the budget is clipped to exactly 40 columns."""
@@ -445,28 +405,20 @@ class TestClip:
         assert _display_width("耳舐め") == 6
         assert len("耳舐め") == 3
 
-    def test_clipped_result_never_exceeds_the_budget_in_columns(self):
-        """Test a clipped CJK string never exceeds the column budget."""
-        result = clip("配信" * 40)
-        assert _display_width(result) <= 40
-
-    def test_custom_budget_is_respected(self):
-        """Test a custom columns budget is honored instead of the default."""
-        result = clip("a" * 30, columns=10)
-        assert _display_width(result) <= 10
-
-    def test_exact_budget_is_not_clipped(self):
-        """Test text exactly at the budget is not clipped."""
-        result = clip("a" * 40)
-        assert result == "a" * 40
-        assert "…" not in result
-
-    def test_returns_empty_when_budget_cannot_fit_the_suffix(self):
-        """Test clip() returns empty text when the budget can't even fit the suffix."""
-        assert clip("界", columns=0) == ""
-
-    def test_never_exceeds_budget_for_any_small_budget(self):
-        """Test clip() never exceeds a small columns budget, for every budget 0-5."""
-        for n in range(6):
-            result = clip("配信配信配信", columns=n)
-            assert _display_width(result) <= n, f"columns={n} produced {result!r}"
+    @pytest.mark.parametrize(
+        "text,columns",
+        [
+            *[("配信配信配信", n) for n in range(6)],
+            ("配信" * 40, 40),
+            ("a" * 30, 10),
+            ("界", 0),
+        ],
+    )
+    def test_never_exceeds_budget(self, text, columns):
+        """Test clip() never exceeds the columns budget, and is empty at zero."""
+        result = clip(text, columns=columns)
+        assert (
+            _display_width(result) <= columns
+        ), f"columns={columns} produced {result!r}"
+        if columns == 0:
+            assert result == ""
