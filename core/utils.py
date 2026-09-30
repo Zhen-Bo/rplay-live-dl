@@ -1,7 +1,7 @@
 """Shared helpers for rplay-live-dl."""
 
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Mapping, Optional
 
 import psutil
 
@@ -104,6 +104,7 @@ def merge_ts_files_to_mp4(
     *,
     reserve_gb: float = 1,
     space_multiplier: float = 2.2,
+    metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
     """
     Merge ts fragments into one mp4 with ffmpeg concat.
@@ -123,6 +124,14 @@ def merge_ts_files_to_mp4(
     list_path.write_text(list_content, encoding="utf-8")
 
     try:
+        metadata_args = []
+        if metadata:
+            metadata_args = ["-map_metadata", "-1", "-movflags", "+use_metadata_tags"]
+            for key, value in metadata.items():
+                # Arguments are not shell-interpolated; NUL cannot occur in argv.
+                metadata_args.extend(
+                    ["-metadata", f"{key}={value.replace(chr(0), '')}"]
+                )
         run_command(
             [
                 "ffmpeg",
@@ -135,6 +144,7 @@ def merge_ts_files_to_mp4(
                 str(list_path),
                 "-c",
                 "copy",
+                *metadata_args,
                 str(output_path),
             ]
         )

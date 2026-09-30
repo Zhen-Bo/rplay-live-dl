@@ -27,6 +27,7 @@ class DownloadSession:
     output_dir: Path
     session_prefix: str
     recording_started_at: Optional[datetime] = None
+    stream_oid: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,9 @@ class MergeJobSpec:
     stream_start_time: datetime
     output_dir: Path
     session_prefix: str
+    creator_oid: Optional[str] = None
+    stream_oid: Optional[str] = None
+    recording_started_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)

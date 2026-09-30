@@ -35,6 +35,7 @@ from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
 from .disk_space import DiskSpaceMonitor
+from .recording_metadata import recording_metadata
 from .logger import bind, clip, setup_logger
 from .orphan_recovery import install_merge_output_without_overwrite
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
@@ -784,6 +785,7 @@ class LiveStreamMonitor:
                 output_dir=output_dir,
                 session_prefix=session_prefix,
                 recording_started_at=recording_started_at,
+                stream_oid=stream.oid,
             )
             self._active_raw_session_by_creator[stream.creator_oid] = session_key
             return self.sessions[session_key]
@@ -907,6 +909,9 @@ class LiveStreamMonitor:
                 stream_start_time=session.stream_start_time,
                 output_dir=session.output_dir,
                 session_prefix=session.session_prefix,
+                creator_oid=session.creator_oid,
+                stream_oid=session.stream_oid,
+                recording_started_at=session.recording_started_at,
             )
 
             try:
@@ -1122,7 +1127,9 @@ class LiveStreamMonitor:
             )
             temp_path = self._build_merge_temp_path(base_output_path)
             self._clear_stale_merge_temp(temp_path)
-            self._run_ffmpeg_merge(ts_files, temp_path)
+            self._run_ffmpeg_merge(
+                ts_files, temp_path, metadata=recording_metadata(merge_job)
+            )
 
             # A successful ffmpeg exit is not enough to prove an artifact was
             # produced. Keep the raw inputs when a stub, muxer, or interrupted
@@ -1238,13 +1245,20 @@ class LiveStreamMonitor:
                 f"could not clear stale merge output {temp_path.name}: {exc}"
             ) from exc
 
-    def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
+    def _run_ffmpeg_merge(
+        self,
+        ts_files: List[Path],
+        output_path: Path,
+        *,
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> None:
         merge_ts_files_to_mp4(
             ts_files,
             output_path,
             self._run_merge_subprocess,
             reserve_gb=self.merge_reserve_gb,
             space_multiplier=self.merge_space_multiplier,
+            metadata=metadata,
         )
 
     def _run_merge_subprocess(self, command: List[str]) -> None:

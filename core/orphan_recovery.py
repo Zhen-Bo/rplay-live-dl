@@ -135,6 +135,11 @@ def _recover_one_session(
             ),
             reserve_gb=reserve_gb,
             space_multiplier=space_multiplier,
+            metadata={
+                "rplay_metadata_version": "1",
+                "rplay_recovered": "true",
+                "rplay_source_filename": ts_files[0].name,
+            },
         )
 
         # The inputs are deleted on the strength of this check, so an empty

@@ -303,6 +303,22 @@ An insufficient or unreadable space check skips that merge and preserves the raw
 inputs. Free space and restart to retry startup recovery; there is no automatic
 running merge retry. These environment settings require container recreation.
 
+### Recording metadata
+
+New normal merges store the original (unsanitized) `title`, creator display name
+(`artist`), `rplay_creator_oid`, `rplay_stream_oid`, `rplay_stream_start_time`,
+and `rplay_recording_started_at` in the MP4 itself. Times use UTC ISO 8601, and
+`rplay_metadata_version=1` identifies the tag schema. This happens during the
+existing stream-copy merge, without a second encode, database, or sidecar index.
+The creator name follows your creator configuration; IDs come from the session.
+Credentials and authenticated stream URLs are never included.
+
+Startup recovery cannot reconstruct the original IDs or unsanitized title from
+old fragments. It writes only `rplay_metadata_version`, `rplay_recovered=true`,
+and `rplay_source_filename`; unknown values are omitted rather than guessed.
+Existing MP4s are not rewritten. Some players do not display custom MP4 tags;
+inspect them with `ffprobe -v error -show_entries format_tags -of json video.mp4`.
+
 ### Download and Merge Flow
 
 The v2 runtime uses a session-aware download pipeline.
