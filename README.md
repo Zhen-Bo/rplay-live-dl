@@ -235,7 +235,7 @@ Environment variables:
 | `LOG_YTDLP_INTERNAL` | no | `false` | truthy: `1`, `true`, `yes`, `on`; falsy: `0`, `false`, `no`, `off`, empty; other values abort startup | Enables noisy yt-dlp internal debug lines |
 | `LOG_MAX_SIZE_MB` | no | `5` | integer `1`-`100` | Maximum size of each log file before rotation |
 | `LOG_BACKUP_COUNT` | no | `5` | integer `1`-`50` | Number of rotated log files to keep |
-| `LOG_RETENTION_DAYS` | no | `30` | integer `1`-`365` | Age-based cleanup window for old logs |
+| `LOG_RETENTION_DAYS` | no | `30` | integer `1`-`365` | Startup cleanup of log files older than this many days |
 | `APP_GIT_SHA` | no | empty | free-form string | Startup version metadata shown in logs; usually injected by Docker/image builds |
 
 Notes:
@@ -413,6 +413,9 @@ The v2 runtime uses a session-aware download pipeline.
    - set `LOG_LEVEL=DEBUG` in `.env` to see stream-candidate evaluation and skip reasons
    - set `LOG_YTDLP_INTERNAL=true` only when you need raw yt-dlp internal chatter in addition to app logs
    - the default `INFO` level keeps routine output readable for long-running Docker deployments
+   - unchanged polls do not emit periodic heartbeat messages; use the heartbeat healthcheck for liveness, while recording status changes remain logged
+   - application console and file output mask configured credentials, common token fields, authorization headers, JWTs and Discord webhook tokens, including tracebacks; review logs before sharing because this is not a general personal-data filter
+   - failed FFmpeg merges report the exit code or timeout and a redacted stderr tail (last 10 lines, at most 2,000 characters plus a truncation marker); expected FFmpeg failures do not add a redundant Python traceback, while unexpected exceptions still do
 
 #### Final filename rules
 

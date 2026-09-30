@@ -1,10 +1,13 @@
 """Centralized logging for rplay-live-dl."""
 
 import logging
+import re
+from copy import copy
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
+from urllib.parse import quote
 
 import colorlog
 import wcwidth
@@ -25,6 +28,7 @@ if TYPE_CHECKING:
 __all__ = [
     "setup_logger",
     "configure_logging",
+    "redact_sensitive_text",
     "is_ytdlp_internal_logging_enabled",
     "cleanup_old_logs",
     "get_logs_dir",
@@ -43,6 +47,29 @@ _configured_ytdlp_internal: bool = DEFAULT_LOG_YTDLP_INTERNAL
 _configured_log_max_size_mb: int = DEFAULT_LOG_MAX_SIZE_MB
 _configured_log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
 _configured_log_retention_days: int = DEFAULT_LOG_RETENTION_DAYS
+_configured_sensitive_values: tuple[str, ...] = ()
+
+_CREDENTIAL_FIELD = re.compile(
+    r"(?i)(\b(?:key2|refresh[_-]?token|access[_-]?token|auth[_-]?token)\b"
+    r"[\x22\x27]?\s*(?:=|:|%3d)\s*)"
+    r"(\[REDACTED\]|\x22[^\x22\n]*\x22|\x27[^\x27\n]*\x27|[^&\s,;\x22\x27}\]]+)"
+)
+_AUTH_HEADER = re.compile(
+    r"(?i)(\bauthorization[\x22\x27]?\s*[:=]\s*[\x22\x27]?(?:bearer|basic)\s+)[^\s\x22\x27,}]+"
+)
+_WEBHOOK_TOKEN = re.compile(
+    r"(?i)(https://(?:(?:canary|ptb)\.)?(?:discord\.com|discordapp\.com)/api/(?:v[0-9]+/)?webhooks/[0-9]+/)[^\s/?#\x22\x27]+"
+)
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+
+
+def redact_sensitive_text(text: str) -> str:
+    """Scrub configured secrets and credential fields, including formatted tracebacks."""
+    for secret in _configured_sensitive_values:
+        text = text.replace(secret, "[REDACTED]")
+    for pattern in (_CREDENTIAL_FIELD, _AUTH_HEADER, _WEBHOOK_TOKEN):
+        text = pattern.sub(lambda match: match.group(1) + "[REDACTED]", text)
+    return _JWT.sub("[REDACTED]", text)
 
 
 def _get_log_max_bytes() -> int:
@@ -61,11 +88,26 @@ def configure_logging(env: "EnvConfig") -> None:
     global _configured_log_level, _configured_ytdlp_internal
     global _configured_log_max_size_mb, _configured_log_backup_count
     global _configured_log_retention_days
+    global _configured_sensitive_values
     _configured_log_level = logging.getLevelNamesMapping()[env.log_level]
     _configured_ytdlp_internal = env.log_ytdlp_internal
     _configured_log_max_size_mb = env.log_max_size_mb
     _configured_log_backup_count = env.log_backup_count
     _configured_log_retention_days = env.log_retention_days
+    webhook = env.discord_webhook_url.get_secret_value()
+    secrets = (env.refresh_token, env.auth_token, webhook, webhook.rsplit("/", 1)[-1])
+    _configured_sensitive_values = tuple(
+        sorted(
+            {
+                variant
+                for secret in secrets
+                if secret
+                for variant in (secret, quote(secret, safe=""))
+            },
+            key=len,
+            reverse=True,
+        )
+    )
 
 
 def is_ytdlp_internal_logging_enabled() -> bool:
@@ -163,9 +205,10 @@ class AlignedFormatter(logging.Formatter):
         self.level_width = level_width
 
     def format(self, record: logging.LogRecord) -> str:
+        record = copy(record)
         record.name = _fit(record.name, self.name_width)
         record.levelname = _fit(record.levelname, self.level_width)
-        return super().format(record)
+        return redact_sensitive_text(super().format(record))
 
 
 class ColoredAlignedFormatter(colorlog.ColoredFormatter):
@@ -182,14 +225,13 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
         self.level_width = level_width
 
     def format(self, record: logging.LogRecord) -> str:
-        original_name = record.name
-        record.name = _fit(original_name, self.name_width)
+        record = copy(record)
+        record.name = _fit(record.name, self.name_width)
 
         # colorlog picks the colour by looking up record.levelname, so it has to
         # stay unpadded until after formatting.
         original_levelname = record.levelname
         result = super().format(record)
-        record.name = original_name
 
         # Format is: "date │ <color>LEVELNAME<reset> │ name │ message"
         centered_levelname = _fit(original_levelname, self.level_width)
@@ -198,7 +240,7 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
             parts[1] = parts[1].replace(original_levelname, centered_levelname, 1)
             result = "│".join(parts)
 
-        return result
+        return redact_sensitive_text(result)
 
 
 def get_logs_dir() -> Path:

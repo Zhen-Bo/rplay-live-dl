@@ -1,13 +1,17 @@
 """Shared helpers for rplay-live-dl."""
 
+import subprocess
 from pathlib import Path
 from typing import Callable, List, Mapping, Optional
 
 import psutil
 
+from core.logger import redact_sensitive_text
+
 __all__ = [
     "MAX_FILENAME_COMPONENT_BYTES",
     "format_file_size",
+    "format_ffmpeg_failure",
     "fit_filename_component_bytes",
     "merge_ts_files_to_mp4",
     "terminate_child_processes",
@@ -150,6 +154,25 @@ def merge_ts_files_to_mp4(
         )
     finally:
         list_path.unlink(missing_ok=True)
+
+
+def format_ffmpeg_failure(error: Exception) -> str:
+    """Keep the failure reason, not an entire FFmpeg transcript or Python stack."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        summary = f"ffmpeg merge timeout after {error.timeout:g} seconds"
+    elif isinstance(error, subprocess.CalledProcessError):
+        summary = f"ffmpeg merge exited with code {error.returncode}"
+    else:
+        return redact_sensitive_text(str(error))
+    stderr = error.stderr or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    # Redact before truncation so a cut token never slips past the masker.
+    stderr = redact_sensitive_text(stderr).strip()
+    tail = "\n".join(stderr.splitlines()[-10:])
+    if len(tail) > 2000:
+        tail = "[...truncated] " + tail[-2000:]
+    return f"{summary}; stderr tail:\n{tail}" if tail else summary
 
 
 def format_file_size(size_bytes: float) -> str:

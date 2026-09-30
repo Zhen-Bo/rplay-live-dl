@@ -42,6 +42,7 @@ from .logger import bind, clip, setup_logger
 from .orphan_recovery import install_merge_output_without_overwrite
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from .utils import (
+    format_ffmpeg_failure,
     fit_filename_component_bytes,
     merge_ts_files_to_mp4,
     terminate_child_processes,
@@ -172,7 +173,6 @@ class LiveStreamMonitor:
 
         self._last_check_success = True
         self._monitored_count = 0
-        self._check_count = 0
         self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
         self._auth_error_notified = False
         # Per cycle only, no TTL: key2 is user-scoped, not creator-scoped.
@@ -338,7 +338,7 @@ class LiveStreamMonitor:
             monitored_live = self._process_live_streams(live_streams)
             live_creator_oids = {stream.creator_oid for stream in live_streams}
             self._cleanup_offline_creator_states(live_creator_oids)
-            self._log_status_summary(len(live_streams), monitored_live)
+            self._log_status_summary(monitored_live)
             # Match playlist-401 health: unrecovered key2 auth fails the cycle.
             if self._cycle_key_fetch_auth_failed:
                 self._mark_check_failed()
@@ -647,9 +647,8 @@ class LiveStreamMonitor:
             f"Error starting download for {creator_name}: {exc}", exc_info=exc
         )
 
-    def _log_status_summary(self, total_live: int, monitored_live: int) -> None:
+    def _log_status_summary(self, monitored_live: int) -> None:
         with self._state_lock:
-            self._check_count += 1
             active_downloads = sum(
                 1
                 for session in self.sessions.values()
@@ -661,7 +660,6 @@ class LiveStreamMonitor:
             }
             state_changed = current_status != self._last_status
             previous_active = self._last_status["active_downloads"]
-            periodic_heartbeat = self._check_count % 10 == 0
             monitored_count = self._monitored_count
             self._last_status = current_status
 
@@ -669,11 +667,6 @@ class LiveStreamMonitor:
             self.logger.info(
                 f"📊 Status: {active_downloads} active download(s), "
                 f"{monitored_live}/{monitored_count} monitored creator(s) live"
-            )
-        elif periodic_heartbeat and monitored_count > 0:
-            self.logger.debug(
-                f"📊 Checked {total_live} live stream(s), "
-                f"none of {monitored_count} monitored creator(s) are live"
             )
 
     def _update_downloaders(self) -> None:
@@ -1254,18 +1247,13 @@ class LiveStreamMonitor:
                 output_path=output_path,
             )
 
-        except subprocess.TimeoutExpired as exc:
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
             self._discard_partial_merge_output(temp_path)
             if output_path is not None and output_path != temp_path:
                 self._discard_partial_merge_output(output_path)
-            timeout_value = (
-                int(exc.timeout)
-                if exc.timeout is not None
-                else self.merge_timeout_seconds
-            )
             return MergeFailed(
                 session_key=merge_job.session_key,
-                error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
+                error_message=format_ffmpeg_failure(exc),
             )
         except Exception as exc:
             self._discard_partial_merge_output(temp_path)
@@ -1378,9 +1366,9 @@ class LiveStreamMonitor:
                     stdout, stderr = process.communicate(
                         timeout=self.merge_timeout_seconds
                     )
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
                     process.kill()
-                    process.communicate()
+                    exc.output, exc.stderr = process.communicate()
                     raise
                 if process.returncode != 0:
                     raise subprocess.CalledProcessError(

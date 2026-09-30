@@ -71,6 +71,34 @@ def _write_mp4(ts_files, output_path, **kwargs):
 class TestMergeFlow:
     """Tests for merging raw ts outputs into final mp4 files."""
 
+    @pytest.mark.parametrize("timed_out", [False, True])
+    def test_ffmpeg_failure_retains_bounded_safe_stderr_without_extra_traceback(
+        self, monitor, output_dir, timed_out
+    ):
+        raw = output_dir / "20260306_120000_title.ts"
+        raw.write_bytes(b"raw")
+        detail = (
+            "OLD_NOISE\n" * 100
+            + "x" * 3000
+            + "\nNo space left on device; key2=AUDIT_FAKE_KEY"
+        )
+        failure = (
+            subprocess.TimeoutExpired(["ffmpeg"], 1, stderr=detail.encode())
+            if timed_out
+            else subprocess.CalledProcessError(1, ["ffmpeg"], stderr=detail)
+        )
+        with patch.object(
+            monitor, "_run_ffmpeg_merge", side_effect=failure
+        ), patch.object(monitor.logger, "exception") as traceback_log:
+            result = monitor._merge_session_to_mp4(_merge_job(output_dir))
+        assert isinstance(result, MergeFailed)
+        assert "No space left on device" in result.error_message
+        assert "AUDIT_FAKE_KEY" not in result.error_message
+        assert "OLD_NOISE" not in result.error_message
+        assert len(result.error_message) < 2200
+        assert raw.read_bytes() == b"raw"
+        traceback_log.assert_not_called()
+
     def test_merge_uses_stream_start_time_for_mp4_name(
         self, tmp_path, monitor, output_dir
     ):

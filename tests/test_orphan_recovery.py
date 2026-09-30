@@ -65,6 +65,21 @@ def _fake_merge(
 class TestOrphanRecovery:
     """Recovery of session .ts files left behind by an interrupted run."""
 
+    def test_recovery_reports_safe_ffmpeg_reason_and_keeps_raw(
+        self, archive, monkeypatch, caplog
+    ):
+        raw = _write_raw(archive)
+        _fake_merge(
+            monkeypatch,
+            error=subprocess.CalledProcessError(
+                1, ["ffmpeg"], stderr="Invalid data found; key2=AUDIT_FAKE_KEY"
+            ),
+        )
+        recover_orphaned_sessions(LOGGER)
+        assert raw.exists()
+        assert "Invalid data found" in caplog.text
+        assert "AUDIT_FAKE_KEY" not in caplog.text
+
     def test_session_fragments_merge_in_order_and_inputs_are_deleted(
         self, archive, monkeypatch
     ):

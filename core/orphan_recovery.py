@@ -12,7 +12,11 @@ from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS
 from core.downloader import StreamDownloader
 from core.notifications import DiscordNotifier
 from models.notification import Notification
-from core.utils import fit_filename_component_bytes, merge_ts_files_to_mp4
+from core.utils import (
+    fit_filename_component_bytes,
+    format_ffmpeg_failure,
+    merge_ts_files_to_mp4,
+)
 
 __all__ = [
     "install_merge_output_without_overwrite",
@@ -177,7 +181,7 @@ def _recover_one_session(
         # can retry unchanged.
         _discard_partial_output(logger, temp_path)
         logger.warning(
-            f"⚠️ Orphan recovery merge failed for session {session_id}: {exc}. "
+            f"⚠️ Orphan recovery merge failed for session {session_id}: {format_ffmpeg_failure(exc)}. "
             f"Raw .ts files left in: {output_dir}"
         )
         return
