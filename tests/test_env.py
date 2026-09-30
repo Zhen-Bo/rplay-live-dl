@@ -35,6 +35,27 @@ class TestLoadEnv:
 
         assert config.interval == 60
 
+    @pytest.mark.parametrize("raw", ["9", "3601"])
+    def test_load_env_interval_out_of_range(self, valid_env, monkeypatch, raw):
+        """Test that an interval just outside 10-3600 raises ValueError."""
+        monkeypatch.setenv("INTERVAL", raw)
+
+        with pytest.raises(ValueError) as exc_info:
+            load_env()
+
+        message = str(exc_info.value)
+        assert "Invalid environment configuration" in message
+        assert "INTERVAL" in message
+
+    @pytest.mark.parametrize("raw", ["10", "3600"])
+    def test_load_env_interval_at_boundaries(self, valid_env, monkeypatch, raw):
+        """Test that the interval boundaries (10 and 3600) are accepted."""
+        monkeypatch.setenv("INTERVAL", raw)
+
+        config = load_env()
+
+        assert config.interval == int(raw)
+
     def test_load_env_missing_refresh_token(self, no_dotenv_file):
         """Without REFRESH_TOKEN, startup fails with a clear message."""
         # Clear any existing env vars
