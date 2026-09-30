@@ -34,6 +34,7 @@ from .config import read_app_config as read_config
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
+from .disk_space import DiskSpaceMonitor
 from .logger import bind, clip, setup_logger
 from .orphan_recovery import install_merge_output_without_overwrite
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
@@ -118,12 +119,18 @@ class LiveStreamMonitor:
         config_path: str = DEFAULT_CONFIG_PATH,
         merge_timeout_seconds: float = DEFAULT_MERGE_TIMEOUT_SECONDS,
         min_free_disk_gb: float = DEFAULT_MIN_FREE_DISK_GB,
+        disk_monitor: Optional[DiskSpaceMonitor] = None,
+        merge_reserve_gb: float = 1,
+        merge_space_multiplier: float = 2.2,
     ) -> None:
         """min_free_disk_gb of 0 disables the disk check."""
         self.api_client = api_client
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
         self.min_free_disk_gb = min_free_disk_gb
+        self.disk_monitor = disk_monitor or DiskSpaceMonitor()
+        self.merge_reserve_gb = merge_reserve_gb
+        self.merge_space_multiplier = merge_space_multiplier
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
         self.latest_stream_oid_by_creator: Dict[str, str] = {}
@@ -292,6 +299,7 @@ class LiveStreamMonitor:
         return False
 
     def _run_poll_cycle(self) -> None:
+        self.disk_monitor.check(Path.cwd() / StreamDownloader.ARCHIVE_DIR, self.logger)
         # Unconditional: never carry key2 across poll cycles (incl. A3 retry polls).
         self._cycle_stream_key = None
         self._cycle_key_fetch_auth_failed = False
@@ -1180,9 +1188,7 @@ class LiveStreamMonitor:
             is_file = output_path.is_file()
             size = output_path.stat().st_size if is_file else 0
         except OSError as exc:
-            raise RuntimeError(
-                f"{error_prefix} at {output_path.name}: {exc}"
-            ) from exc
+            raise RuntimeError(f"{error_prefix} at {output_path.name}: {exc}") from exc
 
         if not is_file or size == 0:
             raise RuntimeError(f"{error_prefix} at {output_path.name}")
@@ -1233,7 +1239,13 @@ class LiveStreamMonitor:
             ) from exc
 
     def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
-        merge_ts_files_to_mp4(ts_files, output_path, self._run_merge_subprocess)
+        merge_ts_files_to_mp4(
+            ts_files,
+            output_path,
+            self._run_merge_subprocess,
+            reserve_gb=self.merge_reserve_gb,
+            space_multiplier=self.merge_space_multiplier,
+        )
 
     def _run_merge_subprocess(self, command: List[str]) -> None:
         """

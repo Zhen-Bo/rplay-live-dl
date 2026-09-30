@@ -282,6 +282,27 @@ Notes:
 - an invalid `apiBaseUrl` is treated as a config error and the current poll is skipped until the file is fixed
 - you can temporarily leave `creators: []` while validating a deployment
 
+### Disk capacity
+
+Archive free space is checked at each poll, even when the upstream request fails.
+`DISK_WARNING_GB=30` and `DISK_CRITICAL_GB=10` set the alert levels in GiB;
+critical must be below warning. Alerts do not stop active recordings or delete files.
+The existing `MIN_FREE_DISK_GB` gate still applies to new recordings.
+
+Transitions are logged immediately, with reminders every `DISK_REMINDER_SECONDS=3600`.
+Recovery requires `DISK_RECOVERY_MARGIN_GB=2` above the relevant threshold to avoid
+flapping. Alert state is in memory and resets on restart. Checks run at the poll
+cadence (`INTERVAL`), not continuously; a stalled poll delays the next check.
+
+Both normal merges and startup recovery check free space before launching FFmpeg:
+`sum(raw TS bytes) * MERGE_SPACE_MULTIPLIER + MERGE_MIN_FREE_DISK_GB * 1024^3`.
+Defaults are `2.2` (minimum `2`, budgets temporary output and copy fallback) and
+`1` GiB reserve. This is a conservative estimate, not a disk reservation: concurrent
+recordings or other applications can still consume space during the merge.
+An insufficient or unreadable space check skips that merge and preserves the raw
+inputs. Free space and restart to retry startup recovery; there is no automatic
+running merge retry. These environment settings require container recreation.
+
 ### Download and Merge Flow
 
 The v2 runtime uses a session-aware download pipeline.

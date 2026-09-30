@@ -22,7 +22,12 @@ __all__ = [
 _SESSION_PREFIX_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_")
 
 
-def recover_orphaned_sessions(logger: logging.Logger) -> None:
+def recover_orphaned_sessions(
+    logger: logging.Logger,
+    *,
+    reserve_gb: float = 1,
+    space_multiplier: float = 2.2,
+) -> None:
     """
     Merge every recoverable orphaned session under the archive directory.
 
@@ -45,7 +50,14 @@ def recover_orphaned_sessions(logger: logging.Logger) -> None:
         sessions.setdefault((ts_file.parent, match.group(0)), []).append(ts_file)
 
     for (output_dir, session_prefix), ts_files in sorted(sessions.items()):
-        _recover_one_session(logger, output_dir, session_prefix, ts_files)
+        _recover_one_session(
+            logger,
+            output_dir,
+            session_prefix,
+            ts_files,
+            reserve_gb=reserve_gb,
+            space_multiplier=space_multiplier,
+        )
 
 
 def _adopt_orphaned_part(logger: logging.Logger, part_file: Path) -> None:
@@ -79,6 +91,9 @@ def _recover_one_session(
     output_dir: Path,
     session_prefix: str,
     ts_files: List[Path],
+    *,
+    reserve_gb: float = 1,
+    space_multiplier: float = 2.2,
 ) -> None:
     """Merge one session's raw .ts files, deleting them only once the mp4 is proven."""
     session_id = session_prefix.rstrip("_")
@@ -97,9 +112,7 @@ def _recover_one_session(
     # partial mp4 under a final name. The marker is reserved before fitting so
     # long names stay within the filesystem's component byte limit.
     temp_seed = output_dir / f".{final_stem}.mp4"
-    temp_path = fit_filename_component_bytes(
-        temp_seed, appended_suffix=".recovering"
-    )
+    temp_path = fit_filename_component_bytes(temp_seed, appended_suffix=".recovering")
     try:
         try:
             # Stale bytes from a killed prior run must not pass the output
@@ -120,6 +133,8 @@ def _recover_one_session(
                 text=True,
                 timeout=DEFAULT_MERGE_TIMEOUT_SECONDS,
             ),
+            reserve_gb=reserve_gb,
+            space_multiplier=space_multiplier,
         )
 
         # The inputs are deleted on the strength of this check, so an empty
@@ -245,9 +260,7 @@ def _discard_partial_output(logger: logging.Logger, temp_path: Path) -> None:
     try:
         temp_path.unlink(missing_ok=True)
     except OSError as exc:
-        logger.warning(
-            f"Could not remove partial merge output {temp_path.name}: {exc}"
-        )
+        logger.warning(f"Could not remove partial merge output {temp_path.name}: {exc}")
 
 
 # Kept for callers that imported the original private name.

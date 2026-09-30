@@ -1,6 +1,6 @@
 """Environment settings model for rplay-live-dl."""
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.constants import (
@@ -81,6 +81,19 @@ class EnvConfig(BaseSettings):
         ge=0,
         allow_inf_nan=False,
     )
+
+    disk_warning_gb: float = Field(default=30, gt=0, allow_inf_nan=False)
+    disk_critical_gb: float = Field(default=10, gt=0, allow_inf_nan=False)
+    disk_recovery_margin_gb: float = Field(default=2, ge=0, allow_inf_nan=False)
+    disk_reminder_seconds: int = Field(default=3600, ge=60)
+    merge_min_free_disk_gb: float = Field(default=1, ge=0, allow_inf_nan=False)
+    merge_space_multiplier: float = Field(default=2.2, ge=2, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_disk_thresholds(self):
+        if self.disk_critical_gb >= self.disk_warning_gb:
+            raise ValueError("DISK_CRITICAL_GB must be less than DISK_WARNING_GB")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

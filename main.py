@@ -84,7 +84,11 @@ def main() -> None:
     # Before the scheduler polls: nothing else is writing the archive yet, so
     # merging here cannot race a fresh recording into the same directory.
     try:
-        recover_orphaned_sessions(logger)
+        recover_orphaned_sessions(
+            logger,
+            reserve_gb=env.merge_min_free_disk_gb,
+            space_multiplier=env.merge_space_multiplier,
+        )
     except Exception as e:
         # Recovery is best-effort housekeeping and must never block startup.
         # Every input it touches is kept on failure, so the next run retries.

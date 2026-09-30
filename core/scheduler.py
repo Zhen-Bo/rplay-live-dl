@@ -11,6 +11,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from core.config import DEFAULT_CONFIG_PATH, validate_startup_config_path
 from core.env import EnvConfig
+from core.disk_space import DiskSpaceMonitor
 from core.live_stream_monitor import LiveStreamMonitor
 from core.rplay import RPlayAPI
 from core.utils import terminate_child_processes
@@ -46,6 +47,14 @@ class LiveStreamScheduler:
         self.monitor = LiveStreamMonitor(
             api_client=api_client,
             min_free_disk_gb=self.env.min_free_disk_gb,
+            disk_monitor=DiskSpaceMonitor(
+                self.env.disk_warning_gb,
+                self.env.disk_critical_gb,
+                self.env.disk_recovery_margin_gb,
+                self.env.disk_reminder_seconds,
+            ),
+            merge_reserve_gb=self.env.merge_min_free_disk_gb,
+            merge_space_multiplier=self.env.merge_space_multiplier,
         )
         self.scheduler = BlockingScheduler()
         self._stopped = False

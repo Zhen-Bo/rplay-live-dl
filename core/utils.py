@@ -101,6 +101,9 @@ def merge_ts_files_to_mp4(
     ts_files: List[Path],
     output_path: Path,
     run_command: Callable[[List[str]], object],
+    *,
+    reserve_gb: float = 1,
+    space_multiplier: float = 2.2,
 ) -> None:
     """
     Merge ts fragments into one mp4 with ffmpeg concat.
@@ -110,6 +113,9 @@ def merge_ts_files_to_mp4(
     raise ``CalledProcessError`` on non-zero exit and ``TimeoutExpired`` on timeout.
     Callers own collision policy and validation of the result.
     """
+    from core.disk_space import ensure_merge_space
+
+    ensure_merge_space(ts_files, output_path, reserve_gb, space_multiplier)
     list_path = ts_files[0].parent / "merge-inputs.txt"
     list_content = "\n".join(
         _format_ffconcat_input_path(ts_file) for ts_file in ts_files

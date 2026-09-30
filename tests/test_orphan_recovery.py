@@ -51,7 +51,7 @@ def _fake_merge(
     anything, ``writes=b""`` for one that produces an empty file.
     """
 
-    def fake_merge(ts_files, output_path, run_command):
+    def fake_merge(ts_files, output_path, run_command, **kwargs):
         if captured is not None:
             captured.append((list(ts_files), output_path))
         if writes is not None:
@@ -250,9 +250,7 @@ class TestOrphanRecovery:
                 claimed = True
             return real_open(path, flags, mode)
 
-        monkeypatch.setattr(
-            "core.orphan_recovery.os.open", claim_before_exclusive_open
-        )
+        monkeypatch.setattr("core.orphan_recovery.os.open", claim_before_exclusive_open)
 
         recover_orphaned_sessions(LOGGER)
 
@@ -290,7 +288,7 @@ class TestOrphanRecovery:
         ts_file = _write_raw(archive)
         final_path = archive / "#Creator 2026-03-06 123.mp4"
 
-        def merge_then_lose_the_name(ts_files, output_path, run_command):
+        def merge_then_lose_the_name(ts_files, output_path, run_command, **kwargs):
             output_path.write_bytes(b"mp4")
             # The name goes from free to taken while ffmpeg is still busy.
             final_path.write_bytes(b"claimed mid-merge")

@@ -71,6 +71,9 @@ class TestLiveStreamSchedulerInit:
         mock_monitor_class.assert_called_once_with(
             api_client=ANY,
             min_free_disk_gb=5.0,
+            disk_monitor=ANY,
+            merge_reserve_gb=1.0,
+            merge_space_multiplier=2.2,
         )
         assert scheduler.monitor is mock_monitor_class.return_value
 
