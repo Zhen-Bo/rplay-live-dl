@@ -286,6 +286,7 @@ The v2 runtime uses a session-aware download pipeline.
    - yt-dlp writes raw outputs as `.ts` directly into `archive/<creator>/`
    - each download task uses a `10`-second socket timeout
    - transient task failures automatically retry up to `3` attempts total with exponential backoff
+   - after a raw task failure, the monitor permits one immediate recovery poll per creator; repeated failures are throttled with a per-creator cooldown (30 seconds, doubling to a 5-minute cap) so a no-output failure cannot create a hot retry loop
    - `HTTP 404` on the stream playlist is retried with exponential backoff before the session is marked blocked
    - `HTTP 403` is still treated as immediate blocked/private access
    - `HTTP 401` is treated as an authentication failure instead of a blocked session
@@ -300,10 +301,14 @@ The v2 runtime uses a session-aware download pipeline.
 5. **Merge into final `.mp4`**
    - all `.ts` files in `archive/<creator>/` matching the session prefix are merged into one final `.mp4`
    - even if only one raw `.ts` file exists, the final visible output is still `.mp4`
+   - FFmpeg writes to a same-directory temporary `.merging.mp4`; only a completed, non-empty file is installed under the visible name
+   - final installation never overwrites an existing recording: a name claimed while FFmpeg is running is retried with the next numeric suffix
 
 6. **Clean up or preserve for recovery**
    - on success, the `.ts` files matching the session prefix are deleted from `archive/<creator>/`
    - on merge failure, the `.ts` files remain in `archive/<creator>/` for manual inspection and recovery
+   - live and startup recovery installs the validated merge with a no-overwrite hardlink when the filesystem supports it; on exFAT/CIFS-style filesystems it reserves the first free name with `O_EXCL` and stream-copies instead
+   - if that fallback copy fails, the new destination is removed when possible and the raw `.ts` files remain; a process killed during the copy may leave a partial claimed `.mp4`, so the next recovery attempt keeps that name untouched, uses the next free suffix, and leaves the stale file for manual inspection
 
 7. **Observe lifecycle logs**
    - set `LOG_LEVEL=DEBUG` in `.env` to see stream-candidate evaluation and skip reasons

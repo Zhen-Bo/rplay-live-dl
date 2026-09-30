@@ -104,6 +104,215 @@ class TestMergeFlow:
         assert event.output_path == final_dir / "#Creator 2026-03-06 123_1.mp4"
         monitor.shutdown()
 
+    def test_merge_installs_next_suffix_when_name_is_claimed_mid_merge(
+        self, tmp_path, monkeypatch
+    ):
+        """Test a concurrent claimant cannot be overwritten after ffmpeg finishes."""
+        monkeypatch.chdir(tmp_path)
+        final_dir = tmp_path / "archive" / "Creator"
+        final_dir.mkdir(parents=True)
+        prefix = "20260306_123000_"
+        ts_file = final_dir / f"{prefix}#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        final_path = final_dir / "#Creator 2026-03-06 123.mp4"
+        captured = []
+
+        def fake_merge(ts_files, output_path):
+            captured.append(output_path)
+            output_path.write_bytes(b"ours")
+            # Simulate another merge completing while this ffmpeg invocation
+            # is still in flight. The install must keep this claimant intact.
+            final_path.write_bytes(b"claimant")
+
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+        monitor._run_ffmpeg_merge = fake_merge
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:30:00",
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 30, 0),
+                output_dir=final_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeCompleted)
+        assert captured == [final_dir / ".#Creator 2026-03-06 123.merging.mp4"]
+        assert captured[0] != final_path
+        assert final_path.read_bytes() == b"claimant"
+        assert (final_dir / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"ours"
+        assert not captured[0].exists()
+        assert not ts_file.exists()
+        monitor.shutdown()
+
+    def test_merge_long_title_fits_final_and_temp_names(
+        self, tmp_path, monkeypatch
+    ):
+        """Test a long Unicode title still merges within the filename byte limit."""
+        monkeypatch.chdir(tmp_path)
+        output_dir = tmp_path / "archive" / "Creator"
+        output_dir.mkdir(parents=True)
+        prefix = "20260306_120000_"
+        ts_file = output_dir / f"{prefix}#Creator recording.ts"
+        ts_file.write_bytes(b"ts")
+        captured = []
+        title = "標題" * 200
+
+        def fake_merge(ts_files, output_path):
+            captured.append(output_path)
+            output_path.write_bytes(b"mp4")
+
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+        monitor._run_ffmpeg_merge = fake_merge
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:00:00",
+                creator_name="Creator",
+                title=title,
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                output_dir=output_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeCompleted)
+        assert len(event.output_path.name.encode("utf-8")) <= 255
+        assert captured and len(captured[0].name.encode("utf-8")) <= 255
+        assert event.output_path.read_bytes() == b"mp4"
+        assert not ts_file.exists()
+        monitor.shutdown()
+
+    def test_stale_merge_temp_is_cleared_before_noop_merge(
+        self, tmp_path, monkeypatch
+    ):
+        """Test a stale temp cannot be mistaken for bytes from a new merge."""
+        monkeypatch.chdir(tmp_path)
+        output_dir = tmp_path / "archive" / "Creator"
+        output_dir.mkdir(parents=True)
+        prefix = "20260306_120000_"
+        ts_file = output_dir / f"{prefix}#Creator recording.ts"
+        ts_file.write_bytes(b"ts")
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+        base_path = monitor._build_final_output_base_path(
+            creator_name="Creator",
+            title="Recording",
+            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+        )
+        temp_path = monitor._build_merge_temp_path(base_path)
+        temp_path.write_bytes(b"stale bytes from a killed merge")
+
+        def fake_merge(ts_files, output_path):
+            # Simulate ffmpeg returning successfully without producing output.
+            return None
+
+        monitor._run_ffmpeg_merge = fake_merge
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:00:00",
+                creator_name="Creator",
+                title="Recording",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                output_dir=output_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeFailed)
+        assert "merge produced no output" in event.error_message
+        assert ts_file.exists()
+        assert not temp_path.exists()
+        assert not list(output_dir.glob("*.mp4"))
+        monitor.shutdown()
+
+    def test_merge_without_output_keeps_raw_and_cleans_temp(
+        self, tmp_path, monkeypatch
+    ):
+        """Test an empty ffmpeg result is a failure and leaves no temp artifact."""
+        monkeypatch.chdir(tmp_path)
+        output_dir = tmp_path / "archive" / "Creator"
+        output_dir.mkdir(parents=True)
+        prefix = "20260306_120000_"
+        ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        captured = []
+
+        def fake_merge(ts_files, output_path):
+            captured.append(output_path)
+
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+        monitor._run_ffmpeg_merge = fake_merge
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:00:00",
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                output_dir=output_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeFailed)
+        assert "merge produced no output" in event.error_message
+        assert ts_file.exists()
+        assert captured and not captured[0].exists()
+        assert not list(output_dir.glob("*.mp4"))
+        monitor.shutdown()
+
+    @pytest.mark.parametrize(
+        "installed_bytes",
+        [b"", None],
+        ids=["empty-installed-output", "missing-installed-output"],
+    )
+    def test_invalid_installed_output_keeps_raw_inputs(
+        self, tmp_path, monkeypatch, installed_bytes
+    ):
+        """Test raw inputs survive when the final install is not usable."""
+        monkeypatch.chdir(tmp_path)
+        output_dir = tmp_path / "archive" / "Creator"
+        output_dir.mkdir(parents=True)
+        prefix = "20260306_120000_"
+        ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        monitor = LiveStreamMonitor(api_client=MagicMock(spec=RPlayAPI))
+
+        def fake_merge(ts_files, output_path):
+            output_path.write_bytes(b"mp4")
+
+        def fake_install(logger, temp_path, base_path):
+            if installed_bytes is not None:
+                base_path.write_bytes(installed_bytes)
+            temp_path.unlink()
+            return base_path
+
+        monitor._run_ffmpeg_merge = fake_merge
+        monkeypatch.setattr(
+            "core.live_stream_monitor.install_merge_output_without_overwrite",
+            fake_install,
+        )
+
+        event = monitor._merge_session_to_mp4(
+            MergeJobSpec(
+                session_key="creator1:2026-03-06T12:00:00",
+                creator_name="Creator",
+                title="123",
+                stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
+                output_dir=output_dir,
+                session_prefix=prefix,
+            )
+        )
+
+        assert isinstance(event, MergeFailed)
+        assert "installed merge output is invalid" in event.error_message
+        assert ts_file.exists()
+        assert not (output_dir / "#Creator 2026-03-06 123.mp4").exists()
+        monitor.shutdown()
+
     def test_failed_merge_leaves_ts_files_in_output_dir(self, tmp_path, monkeypatch):
         """Test failed merges leave raw ts files in place — no _failed/ directory."""
         monkeypatch.chdir(tmp_path)

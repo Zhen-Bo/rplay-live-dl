@@ -35,8 +35,13 @@ from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
 from .logger import bind, clip, setup_logger
+from .orphan_recovery import install_merge_output_without_overwrite
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
-from .utils import merge_ts_files_to_mp4, terminate_child_processes
+from .utils import (
+    fit_filename_component_bytes,
+    merge_ts_files_to_mp4,
+    terminate_child_processes,
+)
 
 __all__ = [
     "LiveStreamMonitor",
@@ -105,6 +110,13 @@ class LiveStreamMonitor:
     SHUTDOWN_BUDGET_SECONDS = 600.0
     # Cap for the fast phases so they cannot eat the merge's share of the budget.
     SHUTDOWN_PHASE_TIMEOUT_SECONDS = 30.0
+    # A raw download failure gets one immediate recovery poll.  Repeated
+    # failures (especially the no-output path, which has no downloader
+    # backoff) are throttled per creator so another creator's poll cannot
+    # turn this into a failure-speed loop.
+    DOWNLOAD_RETRY_IMMEDIATE_BUDGET = 1
+    DOWNLOAD_RETRY_COOLDOWN_BASE_SECONDS = 30.0
+    DOWNLOAD_RETRY_COOLDOWN_MAX_SECONDS = 300.0
     TERMINAL_SESSION_STATES = {
         SessionState.BLOCKED,
         SessionState.DONE,
@@ -180,6 +192,13 @@ class LiveStreamMonitor:
 
         # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
+        # Retry state is deliberately separate from CreatorStreamState:
+        # _update_creator_stream_state() runs for every start attempt and
+        # clears the blocked flag for a new handled session.  These values
+        # must survive a failed attempt within the same stream instead.
+        self._download_retry_failures: Dict[str, int] = {}
+        self._download_retry_cooldown_until: Dict[str, float] = {}
+        self._download_retry_stream_start: Dict[str, datetime] = {}
 
         self._control_thread.start()
 
@@ -384,6 +403,7 @@ class LiveStreamMonitor:
     def _process_live_stream(self, stream: LiveStream) -> None:
         """Process one monitored live stream candidate."""
         with self._state_lock:
+            self._reset_download_retry_for_new_stream_locked(stream)
             self.latest_stream_oid_by_creator[stream.creator_oid] = stream.oid
             self._prune_superseded_terminal_sessions_locked(
                 stream.creator_oid,
@@ -448,11 +468,13 @@ class LiveStreamMonitor:
         creator_oid = stream.creator_oid
         with self._state_lock:
             state = self._creator_states.get(creator_oid)
+            cooldown_until = self._download_retry_cooldown_until.get(creator_oid, 0.0)
 
-        if state is None:
-            return True
-
-        return not state.is_current_stream_blocked
+        if state is not None and state.is_current_stream_blocked:
+            return False
+        if cooldown_until > monotonic():
+            return False
+        return True
 
     def _cleanup_offline_creator_states(self, live_creator_oids: Set[str]) -> None:
         """Clear state for creators no longer in the live list."""
@@ -723,6 +745,7 @@ class LiveStreamMonitor:
         with self._state_lock:
             creator_name = self._resolve_creator_name_locked(creator_oid)
             creator_state = self._creator_states.pop(creator_oid, None)
+            self._clear_download_retry_locked(creator_oid)
             self.latest_stream_oid_by_creator.pop(creator_oid, None)
             released_raw_lock = self._active_raw_session_by_creator.pop(
                 creator_oid, None
@@ -935,6 +958,7 @@ class LiveStreamMonitor:
                 return
 
             session.state = SessionState.MERGE_QUEUED
+            self._clear_download_retry_locked(session.creator_oid)
             active_session_key = self._active_raw_session_by_creator.get(
                 session.creator_oid
             )
@@ -1009,27 +1033,54 @@ class LiveStreamMonitor:
         """Clear the failed raw session and re-poll at once if the creator is still live."""
         with self._state_lock:
             session = self.sessions.pop(event.session_key, None)
+            stale_stream = False
             if session is not None:
                 active_session_key = self._active_raw_session_by_creator.get(
                     session.creator_oid
                 )
                 if active_session_key == session.session_key:
                     self._active_raw_session_by_creator.pop(session.creator_oid, None)
+                # The observed stream marker is updated at poll entry, before
+                # the start gate checks cooldown.  CreatorStreamState only
+                # changes when a download is actually started, so it can lag
+                # during a cooldown and must not be the sole stale check.
+                current_stream_start = self._download_retry_stream_start.get(
+                    session.creator_oid
+                )
+                if current_stream_start is None:
+                    current_state = self._creator_states.get(session.creator_oid)
+                    current_stream_start = (
+                        current_state.last_stream_start_time
+                        if current_state is not None
+                        else None
+                    )
+                stale_stream = (
+                    current_stream_start is None
+                    or current_stream_start != session.stream_start_time
+                )
 
         if session is None:
             return
+
+        # A downloader can report after a new stream has already become
+        # current (for example, a late thread completion during a fast
+        # stream transition).  Its failure belongs to the old session and
+        # must not consume the new stream's retry budget or trigger a poll.
+        if stale_stream:
+            self.logger.debug(
+                f"Ignoring late raw download failure for {session.creator_name}: "
+                f"session_stream_start={session.stream_start_time.isoformat()}"
+            )
+            return
+
+        retried_now = self._record_download_failure(session.creator_oid)
 
         # Waiting for the next scheduled poll costs up to a whole INTERVAL (up
         # to 3600s) of a stream that is still running. Requested only after the
         # session has been cleared above, so the extra poll sees the creator
         # free to start again rather than skipping it as already recording.
-        # ponytail: no separate retry budget here. Most of these arrive only
-        # after the downloader spent its tenacity attempts with exponential
-        # backoff, which keeps the extra poll off a hot loop. Not all:
-        # downloader.py's "finished but produced no output file" path reports
-        # with no backoff behind it, so that mode re-polls as fast as it fails.
-        # Add a budget if failures are seen recurring faster than the backoff.
-        retried_now = self._request_retry_poll(session.creator_oid)
+        if retried_now:
+            retried_now = self._request_retry_poll(session.creator_oid)
         next_attempt = (
             "retrying immediately" if retried_now else "will retry on next poll"
         )
@@ -1037,6 +1088,45 @@ class LiveStreamMonitor:
             f"⚠️ Raw download failed for {session.creator_name}; {next_attempt}: "
             f"{event.error_message}"
         )
+
+    def _reset_download_retry_for_new_stream_locked(self, stream: LiveStream) -> None:
+        """Drop retry budget when a creator's stream session changes."""
+        creator_oid = stream.creator_oid
+        previous_start = self._download_retry_stream_start.get(creator_oid)
+        if previous_start is None:
+            self._download_retry_stream_start[creator_oid] = stream.stream_start_time
+            return
+        if previous_start != stream.stream_start_time:
+            # A cooldown already in progress remains in force across a stream
+            # transition; only the old stream's failure count is discarded.
+            # This prevents a late old-session event from adding to the new
+            # stream while preserving the back-pressure that is already due.
+            self._download_retry_failures.pop(creator_oid, None)
+            self._download_retry_stream_start[creator_oid] = stream.stream_start_time
+
+    def _clear_download_retry_locked(self, creator_oid: str) -> None:
+        """Clear a creator's failed-download budget (state lock required)."""
+        self._download_retry_failures.pop(creator_oid, None)
+        self._download_retry_cooldown_until.pop(creator_oid, None)
+        self._download_retry_stream_start.pop(creator_oid, None)
+
+    def _record_download_failure(self, creator_oid: str) -> bool:
+        """Record a failure and return whether an immediate poll is allowed."""
+        now = monotonic()
+        with self._state_lock:
+            failures = self._download_retry_failures.get(creator_oid, 0) + 1
+            self._download_retry_failures[creator_oid] = failures
+            if failures <= self.DOWNLOAD_RETRY_IMMEDIATE_BUDGET:
+                self._download_retry_cooldown_until.pop(creator_oid, None)
+                return True
+
+            exponent = failures - self.DOWNLOAD_RETRY_IMMEDIATE_BUDGET - 1
+            cooldown = min(
+                self.DOWNLOAD_RETRY_COOLDOWN_MAX_SECONDS,
+                self.DOWNLOAD_RETRY_COOLDOWN_BASE_SECONDS * (2**exponent),
+            )
+            self._download_retry_cooldown_until[creator_oid] = now + cooldown
+            return False
 
     def _handle_raw_download_blocked(self, event: RawDownloadBlocked) -> None:
         """Apply blocked-session state when downloader reports access failure.
@@ -1082,6 +1172,7 @@ class LiveStreamMonitor:
         """Merge one session's raw ts outputs into the final mp4 artifact."""
         ts_files = sorted(merge_job.output_dir.glob(f"{merge_job.session_prefix}*.ts"))
         output_path: Optional[Path] = None
+        temp_path: Optional[Path] = None
 
         try:
             if not ts_files:
@@ -1090,12 +1181,39 @@ class LiveStreamMonitor:
                     f"(prefix={merge_job.session_prefix})"
                 )
 
-            output_path = self._reserve_final_output_path(
+            # Reserve the *base* name only for deriving a stable output stem.
+            # FFmpeg must never write directly to this collision-significant
+            # path: a creator can finish another session while this merge is
+            # running, and ``-y`` would otherwise clobber that recording.
+            base_output_path = self._build_final_output_base_path(
                 creator_name=merge_job.creator_name,
                 title=merge_job.title,
                 stream_start_time=merge_job.stream_start_time,
             )
-            self._run_ffmpeg_merge(ts_files, output_path)
+            temp_path = self._build_merge_temp_path(base_output_path)
+            self._clear_stale_merge_temp(temp_path)
+            self._run_ffmpeg_merge(ts_files, temp_path)
+
+            # A successful ffmpeg exit is not enough to prove an artifact was
+            # produced. Keep the raw inputs when a stub, muxer, or interrupted
+            # process leaves no bytes to install.
+            self._validate_merge_output(temp_path, "merge produced no output")
+
+            # Install only after ffmpeg is done. The shared recovery helper
+            # uses an atomic hardlink (or O_EXCL copy fallback) and retries a
+            # suffix when another writer claims the name during the merge.
+            output_path = install_merge_output_without_overwrite(
+                self.logger, temp_path, base_output_path
+            )
+
+            # The installer may use a filesystem-specific copy fallback. Do
+            # not delete the only recoverable inputs until the final path is
+            # present and non-empty as well. This also keeps a broken artifact
+            # from being mistaken for a completed recording after a copy or
+            # external filesystem failure.
+            self._validate_merge_output(
+                output_path, "installed merge output is invalid"
+            )
 
             # The merge succeeded: from here the mp4 is the artifact of record.
             # A locked .ts must neither fail the merge nor reach the except
@@ -1115,7 +1233,9 @@ class LiveStreamMonitor:
             )
 
         except subprocess.TimeoutExpired as exc:
-            self._discard_partial_merge_output(output_path)
+            self._discard_partial_merge_output(temp_path)
+            if output_path is not None and output_path != temp_path:
+                self._discard_partial_merge_output(output_path)
             timeout_value = (
                 int(exc.timeout)
                 if exc.timeout is not None
@@ -1126,12 +1246,28 @@ class LiveStreamMonitor:
                 error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
             )
         except Exception as exc:
-            self._discard_partial_merge_output(output_path)
+            self._discard_partial_merge_output(temp_path)
+            if output_path is not None and output_path != temp_path:
+                self._discard_partial_merge_output(output_path)
             self.logger.exception(f"Merge failed for session {merge_job.session_key}")
             return MergeFailed(
                 session_key=merge_job.session_key,
                 error_message=str(exc),
             )
+
+    @staticmethod
+    def _validate_merge_output(output_path: Path, error_prefix: str) -> None:
+        """Require a regular, non-empty merge artifact before raw cleanup."""
+        try:
+            is_file = output_path.is_file()
+            size = output_path.stat().st_size if is_file else 0
+        except OSError as exc:
+            raise RuntimeError(
+                f"{error_prefix} at {output_path.name}: {exc}"
+            ) from exc
+
+        if not is_file or size == 0:
+            raise RuntimeError(f"{error_prefix} at {output_path.name}")
 
     def _discard_partial_merge_output(self, output_path: Optional[Path]) -> None:
         """
@@ -1158,13 +1294,48 @@ class LiveStreamMonitor:
         stream_start_time: datetime,
     ) -> Path:
         """Reserve the next available final mp4 output path."""
+        return StreamDownloader.get_unique_path(
+            self._build_final_output_base_path(
+                creator_name=creator_name,
+                title=title,
+                stream_start_time=stream_start_time,
+            )
+        )
+
+    def _build_final_output_base_path(
+        self,
+        creator_name: str,
+        title: str,
+        stream_start_time: datetime,
+    ) -> Path:
+        """Build the unsuffixed final path used as the install base name."""
         safe_title = sanitize_filename(title, replacement_text="_") or "untitled"
         date_str = stream_start_time.astimezone().strftime("%Y-%m-%d")
         base_dir = Path.cwd() / StreamDownloader.ARCHIVE_DIR / creator_name
         base_dir.mkdir(parents=True, exist_ok=True)
 
-        base_path = base_dir / f"#{creator_name} {date_str} {safe_title}.mp4"
-        return StreamDownloader.get_unique_path(base_path)
+        return fit_filename_component_bytes(
+            base_dir / f"#{creator_name} {date_str} {safe_title}.mp4"
+        )
+
+    @staticmethod
+    def _build_merge_temp_path(base_output_path: Path) -> Path:
+        """Return a same-directory path that is safe for ffmpeg to overwrite."""
+        # Reserve the marker before truncating the base stem. Otherwise a
+        # title near the filesystem limit can cut off ``.merging`` entirely,
+        # making stale-temp inspection and cleanup ambiguous.
+        temp_seed = base_output_path.with_name(f".{base_output_path.stem}.mp4")
+        return fit_filename_component_bytes(temp_seed, appended_suffix=".merging")
+
+    @staticmethod
+    def _clear_stale_merge_temp(temp_path: Path) -> None:
+        """Remove a prior interrupted merge before accepting new output bytes."""
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not clear stale merge output {temp_path.name}: {exc}"
+            ) from exc
 
     def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
         """Merge ts fragments into one mp4 file using ffmpeg concat."""

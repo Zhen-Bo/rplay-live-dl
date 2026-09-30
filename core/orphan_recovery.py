@@ -11,15 +11,17 @@ invocation the live merge uses, adopting a canonical NAME.ts.part first.
 import logging
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS
 from core.downloader import StreamDownloader
-from core.utils import merge_ts_files_to_mp4
+from core.utils import fit_filename_component_bytes, merge_ts_files_to_mp4
 
 __all__ = [
+    "install_merge_output_without_overwrite",
     "recover_orphaned_sessions",
 ]
 
@@ -109,10 +111,24 @@ def _recover_one_session(
 
     # ffmpeg writes a temp in the same directory so a death mid-merge cannot
     # leave a partial mp4 under a final name, which the suffix policy below
-    # would then read as a real recording. The .mp4 suffix keeps ffmpeg's muxer
-    # inference; a stale temp from an interrupted attempt is overwritten by -y.
-    temp_path = output_dir / f".{final_stem}.recovering.mp4"
+    # would then read as a real recording. Reserve the marker before fitting
+    # the stem, so long names retain ``.recovering.mp4`` and stay within the
+    # filesystem's component byte limit.
+    temp_seed = output_dir / f".{final_stem}.mp4"
+    temp_path = fit_filename_component_bytes(
+        temp_seed, appended_suffix=".recovering"
+    )
     try:
+        try:
+            # A prior process may have been killed after ffmpeg opened this
+            # temp. Never allow those stale bytes to satisfy this run's output
+            # validation when a new merge returns without writing anything.
+            temp_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not clear stale recovery output {temp_path.name}: {exc}"
+            ) from exc
+
         merge_ts_files_to_mp4(
             ts_files,
             temp_path,
@@ -136,7 +152,7 @@ def _recover_one_session(
         # produces two sessions with identical titles in one directory.
         # Reserved at install time rather than before the merge, which can run
         # for hours.
-        output_path = _install_without_overwrite(
+        output_path = install_merge_output_without_overwrite(
             logger, temp_path, output_dir / f"{final_stem}.mp4"
         )
     except Exception as exc:
@@ -167,23 +183,104 @@ def _recover_one_session(
     )
 
 
-def _install_without_overwrite(
+def install_merge_output_without_overwrite(
     logger: logging.Logger, temp_path: Path, base_path: Path
 ) -> Path:
-    """Install the merged mp4 under the first free name, never clobbering one."""
+    """Install a validated merge under the first free name, never clobbering one.
+
+    Hardlinks are the fast path: creating one is an atomic no-overwrite
+    install, and both paths refer to the already validated bytes. Some
+    filesystems (for example exFAT and some CIFS mounts) reject hardlinks even
+    when both paths are in the same directory. On those filesystems we create
+    the destination with ``O_EXCL`` and stream-copy the bytes into it instead.
+
+    The exclusive create still protects an existing recording from overwrite
+    and handles a name claimed between ``get_unique_path`` and installation.
+    A copy error removes the newly created destination when possible. A hard
+    process kill cannot run that cleanup, so a partial destination can remain
+    under its claimed name; the raw inputs are deliberately retained and the
+    next recovery run chooses the next free suffix rather than overwriting it.
+    """
+    hardlink_supported = True
     while True:
         candidate = StreamDownloader.get_unique_path(base_path)
+
+        if hardlink_supported:
+            try:
+                # Availability and install are two steps, and a claimant can
+                # win the gap between them — replace() would destroy it
+                # silently. os.link refuses an existing target instead, so a
+                # lost race costs one more suffix.
+                os.link(temp_path, candidate)
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                # A hardlink is an optimisation, not a requirement. Errno
+                # mappings for unsupported hardlinks differ across Windows,
+                # exFAT, and CIFS, so keep this fallback broad. If the error is
+                # a real source or permission failure, the exclusive copy
+                # fails through the same recovery handler and raw inputs stay
+                # intact. For a supported-but-transient link failure, a copy
+                # can still salvage the already-validated output.
+                hardlink_supported = False
+                logger.debug(
+                    "Hardlink install unavailable for merge output "
+                    f"{candidate.name}: {exc}; using exclusive copy"
+                )
+            else:
+                _discard_partial_output(logger, temp_path)
+                return candidate
+
         try:
-            # Availability and install are two steps, and a claimant can win
-            # the gap between them — replace() would destroy it silently.
-            # os.link refuses an existing target instead, so a lost race costs
-            # one more suffix. Every collision leaves that name taken for good,
-            # so the retries run out at get_unique_path's duplicate cap.
-            os.link(temp_path, candidate)
+            _copy_without_overwrite(logger, temp_path, candidate)
         except FileExistsError:
+            # The name may be claimed after get_unique_path returned it. The
+            # exclusive open makes that race safe; retry with the next suffix.
             continue
+
         _discard_partial_output(logger, temp_path)
         return candidate
+
+
+def _copy_without_overwrite(
+    logger: logging.Logger, source_path: Path, destination_path: Path
+) -> None:
+    """Copy a validated output to a freshly-created path without overwriting.
+
+    ``shutil.copyfile`` opens its destination with truncation, which would
+    violate recovery's never-overwrite guarantee. ``O_EXCL`` reserves the
+    destination atomically before any bytes are written. If Python reports a
+    copy failure (including an interrupted write), remove that reservation so
+    the next startup can retry the session. A process terminated by SIGKILL
+    cannot run the cleanup; that case is documented by the caller and leaves
+    the claimed filename occupied rather than risking an overwrite.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    mode = source_path.stat().st_mode & 0o777
+    destination_fd = os.open(destination_path, flags, mode)
+    fd_open = True
+    try:
+        with source_path.open("rb") as source, os.fdopen(
+            destination_fd, "wb", closefd=True
+        ) as destination:
+            fd_open = False
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+    except BaseException:
+        if fd_open:
+            os.close(destination_fd)
+        try:
+            destination_path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            # Preserve the original copy error. The destination remains a
+            # claimed name, so a later run will select a suffix instead of
+            # overwriting it.
+            logger.warning(
+                "Could not remove failed merge copy "
+                f"{destination_path.name}: {cleanup_error}"
+            )
+        raise
 
 
 def _discard_partial_output(logger: logging.Logger, temp_path: Path) -> None:
@@ -192,5 +289,11 @@ def _discard_partial_output(logger: logging.Logger, temp_path: Path) -> None:
         temp_path.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning(
-            f"Could not remove partial recovery output {temp_path.name}: {exc}"
+            f"Could not remove partial merge output {temp_path.name}: {exc}"
         )
+
+
+# Kept for callers that imported the original private name while this helper
+# was recovery-only. New live and startup merge code uses the descriptive
+# public API above.
+_install_without_overwrite = install_merge_output_without_overwrite

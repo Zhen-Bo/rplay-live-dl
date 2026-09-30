@@ -1,6 +1,8 @@
 """Tests for startup recovery of orphaned .ts recordings."""
 
+import errno
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -10,6 +12,11 @@ from core.downloader import StreamDownloader
 from core.orphan_recovery import recover_orphaned_sessions
 
 LOGGER = logging.getLogger("test_recovery")
+
+
+def _reject_hardlink(source, destination):
+    """Stand in for a filesystem where hardlinks are unavailable."""
+    raise OSError(errno.EOPNOTSUPP, "hardlinks are not supported")
 
 
 @pytest.fixture
@@ -100,6 +107,38 @@ class TestOrphanRecovery:
 
         assert list(archive.iterdir()) == [ts_file]
 
+    def test_stale_recovery_temp_is_cleared_before_noop_merge(
+        self, archive, monkeypatch
+    ):
+        """Test stale recovery bytes cannot be mistaken for a new merge result."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        stale = archive / ".#Creator 2026-03-06 123.recovering.mp4"
+        stale.write_bytes(b"stale bytes from a killed recovery")
+        _fake_merge(monkeypatch, writes=None)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert list(archive.iterdir()) == [ts_file]
+
+    def test_long_recovery_temp_preserves_marker_and_byte_limit(
+        self, archive, monkeypatch
+    ):
+        """Test a near-limit raw name keeps ``.recovering.mp4`` intact."""
+        final_stem = "x" * 236
+        ts_file = archive / f"20260306_120000_{final_stem}.ts"
+        ts_file.write_bytes(b"ts")
+        captured = []
+        _fake_merge(monkeypatch, captured=captured)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert captured
+        temp_path = captured[0][1]
+        assert temp_path.name.endswith(".recovering.mp4")
+        assert len(temp_path.name.encode("utf-8")) <= 255
+        assert (archive / f"{final_stem}.mp4").exists()
+
     def test_merge_producing_an_empty_output_keeps_the_inputs(
         self, archive, monkeypatch
     ):
@@ -161,6 +200,96 @@ class TestOrphanRecovery:
         assert existing.read_bytes() == b"already merged"
         assert (archive / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"mp4"
         assert not ts_file.exists()
+
+    def test_unsupported_hardlink_filesystem_uses_exclusive_copy(
+        self, archive, monkeypatch
+    ):
+        """Test recovery installs output when the filesystem rejects hardlinks."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        _fake_merge(monkeypatch)
+
+        monkeypatch.setattr("core.orphan_recovery.os.link", _reject_hardlink)
+
+        recover_orphaned_sessions(LOGGER)
+
+        final_path = archive / "#Creator 2026-03-06 123.mp4"
+        assert final_path.read_bytes() == b"mp4"
+        assert not ts_file.exists()
+        assert not (archive / ".#Creator 2026-03-06 123.recovering.mp4").exists()
+
+    def test_stale_fallback_output_is_preserved_and_next_suffix_is_used(
+        self, archive, monkeypatch
+    ):
+        """Test a restart never treats a possible partial fallback as replaceable."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        stale = archive / "#Creator 2026-03-06 123.mp4"
+        stale.write_bytes(b"partial copy left by killed process")
+        _fake_merge(monkeypatch)
+
+        monkeypatch.setattr("core.orphan_recovery.os.link", _reject_hardlink)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert stale.read_bytes() == b"partial copy left by killed process"
+        assert (archive / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"mp4"
+        assert not ts_file.exists()
+
+    def test_exclusive_copy_collision_retries_without_overwriting_claimant(
+        self, archive, monkeypatch
+    ):
+        """Test O_EXCL wins a race after path selection and keeps the claimant."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        _fake_merge(monkeypatch)
+
+        monkeypatch.setattr(
+            "core.orphan_recovery.os.link", _reject_hardlink
+        )
+
+        real_open = os.open
+        claimed = False
+
+        def claim_before_exclusive_open(path, flags, mode=0o777):
+            nonlocal claimed
+            if flags & os.O_EXCL and not claimed:
+                Path(path).write_bytes(b"claimed by another process")
+                claimed = True
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(
+            "core.orphan_recovery.os.open", claim_before_exclusive_open
+        )
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert (archive / "#Creator 2026-03-06 123.mp4").read_bytes() == (
+            b"claimed by another process"
+        )
+        assert (archive / "#Creator 2026-03-06 123_1.mp4").read_bytes() == b"mp4"
+        assert not ts_file.exists()
+
+    def test_copy_failure_removes_partial_destination_and_keeps_raw(
+        self, archive, monkeypatch
+    ):
+        """Test a failed fallback copy leaves no false final artifact."""
+        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
+        ts_file.write_bytes(b"ts")
+        _fake_merge(monkeypatch)
+        monkeypatch.setattr(
+            "core.orphan_recovery.os.link", _reject_hardlink
+        )
+
+        def fail_copy(source, destination):
+            destination.write(b"partial")
+            raise OSError("destination filled during copy")
+
+        monkeypatch.setattr("core.orphan_recovery.shutil.copyfileobj", fail_copy)
+
+        recover_orphaned_sessions(LOGGER)
+
+        assert list(archive.iterdir()) == [ts_file]
 
     def test_a_name_taken_while_the_merge_runs_is_not_overwritten(
         self, archive, monkeypatch
