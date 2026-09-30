@@ -1,13 +1,4 @@
-"""
-Centralized logging module for rplay-live-dl.
-
-Provides a unified logging system with:
-- Console and file output with colored formatting
-- Log rotation with size limits
-- Automatic cleanup of old log files
-- Consistent formatting across all modules
-- Lazy file creation (only when first log is written)
-"""
+"""Centralized logging for rplay-live-dl."""
 
 import logging
 from datetime import datetime, timedelta
@@ -43,14 +34,10 @@ __all__ = [
     "LOG_TEXT_MAX_COLUMNS",
 ]
 
-# Default log level constant (int) derived from the shared name default.
 DEFAULT_LOG_LEVEL = logging.getLevelNamesMapping()[DEFAULT_LOG_LEVEL_NAME]
 
-# Process-wide settings; start at constants defaults, overridden by configure_logging.
-# Rotation values are deliberately configured here rather than read from the
-# process environment by each handler.  EnvConfig is the single place where
-# environment values are parsed and validated, and startup calls
-# configure_logging() only after that validation succeeds.
+# Set by configure_logging() after EnvConfig validation, the single place
+# where environment values are parsed. Handlers do not read the environment.
 _configured_log_level: int = DEFAULT_LOG_LEVEL
 _configured_ytdlp_internal: bool = DEFAULT_LOG_YTDLP_INTERNAL
 _configured_log_max_size_mb: int = DEFAULT_LOG_MAX_SIZE_MB
@@ -71,7 +58,6 @@ def _get_log_retention_days() -> int:
 
 
 def configure_logging(env: "EnvConfig") -> None:
-    """Apply validated env log settings as process-wide logging configuration."""
     global _configured_log_level, _configured_ytdlp_internal
     global _configured_log_max_size_mb, _configured_log_backup_count
     global _configured_log_retention_days
@@ -83,34 +69,27 @@ def configure_logging(env: "EnvConfig") -> None:
 
 
 def is_ytdlp_internal_logging_enabled() -> bool:
-    """Return whether yt-dlp internal debug chatter should be surfaced."""
     return _configured_ytdlp_internal
 
 
 def _resolve_log_level(level: Optional[int]) -> int:
-    """Resolve log level from explicit arg or configure_logging defaults."""
     if level is not None:
         return level
     return _configured_log_level
 
 
-# Logger name display width (for alignment)
-# Set to match the longest logger name: "Downloader" = 10 characters
+# Longest logger name: "Downloader"
 LOGGER_NAME_WIDTH = 10
 
-# Log level display width (for alignment)
-# Set to match the longest level name: "CRITICAL" = 8 characters
+# Longest level name: "CRITICAL"
 LOG_LEVEL_WIDTH = 8
 
-# Column budget for user-controlled text (stream titles) inside a log message.
 # Measured live: with this cap every line fits in ~110 columns, while 10 of 16
 # real titles would otherwise wrap a 120-column terminal.
 LOG_TEXT_MAX_COLUMNS = 40
 
-# Global logs directory
 _logs_dir: Optional[Path] = None
 
-# Color scheme for different log levels
 LOG_COLORS = {
     "DEBUG": "cyan",
     "INFO": "green",
@@ -126,16 +105,11 @@ def _fit(text: str, width: int) -> str:
 
 
 def _display_width(text: str) -> int:
-    """
-    Terminal columns occupied by text.
-
-    CJK characters and emoji occupy two columns each, so len() understates them
-    badly: a 40-character Japanese title is 80 columns wide.
-    """
+    """CJK characters and emoji occupy two columns each, so len() understates."""
     total = 0
     for char in text:
         width = wcwidth.wcwidth(char)
-        # wcwidth returns -1 for unprintable characters; they occupy nothing.
+        # wcwidth returns -1 for unprintable characters.
         total += width if width and width > 0 else 0
     return total
 
@@ -144,17 +118,15 @@ def clip(text: str, columns: int = LOG_TEXT_MAX_COLUMNS, suffix: str = "…") ->
     """
     Clip text to a terminal-column budget, keeping the front.
 
-    Stream titles are front-loaded: the bracketed category comes first and the
-    tail is usually the creator name or a timestamp, both of which already
-    appear elsewhere on the log line. Keeping the head is what stays useful.
+    The tail of a stream title is usually the creator name or a timestamp,
+    both already elsewhere on the log line.
     """
     if _display_width(text) <= columns:
         return text
 
     budget = columns - _display_width(suffix)
     if budget < 0:
-        # No room for the suffix itself; the contract is that the result never
-        # exceeds `columns`, so nothing can be shown.
+        # No room for the suffix, and the result must never exceed `columns`.
         return ""
     kept, used = [], 0
     for char in text:
@@ -168,30 +140,17 @@ def clip(text: str, columns: int = LOG_TEXT_MAX_COLUMNS, suffix: str = "…") ->
 
 
 class ContextAdapter(logging.LoggerAdapter):
-    """Prefix every message with a stable ``[context]`` tag."""
-
     def process(self, msg: Any, kwargs: Any) -> Any:
         context = (self.extra or {}).get("context")
         return (f"[{context}] {msg}" if context else msg), kwargs
 
 
 def bind(logger: logging.Logger, context: str) -> logging.LoggerAdapter:
-    """
-    Bind a logger to a stable context tag, usually the creator name.
-
-    Every message logged through the returned adapter is prefixed with
-    ``[context]``, so one recording can be followed with a single grep.
-    """
+    """Prefix every message with ``[context]`` so one recording can be grepped."""
     return ContextAdapter(logger, {"context": context})
 
 
 class AlignedFormatter(logging.Formatter):
-    """
-    A formatter for file output with centered logger names and levels.
-
-    Centers logger names and level names to fixed widths for consistent alignment.
-    """
-
     def __init__(
         self,
         fmt: str,
@@ -204,19 +163,12 @@ class AlignedFormatter(logging.Formatter):
         self.level_width = level_width
 
     def format(self, record: logging.LogRecord) -> str:
-        """Format the record with centered logger name and level."""
         record.name = _fit(record.name, self.name_width)
         record.levelname = _fit(record.levelname, self.level_width)
         return super().format(record)
 
 
 class ColoredAlignedFormatter(colorlog.ColoredFormatter):
-    """
-    A colored formatter for console output with centered logger names and levels.
-
-    Centers logger names and level names to fixed widths for consistent alignment.
-    """
-
     def __init__(
         self,
         fmt: str,
@@ -230,7 +182,6 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
         self.level_width = level_width
 
     def format(self, record: logging.LogRecord) -> str:
-        """Format the record with centered logger name and level."""
         original_name = record.name
         record.name = _fit(original_name, self.name_width)
 
@@ -240,8 +191,7 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
         result = super().format(record)
         record.name = original_name
 
-        # Replace levelname with centered version in the output
-        # The format is: "date │ <color>LEVELNAME<reset> │ name │ message"
+        # Format is: "date │ <color>LEVELNAME<reset> │ name │ message"
         centered_levelname = _fit(original_levelname, self.level_width)
         parts = result.split("│", 2)
         if len(parts) >= 2:
@@ -252,7 +202,7 @@ class ColoredAlignedFormatter(colorlog.ColoredFormatter):
 
 
 def get_logs_dir() -> Path:
-    """Get the logs directory, creating it if necessary."""
+    """Return the logs directory, creating it on first use."""
     global _logs_dir
     if _logs_dir is None:
         _logs_dir = Path(__file__).parent.parent / "logs"
@@ -267,31 +217,21 @@ def setup_logger(
     log_to_console: bool = True,
 ) -> logging.Logger:
     """
-    Configure and create a logger instance with both console and file output.
+    Create a logger with colorized console output and plain-text file output.
 
-    Console output is colorized for better readability.
-    File output uses plain text without colors.
-
-    Args:
-        name: Logger name (used for both identification and log filename)
-        level: Logging level. When omitted, uses configure_logging() then DEFAULT_LOG_LEVEL.
-        log_to_file: Whether to output to file (default: True)
-        log_to_console: Whether to output to console (default: True)
-
-    Returns:
-        logging.Logger: Configured logger instance
+    name is also the log filename. level falls back to configure_logging(),
+    then DEFAULT_LOG_LEVEL.
     """
     resolved_level = _resolve_log_level(level)
     logger = logging.getLogger(name)
     logger.setLevel(resolved_level)
 
-    # Avoid adding duplicate handlers
     if logger.handlers:
         for handler in logger.handlers:
             handler.setLevel(resolved_level)
         return logger
 
-    # Format strings - level and name are centered by the formatter
+    # Level and name are centered by the formatter.
     console_fmt = (
         "%(asctime)s │ %(log_color)s%(levelname)s%(reset)s │ %(name)s │ %(message)s"
     )
@@ -313,9 +253,8 @@ def setup_logger(
         logs_dir = get_logs_dir()
         log_file = logs_dir / f"{name}.log"
 
-        # ponytail: delay=True gives lazy file creation for free (stdlib);
-        # relies on setup_logger's get_logs_dir() call above to mkdir the
-        # parent, since delay=True does not create directories.
+        # delay=True defers file creation until the first record. It does not
+        # create directories, so the parent relies on get_logs_dir() above.
         file_handler = RotatingFileHandler(
             filename=str(log_file),
             maxBytes=_get_log_max_bytes(),
@@ -335,16 +274,7 @@ def setup_logger(
 
 
 def cleanup_old_logs(retention_days: Optional[int] = None) -> int:
-    """
-    Remove log files older than the specified retention period.
-
-    Args:
-        retention_days: Number of days to retain log files (configured
-            EnvConfig retention, or explicit argument)
-
-    Returns:
-        int: Number of files removed
-    """
+    """Remove log files older than the retention period and return the count."""
     if retention_days is None:
         retention_days = _get_log_retention_days()
     logs_dir = get_logs_dir()
@@ -358,7 +288,6 @@ def cleanup_old_logs(retention_days: Optional[int] = None) -> int:
                 log_file.unlink()
                 removed_count += 1
         except OSError:
-            # Skip files that can't be accessed
             pass
 
     return removed_count

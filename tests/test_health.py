@@ -3,6 +3,8 @@
 import os
 import time
 
+import pytest
+
 from core import health
 from core.constants import DEFAULT_INTERVAL
 from core.health import main, touch_heartbeat
@@ -27,22 +29,11 @@ class TestHealthCLI:
         assert main() == 1
         assert "missing" in capsys.readouterr().err
 
-    def test_stale_mtime_is_unhealthy(self, tmp_path, monkeypatch, capsys):
-        """A heartbeat older than 3×INTERVAL reports unhealthy."""
-        path = tmp_path / "heartbeat"
-        monkeypatch.setattr(health, "HEARTBEAT_FILE", str(path))
-        monkeypatch.delenv("INTERVAL", raising=False)
-        touch_heartbeat()
-
-        max_age = 3 * DEFAULT_INTERVAL
-        stale_mtime = time.time() - max_age - 1
-        os.utime(path, (stale_mtime, stale_mtime))
-
-        assert main() == 1
-        assert "stale" in capsys.readouterr().err
-
-    def test_exact_threshold_is_unhealthy(self, tmp_path, monkeypatch, capsys):
-        """age == max_age (3×INTERVAL) is unhealthy; fresher means strictly less."""
+    @pytest.mark.parametrize("extra_age", [0, 1])
+    def test_exact_threshold_is_unhealthy(
+        self, tmp_path, monkeypatch, capsys, extra_age
+    ):
+        """age >= max_age (3×INTERVAL) is unhealthy; fresher means strictly less."""
         path = tmp_path / "heartbeat"
         monkeypatch.setattr(health, "HEARTBEAT_FILE", str(path))
         monkeypatch.delenv("INTERVAL", raising=False)
@@ -51,7 +42,8 @@ class TestHealthCLI:
         now = 1_700_000_000.0
         max_age = 3 * DEFAULT_INTERVAL
         monkeypatch.setattr(time, "time", lambda: now)
-        os.utime(path, (now - max_age, now - max_age))
+        stale_mtime = now - max_age - extra_age
+        os.utime(path, (stale_mtime, stale_mtime))
 
         assert main() == 1
         err = capsys.readouterr().err

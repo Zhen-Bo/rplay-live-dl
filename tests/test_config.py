@@ -30,10 +30,15 @@ creators:
         assert result[0].creator_name == "Creator One"
         assert result[0].creator_oid == "abc123"
 
-    def test_empty_file(self, tmp_path):
-        """Test reading an empty configuration file."""
+    @pytest.mark.parametrize(
+        "text",
+        ["", "other_key: value", "creators: not_a_list"],
+        ids=["empty", "missing_creators_key", "creators_not_list"],
+    )
+    def test_empty_file(self, tmp_path, text):
+        """Test files with no usable creators list yield no creators."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("")
+        config_file.write_text(text)
         assert len(read_app_config(str(config_file)).creators) == 0
 
     def test_missing_file(self, tmp_path):
@@ -48,40 +53,28 @@ creators:
         with pytest.raises(ConfigError):
             read_app_config(str(config_file))
 
-    def test_missing_creators_key(self, tmp_path):
-        """Test reading a file without creators key."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("other_key: value")
-        assert len(read_app_config(str(config_file)).creators) == 0
-
-    def test_creators_not_list(self, tmp_path):
-        """Test reading a file where creators is not a list."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("creators: not_a_list")
-        assert len(read_app_config(str(config_file)).creators) == 0
-
-    def test_missing_name(self, tmp_path):
-        """Test skipping entries with missing name."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+    @pytest.mark.parametrize(
+        "text",
+        [
+            """
 creators:
   - id: "abc123"
   - name: "Valid Creator"
     id: "def456"
-""")
-        result = read_app_config(str(config_file)).creators
-        assert len(result) == 1
-        assert result[0].creator_name == "Valid Creator"
-
-    def test_missing_id(self, tmp_path):
-        """Test skipping entries with missing id."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+""",
+            """
 creators:
   - name: "No ID Creator"
   - name: "Valid Creator"
     id: "def456"
-""")
+""",
+        ],
+        ids=["missing_name", "missing_id"],
+    )
+    def test_missing_name(self, tmp_path, text):
+        """Test skipping entries with missing name or id."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(text)
         result = read_app_config(str(config_file)).creators
         assert len(result) == 1
         assert result[0].creator_name == "Valid Creator"

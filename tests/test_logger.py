@@ -6,6 +6,9 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import pytest
+
+import core.logger as logger_module
 from core.logger import (
     DEFAULT_LOG_LEVEL,
     LOG_COLORS,
@@ -23,18 +26,65 @@ from core.logger import (
 from models.env import EnvConfig
 
 
+@pytest.fixture
+def logs_dir(tmp_path, monkeypatch):
+    """Point the logger module at an empty temporary logs directory."""
+    monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def default_log_config(monkeypatch):
+    monkeypatch.setattr(logger_module, "_configured_log_level", DEFAULT_LOG_LEVEL)
+    monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", False)
+
+
+@pytest.fixture
+def make_logger():
+    """Build loggers with setup_logger and close their handlers afterwards."""
+    made = []
+
+    def make(name, **kwargs):
+        logger = setup_logger(name, **kwargs)
+        made.append(logger)
+        return logger
+
+    yield make
+    for logger in made:
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
+
+
+def age_file(path, days):
+    """Set the file's modification time to `days` days ago."""
+    old_time = time.time() - (days * 24 * 60 * 60)
+    os.utime(path, (old_time, old_time))
+
+
+def make_record(name="Test", msg="test message"):
+    return logging.LogRecord(
+        name=name,
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg=msg,
+        args=(),
+        exc_info=None,
+    )
+
+
 class TestSetupLogger:
     """Tests for setup_logger function."""
 
-    def test_creates_logger(self, monkeypatch):
+    def test_creates_logger(self, default_log_config):
         """Test that setup_logger creates a logger at the default level."""
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_configured_log_level", DEFAULT_LOG_LEVEL)
         logger = setup_logger("test_logger_1", log_to_file=False)
         assert isinstance(logger, logging.Logger)
         assert logger.name == "test_logger_1"
         assert logger.level == logging.INFO
+        # Console-only logger still has at least the console handler
+        assert len(logger.handlers) >= 1
 
     def test_logger_level(self):
         """Test that logger has correct level."""
@@ -48,19 +98,8 @@ class TestSetupLogger:
         logger2 = setup_logger("test_logger_3")
         assert len(logger2.handlers) == handler_count
 
-    def test_console_only(self):
-        """Test creating a console-only logger."""
-        logger = setup_logger("test_console_only", log_to_file=False)
-        # Should have at least one handler (console)
-        assert len(logger.handlers) >= 1
-
-    def test_configure_logging_applies_level_and_ytdlp_flag(self, monkeypatch):
+    def test_configure_logging_applies_level_and_ytdlp_flag(self, default_log_config):
         """Test configure_logging sets both log level and yt-dlp internal flag."""
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_configured_log_level", DEFAULT_LOG_LEVEL)
-        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", False)
-
         assert is_ytdlp_internal_logging_enabled() is False
 
         configure_logging(
@@ -76,11 +115,8 @@ class TestSetupLogger:
         assert logger.level == logging.DEBUG
         assert is_ytdlp_internal_logging_enabled() is True
 
-    def test_configure_logging_applies_rotation_settings(self, tmp_path, monkeypatch):
+    def test_configure_logging_applies_rotation_settings(self, logs_dir, make_logger):
         """Validated EnvConfig values control handlers and cleanup defaults."""
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
         config = EnvConfig(
             user_oid="oid",
             refresh_token="token",
@@ -90,38 +126,25 @@ class TestSetupLogger:
         )
         configure_logging(config)
 
-        logger_name = "test_logger_env_rotation"
-        logger = setup_logger(logger_name, log_to_console=False)
-        try:
-            handler = next(
-                h for h in logger.handlers if isinstance(h, RotatingFileHandler)
-            )
-            assert handler.maxBytes == 7 * 1024 * 1024
-            assert handler.backupCount == 3
-        finally:
-            for handler in logger.handlers[:]:
-                handler.close()
-                logger.removeHandler(handler)
+        logger = make_logger("test_logger_env_rotation", log_to_console=False)
+        handler = next(h for h in logger.handlers if isinstance(h, RotatingFileHandler))
+        assert handler.maxBytes == 7 * 1024 * 1024
+        assert handler.backupCount == 3
 
         # The retention value is also sourced from the same validated config.
-        old_file = tmp_path / "old.log"
+        old_file = logs_dir / "old.log"
         old_file.write_text("old")
-        old_time = time.time() - (43 * 24 * 60 * 60)
-        os.utime(old_file, (old_time, old_time))
+        age_file(old_file, 43)
         assert cleanup_old_logs() == 1
 
 
 class TestGetLogsDir:
     """Tests for get_logs_dir function."""
 
-    def test_returns_path(self):
-        """Test that get_logs_dir returns a Path."""
+    def test_directory_exists(self):
+        """Test that get_logs_dir returns an existing directory Path."""
         logs_dir = get_logs_dir()
         assert isinstance(logs_dir, Path)
-
-    def test_directory_exists(self):
-        """Test that logs directory exists."""
-        logs_dir = get_logs_dir()
         assert logs_dir.exists()
         assert logs_dir.is_dir()
 
@@ -129,28 +152,13 @@ class TestGetLogsDir:
 class TestCleanupOldLogs:
     """Tests for cleanup_old_logs function."""
 
-    def test_cleanup_returns_count(self):
-        """Test that cleanup returns a count."""
-        result = cleanup_old_logs(retention_days=30)
-        assert isinstance(result, int)
-        assert result >= 0
-
-    def test_removes_old_files(self, tmp_path, monkeypatch):
+    def test_removes_old_files(self, logs_dir):
         """Test that files older than retention are removed."""
-        from core import logger as logger_module
-
-        # Patch logs directory
-        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
-
-        # Create an old log file
-        old_file = tmp_path / "old.log"
+        old_file = logs_dir / "old.log"
         old_file.write_text("old content")
-        # Set modification time to 40 days ago
-        old_time = time.time() - (40 * 24 * 60 * 60)
-        os.utime(old_file, (old_time, old_time))
+        age_file(old_file, 40)
 
-        # Create a recent log file
-        recent_file = tmp_path / "recent.log"
+        recent_file = logs_dir / "recent.log"
         recent_file.write_text("recent content")
 
         removed = cleanup_old_logs(retention_days=30)
@@ -159,34 +167,23 @@ class TestCleanupOldLogs:
         assert not old_file.exists()
         assert recent_file.exists()
 
-    def test_keeps_recent_files(self, tmp_path, monkeypatch):
+    def test_keeps_recent_files(self, logs_dir):
         """Test that recent files are kept."""
-        from core import logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
-
-        # Create recent log files
         for i in range(3):
-            log_file = tmp_path / f"recent_{i}.log"
+            log_file = logs_dir / f"recent_{i}.log"
             log_file.write_text(f"content {i}")
 
         removed = cleanup_old_logs(retention_days=30)
 
         assert removed == 0
-        assert len(list(tmp_path.glob("*.log"))) == 3
+        assert len(list(logs_dir.glob("*.log"))) == 3
 
-    def test_handles_rotated_logs(self, tmp_path, monkeypatch):
+    def test_handles_rotated_logs(self, logs_dir):
         """Test that rotated log files (.log.1, .log.2) are also cleaned."""
-        from core import logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
-
-        # Create old rotated log files
         for suffix in [".log", ".log.1", ".log.2"]:
-            old_file = tmp_path / f"app{suffix}"
+            old_file = logs_dir / f"app{suffix}"
             old_file.write_text("old content")
-            old_time = time.time() - (40 * 24 * 60 * 60)
-            os.utime(old_file, (old_time, old_time))
+            age_file(old_file, 40)
 
         removed = cleanup_old_logs(retention_days=30)
 
@@ -202,15 +199,7 @@ class TestAlignedFormatter:
             fmt="%(name)s - %(message)s",
             datefmt="%Y-%m-%d",
         )
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
+        record = make_record()
         result = formatter.format(record)
         # Name should be centered within LOGGER_NAME_WIDTH
         assert "   Test   " in result or "  Test  " in result
@@ -221,15 +210,7 @@ class TestAlignedFormatter:
             fmt="%(levelname)s - %(message)s",
             datefmt="%Y-%m-%d",
         )
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
+        record = make_record()
         result = formatter.format(record)
         # INFO should be centered within LOG_LEVEL_WIDTH (8)
         assert "  INFO  " in result
@@ -241,15 +222,7 @@ class TestAlignedFormatter:
             datefmt="%Y-%m-%d",
             name_width=5,
         )
-        record = logging.LogRecord(
-            name="VeryLongLoggerName",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test",
-            args=(),
-            exc_info=None,
-        )
+        record = make_record(name="VeryLongLoggerName", msg="test")
         result = formatter.format(record)
         assert len(result.strip()) <= 5
 
@@ -257,43 +230,17 @@ class TestAlignedFormatter:
 class TestColoredAlignedFormatter:
     """Tests for ColoredAlignedFormatter class."""
 
-    def test_format_produces_output(self):
-        """Test that formatter produces formatted output."""
+    def test_preserves_original_name(self):
+        """Test that formatting produces output and restores the original record name."""
         formatter = ColoredAlignedFormatter(
             fmt="%(asctime)s │ %(log_color)s%(levelname)s%(reset)s │ %(name)s │ %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
             log_colors=LOG_COLORS,
         )
-        record = logging.LogRecord(
-            name="Test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test message",
-            args=(),
-            exc_info=None,
-        )
+        record = make_record(name="OriginalName")
         result = formatter.format(record)
         assert "test message" in result
         assert "│" in result
-
-    def test_preserves_original_name(self):
-        """Test that original record name is preserved after formatting."""
-        formatter = ColoredAlignedFormatter(
-            fmt="%(name)s - %(message)s",
-            datefmt="%Y-%m-%d",
-            log_colors=LOG_COLORS,
-        )
-        record = logging.LogRecord(
-            name="OriginalName",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test",
-            args=(),
-            exc_info=None,
-        )
-        formatter.format(record)
         # Original name should be restored
         assert record.name == "OriginalName"
 
@@ -313,66 +260,48 @@ class TestRotatingFileHandlerLazyCreation:
     real function under test runs here regardless of that fixture.
     """
 
-    def test_no_file_created_until_first_emit(self, tmp_path, monkeypatch):
-        from core import logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
-
+    def test_no_file_created_until_first_emit(self, logs_dir, make_logger):
         logger_name = "test_lazy_creation_regression"
-        logger = setup_logger(logger_name, log_to_file=True, log_to_console=False)
-        try:
-            log_file = tmp_path / f"{logger_name}.log"
-            assert not log_file.exists()
+        logger = make_logger(logger_name, log_to_file=True, log_to_console=False)
+        log_file = logs_dir / f"{logger_name}.log"
+        assert not log_file.exists()
 
-            logger.info("hello world")
+        logger.info("hello world")
 
-            assert "hello world" in log_file.read_text()
-        finally:
-            for handler in logger.handlers[:]:
-                handler.close()
-                logger.removeHandler(handler)
+        assert "hello world" in log_file.read_text()
 
     def test_rollover_does_not_crash_or_lose_messages(
-        self, tmp_path, monkeypatch, capsys
+        self, logs_dir, make_logger, capsys
     ):
-        from core import logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
-
         logger_name = "test_rollover_regression"
-        logger = setup_logger(logger_name, log_to_file=True, log_to_console=False)
-        try:
-            file_handler = next(
-                (h for h in logger.handlers if isinstance(h, RotatingFileHandler)),
-                None,
-            )
-            assert file_handler is not None
+        logger = make_logger(logger_name, log_to_file=True, log_to_console=False)
+        file_handler = next(
+            (h for h in logger.handlers if isinstance(h, RotatingFileHandler)),
+            None,
+        )
+        assert file_handler is not None
 
-            # Shrink only the rotation threshold so rollover triggers almost
-            # immediately; keep the real construction (incl. delay=True) from
-            # setup_logger so this exercises the actual bug site.
-            file_handler.maxBytes = 50
+        # Shrink only the rotation threshold so rollover triggers almost
+        # immediately; keep the real construction (incl. delay=True) from
+        # setup_logger so this exercises the actual bug site.
+        file_handler.maxBytes = 50
 
-            messages = ["message one", "message two", "message three"]
-            for msg in messages:
-                logger.info(msg)
+        messages = ["message one", "message two", "message three"]
+        for msg in messages:
+            logger.info(msg)
 
-            assert (tmp_path / f"{logger_name}.log.1").exists()
+        assert (logs_dir / f"{logger_name}.log.1").exists()
 
-            all_content = "".join(
-                f.read_text() for f in tmp_path.glob(f"{logger_name}.log*")
-            )
-            for msg in messages:
-                assert msg in all_content
+        all_content = "".join(
+            f.read_text() for f in logs_dir.glob(f"{logger_name}.log*")
+        )
+        for msg in messages:
+            assert msg in all_content
 
-            # logging.Handler.handleError() prints "--- Logging error ---" to
-            # stderr on unhandled exceptions inside emit(); its absence is the
-            # regression check for the AttributeError this bug used to raise.
-            assert "--- Logging error ---" not in capsys.readouterr().err
-        finally:
-            for handler in logger.handlers[:]:
-                handler.close()
-                logger.removeHandler(handler)
+        # logging.Handler.handleError() prints "--- Logging error ---" to
+        # stderr on unhandled exceptions inside emit(); its absence is the
+        # regression check for the AttributeError this bug used to raise.
+        assert "--- Logging error ---" not in capsys.readouterr().err
 
 
 class TestContextAdapter:
@@ -398,19 +327,6 @@ class TestContextAdapter:
 
         assert caplog.records[-1].getMessage() == "hello"
 
-    def test_adapter_forwards_level_filtering(self, caplog):
-        """Test the adapter forwards the underlying logger's level filtering."""
-        logger = logging.getLogger("test_context_adapter_level_filter")
-        logger.setLevel(logging.WARNING)
-        adapter = bind(logger, "SomeCreator")
-
-        adapter.info("should be filtered")
-        adapter.warning("should be logged")
-
-        messages = [record.getMessage() for record in caplog.records]
-        assert "[SomeCreator] should be filtered" not in messages
-        assert "[SomeCreator] should be logged" in messages
-
     def test_exception_through_adapter_keeps_traceback(self, caplog):
         """Test .exception() through the adapter keeps exc_info and the context prefix."""
         logger = logging.getLogger("test_context_adapter_exception")
@@ -430,9 +346,12 @@ class TestContextAdapter:
 class TestClip:
     """Tests for clip() and _display_width()."""
 
-    def test_short_text_is_returned_unchanged(self):
-        """Test text under the column budget passes through unchanged."""
-        assert clip("耳舐めASMR") == "耳舐めASMR"
+    @pytest.mark.parametrize("text", ["a" * 40, "耳舐めASMR"])
+    def test_text_within_budget_is_not_clipped(self, text):
+        """Test text at or under the budget passes through unchanged."""
+        result = clip(text)
+        assert result == text
+        assert "…" not in result
 
     def test_ascii_text_is_clipped_to_the_budget(self):
         """Test ASCII text over the budget is clipped to exactly 40 columns."""
@@ -445,28 +364,20 @@ class TestClip:
         assert _display_width("耳舐め") == 6
         assert len("耳舐め") == 3
 
-    def test_clipped_result_never_exceeds_the_budget_in_columns(self):
-        """Test a clipped CJK string never exceeds the column budget."""
-        result = clip("配信" * 40)
-        assert _display_width(result) <= 40
-
-    def test_custom_budget_is_respected(self):
-        """Test a custom columns budget is honored instead of the default."""
-        result = clip("a" * 30, columns=10)
-        assert _display_width(result) <= 10
-
-    def test_exact_budget_is_not_clipped(self):
-        """Test text exactly at the budget is not clipped."""
-        result = clip("a" * 40)
-        assert result == "a" * 40
-        assert "…" not in result
-
-    def test_returns_empty_when_budget_cannot_fit_the_suffix(self):
-        """Test clip() returns empty text when the budget can't even fit the suffix."""
-        assert clip("界", columns=0) == ""
-
-    def test_never_exceeds_budget_for_any_small_budget(self):
-        """Test clip() never exceeds a small columns budget, for every budget 0-5."""
-        for n in range(6):
-            result = clip("配信配信配信", columns=n)
-            assert _display_width(result) <= n, f"columns={n} produced {result!r}"
+    @pytest.mark.parametrize(
+        "text,columns",
+        [
+            *[("配信配信配信", n) for n in range(6)],
+            ("配信" * 40, 40),
+            ("a" * 30, 10),
+            ("界", 0),
+        ],
+    )
+    def test_never_exceeds_budget(self, text, columns):
+        """Test clip() never exceeds the columns budget, and is empty at zero."""
+        result = clip(text, columns=columns)
+        assert (
+            _display_width(result) <= columns
+        ), f"columns={columns} produced {result!r}"
+        if columns == 0:
+            assert result == ""

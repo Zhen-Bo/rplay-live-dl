@@ -1,9 +1,4 @@
-"""
-Creator profile configuration model.
-
-Defines the Pydantic models used by the YAML configuration file,
-including monitored creators and application-level settings.
-"""
+"""Creator and application configuration models."""
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -20,7 +15,6 @@ class AppConfig(BaseModel):
     @field_validator("api_base_url")
     @classmethod
     def validate_api_base_url(cls, value: str) -> str:
-        """Validate and normalize api_base_url."""
         sanitized = value.strip().rstrip("/")
         if not sanitized:
             raise ValueError("api_base_url cannot be empty or whitespace")
@@ -28,16 +22,7 @@ class AppConfig(BaseModel):
 
 
 class CreatorProfile(BaseModel):
-    """
-    Data model for creator profile configuration.
-
-    Contains essential information about a content creator including
-    their display name and unique identifier on the RPlay platform.
-
-    Attributes:
-        creator_name: Display name of the creator (used for folder naming)
-        creator_oid: Unique identifier (OID) of the creator on RPlay
-    """
+    """Creator to monitor. creator_name is also used for folder naming."""
 
     creator_name: str = Field(
         ...,
@@ -54,7 +39,6 @@ class CreatorProfile(BaseModel):
     @field_validator("creator_name")
     @classmethod
     def validate_creator_name(cls, v: str) -> str:
-        """Validate and sanitize creator name."""
         sanitized = v.strip()
         if not sanitized:
             raise ValueError("creator_name cannot be empty or whitespace")
@@ -63,7 +47,6 @@ class CreatorProfile(BaseModel):
     @field_validator("creator_oid")
     @classmethod
     def validate_creator_oid(cls, v: str) -> str:
-        """Validate creator OID."""
         sanitized = v.strip()
         if not sanitized:
             raise ValueError("creator_oid cannot be empty or whitespace")
@@ -81,11 +64,9 @@ class CreatorProfile(BaseModel):
     }
 
     def __str__(self) -> str:
-        """Return string representation of the creator profile."""
         return f"CreatorProfile(name={self.creator_name!r}, oid={self.creator_oid!r})"
 
     def __repr__(self) -> str:
-        """Return detailed representation of the creator profile."""
         return self.__str__()
 
 

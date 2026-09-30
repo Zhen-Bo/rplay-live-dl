@@ -1,8 +1,4 @@
-"""
-Utility functions for rplay-live-dl.
-
-Provides common helper functions used across multiple modules.
-"""
+"""Shared helpers for rplay-live-dl."""
 
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -22,7 +18,6 @@ MAX_FILENAME_COMPONENT_BYTES = 255
 
 
 def _truncate_utf8(value: str, max_bytes: int) -> str:
-    """Truncate text to a UTF-8 byte budget without splitting a character."""
     if max_bytes <= 0:
         return ""
     encoded = value.encode("utf-8")
@@ -36,12 +31,7 @@ def fit_filename_component_bytes(
     appended_suffix: str = "",
     max_bytes: int = MAX_FILENAME_COMPONENT_BYTES,
 ) -> Path:
-    """Fit a filename component to a byte limit while preserving its extension.
-
-    ``appended_suffix`` is reserved space for a collision suffix such as
-    ``_1``.  Keeping it outside the truncated stem ensures the uniqueness
-    marker is never cut off when a long title is shortened.
-    """
+    """``appended_suffix`` is reserved space so a collision suffix like ``_1`` is never cut off."""
     extension = path.suffix
     stem = path.name[: -len(extension)] if extension else path.name
     reserved_bytes = len((appended_suffix + extension).encode("utf-8"))
@@ -54,27 +44,17 @@ def terminate_child_processes(
     exclude_pid: Optional[int] = None,
 ) -> int:
     """
-    Terminate child processes of this process, politely then firmly.
+    Terminate child processes of this process, then kill survivors.
 
-    yt-dlp downloads HLS through FFmpegFD, which spawns ffmpeg as a subprocess
-    and keeps the Popen object in a local variable, so there is no handle to
-    stop it through. Measured on shutdown: the recording ffmpeg processes
-    survive the Python process and keep downloading indefinitely.
+    yt-dlp runs ffmpeg through FFmpegFD and keeps no handle to it, so recording
+    ffmpeg processes survive the Python process and keep downloading forever.
+    Returns the number of children handled.
 
-    Sends terminate to the whole child tree, waits, then kills whatever is
-    still alive. Returns the number of children that had to be dealt with.
-
-    Args:
-        timeout_seconds: Grace period before killing survivors of the first pass
-        exclude_pid: The child this caller owns deliberately — the merge
-            ffmpeg, of which there is at most one because the merge executor
-            runs a single worker. It and its descendants are left alone, so
-            shutdown can reap recordings without killing an active merge.
+    ``exclude_pid`` is the merge ffmpeg (at most one) and its descendants,
+    which are left alone so an active merge survives the sweep.
     """
     total = 0
     # A running download may spawn a child between passes, so re-scan once.
-    # ponytail: one re-scan covers the single respawn yt-dlp does; hand the
-    # sweep tracked child handles if recordings ever outrun two passes.
     for pass_timeout in (timeout_seconds, 2.0):
         try:
             excluded_pids = {exclude_pid} if exclude_pid is not None else set()
@@ -113,7 +93,6 @@ def terminate_child_processes(
 
 
 def _format_ffconcat_input_path(ts_file: Path) -> str:
-    """Format one concat-demuxer input line with apostrophe-safe escaping."""
     escaped_path = ts_file.resolve().as_posix().replace("'", r"'\''")
     return f"file '{escaped_path}'"
 
@@ -124,21 +103,12 @@ def merge_ts_files_to_mp4(
     run_command: Callable[[List[str]], object],
 ) -> None:
     """
-    Merge ts fragments into one mp4 file using ffmpeg concat.
+    Merge ts fragments into one mp4 with ffmpeg concat.
 
-    Shared by the live merge executor and startup orphan recovery so both
-    produce a recording through the same invocation. Only process supervision
-    differs, which is why the caller supplies ``run_command``: the monitor
-    registers the child pid under its state lock so shutdown can spare an
-    active merge, while startup recovery has no sweep to protect against.
-
-    Args:
-        ts_files: Raw inputs, already ordered; the first one's parent holds the
-            temporary concat list.
-        output_path: Destination mp4, in an existing directory. Callers own
-            collision policy and validation of the result.
-        run_command: Executes the ffmpeg command. Must raise on non-zero exit
-            (``CalledProcessError``) and on timeout (``TimeoutExpired``).
+    The caller supplies ``run_command`` so the monitor can register the child
+    pid under its state lock and shutdown can spare an active merge. It must
+    raise ``CalledProcessError`` on non-zero exit and ``TimeoutExpired`` on timeout.
+    Callers own collision policy and validation of the result.
     """
     list_path = ts_files[0].parent / "merge-inputs.txt"
     list_content = "\n".join(
@@ -167,15 +137,6 @@ def merge_ts_files_to_mp4(
 
 
 def format_file_size(size_bytes: float) -> str:
-    """
-    Format file size in human-readable format.
-
-    Args:
-        size_bytes: File size in bytes
-
-    Returns:
-        Human-readable size string (e.g., "1.5 GB")
-    """
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_bytes < 1024:
             return f"{size_bytes:.1f} {unit}"

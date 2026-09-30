@@ -1,9 +1,4 @@
-"""
-Environment configuration module.
-
-Provides functionality to load and validate environment variables
-for the rplay-live-dl application using pydantic-settings.
-"""
+"""Load and validate environment configuration."""
 
 from pydantic import ValidationError
 
@@ -17,29 +12,14 @@ __all__ = [
 
 
 class EnvConfigError(Exception):
-    """Exception raised for environment configuration errors."""
-
     pass
 
 
 def load_env() -> EnvConfig:
-    """
-    Load and validate environment variables.
-
-    Uses pydantic-settings to automatically load configuration from
-    environment variables and .env file.
-
-    Returns:
-        EnvConfig: Validated environment configuration object
-
-    Raises:
-        EnvConfigError: If required environment variables are missing
-        ValueError: If environment variables have invalid values
-    """
+    """Raise EnvConfigError for missing variables and ValueError for invalid values."""
     try:
         return EnvConfig.model_validate({})
     except ValidationError as e:
-        # Extract missing field names from validation errors
         missing_vars = []
         other_errors = []
 
@@ -47,12 +27,10 @@ def load_env() -> EnvConfig:
             field = error.get("loc", [None])[0]
             error_type = error.get("type", "")
 
-            # Convert field name to env var format (e.g., refresh_token -> REFRESH_TOKEN)
             env_var = str(field).upper() if field else "UNKNOWN"
             if error_type == "missing":
                 missing_vars.append(env_var)
             else:
-                # Prefix so users can act on the offending variable name.
                 other_errors.append(f"{env_var}: {error.get('msg', str(error))}")
 
         if missing_vars:

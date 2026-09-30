@@ -8,8 +8,6 @@ from typing import Optional
 
 
 class SessionState(str, Enum):
-    """Lifecycle states for a monitored download session."""
-
     RAW_RUNNING = "raw_running"
     BLOCKED = "blocked"
     MERGE_QUEUED = "merge_queued"
@@ -20,8 +18,6 @@ class SessionState(str, Enum):
 
 @dataclass
 class DownloadSession:
-    """Tracked state for one live stream session."""
-
     session_key: str
     creator_oid: str
     creator_name: str
@@ -31,14 +27,10 @@ class DownloadSession:
     output_dir: Path
     session_prefix: str
     recording_started_at: Optional[datetime] = None
-    final_output_path: Optional[Path] = None
-    last_error: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class RawDownloadCompleted:
-    """Event emitted when a raw yt-dlp session finishes successfully."""
-
     session_key: str
     output_dir: Path
 
@@ -69,8 +61,6 @@ class RawDownloadFailed:
 
 @dataclass(frozen=True)
 class MergeJobSpec:
-    """Immutable merge job inputs for one completed raw download session."""
-
     session_key: str
     creator_name: str
     title: str
@@ -81,22 +71,16 @@ class MergeJobSpec:
 
 @dataclass(frozen=True)
 class MergeStarted:
-    """Event emitted when merge work begins for a session."""
-
     session_key: str
 
 
 @dataclass(frozen=True)
 class MergeCompleted:
-    """Event emitted when a session merge finishes successfully."""
-
     session_key: str
     output_path: Path
 
 
 @dataclass(frozen=True)
 class MergeFailed:
-    """Event emitted when a session merge fails."""
-
     session_key: str
     error_message: str

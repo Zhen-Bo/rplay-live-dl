@@ -28,6 +28,19 @@ def archive(tmp_path, monkeypatch):
     return creator_dir
 
 
+def _write_raw(directory, name="20260306_120000_#Creator 2026-03-06 123.ts"):
+    """Write a small raw recording into the directory and return its path."""
+    path = directory / name
+    path.write_bytes(b"ts")
+    return path
+
+
+@pytest.fixture
+def no_hardlinks(monkeypatch):
+    """Make os.link fail as it does on a filesystem without hardlinks."""
+    monkeypatch.setattr("core.orphan_recovery.os.link", _reject_hardlink)
+
+
 def _fake_merge(
     monkeypatch, *, writes: bytes | None = b"mp4", error=None, captured=None
 ):
@@ -57,10 +70,8 @@ class TestOrphanRecovery:
     ):
         """Test one session's numbered fragments merge, sorted, into one mp4."""
         prefix = "20260306_120000_"
-        base = archive / f"{prefix}#Creator 2026-03-06 123.ts"
-        sibling = archive / f"{prefix}#Creator 2026-03-06 123_1.ts"
-        base.write_bytes(b"ts")
-        sibling.write_bytes(b"ts")
+        base = _write_raw(archive, f"{prefix}#Creator 2026-03-06 123.ts")
+        sibling = _write_raw(archive, f"{prefix}#Creator 2026-03-06 123_1.ts")
         captured = []
         _fake_merge(monkeypatch, captured=captured)
 
@@ -76,10 +87,8 @@ class TestOrphanRecovery:
     ):
         """Test a failed merge leaves the session retryable and untouched."""
         prefix = "20260306_120000_"
-        base = archive / f"{prefix}#Creator 2026-03-06 123.ts"
-        sibling = archive / f"{prefix}#Creator 2026-03-06 123_1.ts"
-        base.write_bytes(b"ts")
-        sibling.write_bytes(b"ts")
+        base = _write_raw(archive, f"{prefix}#Creator 2026-03-06 123.ts")
+        sibling = _write_raw(archive, f"{prefix}#Creator 2026-03-06 123_1.ts")
         _fake_merge(
             monkeypatch,
             writes=b"partial",
@@ -99,8 +108,7 @@ class TestOrphanRecovery:
 
     def test_merge_producing_no_output_keeps_the_inputs(self, archive, monkeypatch):
         """Test a merge that returns without writing anything is not a success."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         _fake_merge(monkeypatch, writes=None)
 
         recover_orphaned_sessions(LOGGER)
@@ -111,8 +119,7 @@ class TestOrphanRecovery:
         self, archive, monkeypatch
     ):
         """Test stale recovery bytes cannot be mistaken for a new merge result."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         stale = archive / ".#Creator 2026-03-06 123.recovering.mp4"
         stale.write_bytes(b"stale bytes from a killed recovery")
         _fake_merge(monkeypatch, writes=None)
@@ -126,8 +133,7 @@ class TestOrphanRecovery:
     ):
         """Test a near-limit raw name keeps ``.recovering.mp4`` intact."""
         final_stem = "x" * 236
-        ts_file = archive / f"20260306_120000_{final_stem}.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive, f"20260306_120000_{final_stem}.ts")
         captured = []
         _fake_merge(monkeypatch, captured=captured)
 
@@ -143,8 +149,7 @@ class TestOrphanRecovery:
         self, archive, monkeypatch
     ):
         """Test a zero-byte result is not a recording, so the inputs stay."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         _fake_merge(monkeypatch, writes=b"")
 
         recover_orphaned_sessions(LOGGER)
@@ -155,8 +160,7 @@ class TestOrphanRecovery:
         self, archive, monkeypatch
     ):
         """Test a merge killed mid-write leaves a stale temp the next run overwrites."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         final_path = archive / "#Creator 2026-03-06 123.mp4"
         captured = []
         _fake_merge(
@@ -187,8 +191,7 @@ class TestOrphanRecovery:
         self, archive, monkeypatch
     ):
         """Test a taken mp4 name pushes this session to _1 instead of skipping it."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         existing = archive / "#Creator 2026-03-06 123.mp4"
         existing.write_bytes(b"already merged")
         _fake_merge(monkeypatch)
@@ -202,14 +205,11 @@ class TestOrphanRecovery:
         assert not ts_file.exists()
 
     def test_unsupported_hardlink_filesystem_uses_exclusive_copy(
-        self, archive, monkeypatch
+        self, archive, monkeypatch, no_hardlinks
     ):
         """Test recovery installs output when the filesystem rejects hardlinks."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         _fake_merge(monkeypatch)
-
-        monkeypatch.setattr("core.orphan_recovery.os.link", _reject_hardlink)
 
         recover_orphaned_sessions(LOGGER)
 
@@ -219,16 +219,13 @@ class TestOrphanRecovery:
         assert not (archive / ".#Creator 2026-03-06 123.recovering.mp4").exists()
 
     def test_stale_fallback_output_is_preserved_and_next_suffix_is_used(
-        self, archive, monkeypatch
+        self, archive, monkeypatch, no_hardlinks
     ):
         """Test a restart never treats a possible partial fallback as replaceable."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         stale = archive / "#Creator 2026-03-06 123.mp4"
         stale.write_bytes(b"partial copy left by killed process")
         _fake_merge(monkeypatch)
-
-        monkeypatch.setattr("core.orphan_recovery.os.link", _reject_hardlink)
 
         recover_orphaned_sessions(LOGGER)
 
@@ -237,16 +234,11 @@ class TestOrphanRecovery:
         assert not ts_file.exists()
 
     def test_exclusive_copy_collision_retries_without_overwriting_claimant(
-        self, archive, monkeypatch
+        self, archive, monkeypatch, no_hardlinks
     ):
         """Test O_EXCL wins a race after path selection and keeps the claimant."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         _fake_merge(monkeypatch)
-
-        monkeypatch.setattr(
-            "core.orphan_recovery.os.link", _reject_hardlink
-        )
 
         real_open = os.open
         claimed = False
@@ -271,15 +263,11 @@ class TestOrphanRecovery:
         assert not ts_file.exists()
 
     def test_copy_failure_removes_partial_destination_and_keeps_raw(
-        self, archive, monkeypatch
+        self, archive, monkeypatch, no_hardlinks
     ):
         """Test a failed fallback copy leaves no false final artifact."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         _fake_merge(monkeypatch)
-        monkeypatch.setattr(
-            "core.orphan_recovery.os.link", _reject_hardlink
-        )
 
         def fail_copy(source, destination):
             destination.write(b"partial")
@@ -299,8 +287,7 @@ class TestOrphanRecovery:
         A concat can run for hours, so a name that was free when it started may
         be taken by the time it finishes — and the rename overwrites silently.
         """
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         final_path = archive / "#Creator 2026-03-06 123.mp4"
 
         def merge_then_lose_the_name(ts_files, output_path, run_command):
@@ -326,8 +313,7 @@ class TestOrphanRecovery:
         winner of that gap owns the file. A plain rename would overwrite the
         claimant's recording and then delete this session's inputs on top of it.
         """
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         final_path = archive / "#Creator 2026-03-06 123.mp4"
         _fake_merge(monkeypatch)
 
@@ -441,8 +427,7 @@ class TestOrphanRecovery:
         self, archive, monkeypatch, filename, caplog
     ):
         """Test only the canonical YYYYMMDD_HHMMSS_ session pattern is recovered."""
-        stray = archive / filename
-        stray.write_bytes(b"ts")
+        stray = _write_raw(archive, filename)
         _fake_merge(monkeypatch)
 
         caplog.set_level(logging.DEBUG)
@@ -462,8 +447,7 @@ class TestOrphanRecovery:
 
     def test_cleanup_failure_keeps_the_merged_mp4(self, archive, monkeypatch):
         """Test a locked input after a good merge never discards the mp4."""
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         _fake_merge(monkeypatch)
 
         real_unlink = Path.unlink
@@ -510,8 +494,7 @@ class TestOrphanRecovery:
         Stubs only the subprocess call, so the kwargs and output target are the
         ones ffmpeg would actually be given.
         """
-        ts_file = archive / "20260306_120000_#Creator 2026-03-06 123.ts"
-        ts_file.write_bytes(b"ts")
+        ts_file = _write_raw(archive)
         captured = {}
 
         def fake_run(command, **kwargs):

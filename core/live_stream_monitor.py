@@ -50,8 +50,6 @@ __all__ = [
 
 @dataclass(frozen=True)
 class _PollRequested:
-    """Internal control-loop event requesting one monitor poll."""
-
     done: Event
     # Marks the extra poll queued after a download failure. The control loop
     # uses it to reopen retry deduplication; nobody waits on its done event.
@@ -90,14 +88,7 @@ MonitorRuntimeEvent = Union[
 
 
 class LiveStreamMonitor:
-    """
-    Class for monitoring and auto-downloading live streams.
-
-    This class handles:
-    - Monitoring configured creators for live streams
-    - Managing download tasks for active streams
-    - Automatic cleanup of inactive downloaders which are not monitored
-    """
+    """Monitors configured creators and auto-downloads their live streams."""
 
     DEFAULT_MERGE_TIMEOUT_SECONDS = _MERGE_TIMEOUT_SECONDS
     POLL_WAIT_TIMEOUT_SECONDS = 30.0
@@ -105,8 +96,6 @@ class LiveStreamMonitor:
     # the next step can extend: every wait below draws from the same deadline,
     # so SIGTERM to returned is bounded end to end. docker-compose.yaml's
     # stop_grace_period is set from this value plus margin.
-    # ponytail: one budget for all phases; split it per phase only if a slow
-    # merge is ever seen starving the recording joins.
     SHUTDOWN_BUDGET_SECONDS = 600.0
     # Cap for the fast phases so they cannot eat the merge's share of the budget.
     SHUTDOWN_PHASE_TIMEOUT_SECONDS = 30.0
@@ -130,15 +119,7 @@ class LiveStreamMonitor:
         merge_timeout_seconds: float = DEFAULT_MERGE_TIMEOUT_SECONDS,
         min_free_disk_gb: float = DEFAULT_MIN_FREE_DISK_GB,
     ) -> None:
-        """
-        Initialize monitor with a shared API client and configuration.
-
-        Args:
-            api_client: RPlay client owned by the caller
-            config_path: Path to creator profiles YAML config
-            merge_timeout_seconds: Timeout for ffmpeg merge commands
-            min_free_disk_gb: Minimum free disk space in GiB before recording; 0 disables
-        """
+        """min_free_disk_gb of 0 disables the disk check."""
         self.api_client = api_client
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
@@ -176,21 +157,16 @@ class LiveStreamMonitor:
             daemon=True,
         )
 
-        # Track monitoring state for better UX
         self._last_check_success = True
         self._monitored_count = 0
         self._check_count = 0
         self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
-        # ponytail: one bool; re-armed on successful key2 (get_stream_url).
         self._auth_error_notified = False
-        # ponytail: per-cycle only, no TTL — key2 is user-scoped, not creator-scoped.
+        # Per cycle only, no TTL: key2 is user-scoped, not creator-scoped.
         self._cycle_stream_key: Optional[str] = None
-        # Unrecovered key2 auth failure this cycle → mark poll unhealthy at end.
         self._cycle_key_fetch_auth_failed = False
-        # One warning if the heartbeat file cannot be written; never spam logs.
         self._heartbeat_write_warned = False
 
-        # Track per-creator stream session state for M3U8 404 handling
         self._creator_states: Dict[str, CreatorStreamState] = {}
         # Retry state is deliberately separate from CreatorStreamState:
         # _update_creator_stream_state() runs for every start attempt and
@@ -266,7 +242,6 @@ class LiveStreamMonitor:
                 self._event_queue.task_done()
 
     def _queue_monitor_event(self, event: MonitorRuntimeEvent) -> bool:
-        """Enqueue work for the monitor control loop."""
         # Refusal and enqueue as one step, under the lock shutdown takes to set
         # its flag. Checked unlocked, shutdown slips its whole drain in between
         # and the poll is served after it: a live-list read racing the caller's API client shutdown.
@@ -279,7 +254,6 @@ class LiveStreamMonitor:
         return True
 
     def _request_retry_poll(self, creator_oid: str) -> bool:
-        """Queue at most one immediate retry poll."""
         # Signals rather than polls: the public poll waits on the very loop that
         # serves it, and failures are handled on that loop.
         # One region for check, flag and enqueue, so a shutdown lands wholly
@@ -287,7 +261,6 @@ class LiveStreamMonitor:
         # between. RLock, so the nested acquire below is free.
         with self._state_lock:
             if creator_oid not in self._live_creator_oids:
-                # Creator is offline; there is nothing left to record.
                 return False
             if self._retry_poll_queued:
                 # Concurrent failures merge: one poll re-reads the whole live
@@ -305,10 +278,8 @@ class LiveStreamMonitor:
 
     def _drain_monitor_events(self, timeout: float) -> bool:
         """
-        Wait until events queued so far have been applied by the control loop.
-
-        Uses an ordered marker rather than Queue.join() so the wait is bounded:
-        shutdown must never block forever on a control loop that is wedged.
+        Wait until earlier events are applied. Bounded, unlike Queue.join(),
+        so a wedged control loop cannot block shutdown.
         """
         done = Event()
         self._event_queue.put(_DrainRequested(done=done))
@@ -321,7 +292,6 @@ class LiveStreamMonitor:
         return False
 
     def _run_poll_cycle(self) -> None:
-        """Check active streams and start new downloads on the control loop."""
         # Unconditional: never carry key2 across poll cycles (incl. A3 retry polls).
         self._cycle_stream_key = None
         self._cycle_key_fetch_auth_failed = False
@@ -373,17 +343,14 @@ class LiveStreamMonitor:
                     self.logger.warning(f"Failed to write heartbeat file: {exc}")
 
     def _mark_check_succeeded(self) -> None:
-        """Record a successful monitor poll."""
         with self._state_lock:
             self._last_check_success = True
 
     def _mark_check_failed(self) -> None:
-        """Record a failed monitor poll."""
         with self._state_lock:
             self._last_check_success = False
 
     def _process_live_streams(self, live_streams: List[LiveStream]) -> int:
-        """Process monitored live streams and return their count."""
         monitored_live = 0
         for stream in live_streams:
             if stream.stream_state != StreamState.LIVE:
@@ -401,7 +368,6 @@ class LiveStreamMonitor:
         return monitored_live
 
     def _process_live_stream(self, stream: LiveStream) -> None:
-        """Process one monitored live stream candidate."""
         with self._state_lock:
             self._reset_download_retry_for_new_stream_locked(stream)
             self.latest_stream_oid_by_creator[stream.creator_oid] = stream.oid
@@ -464,7 +430,6 @@ class LiveStreamMonitor:
         self._start_download(stream)
 
     def _should_attempt_download(self, stream: LiveStream) -> bool:
-        """Check if download should be attempted for this stream."""
         creator_oid = stream.creator_oid
         with self._state_lock:
             state = self._creator_states.get(creator_oid)
@@ -477,7 +442,6 @@ class LiveStreamMonitor:
         return True
 
     def _cleanup_offline_creator_states(self, live_creator_oids: Set[str]) -> None:
-        """Clear state for creators no longer in the live list."""
         with self._state_lock:
             offline_creators = [
                 oid for oid in self._creator_states if oid not in live_creator_oids
@@ -486,7 +450,6 @@ class LiveStreamMonitor:
             self._clear_creator_stream_state(creator_oid)
 
     def _start_download(self, stream: LiveStream) -> None:
-        """Start downloading a live stream on the control loop."""
         with self._state_lock:
             if self._shutdown_requested:
                 # Shutdown already snapshotted the recordings it has to stop; a
@@ -507,7 +470,7 @@ class LiveStreamMonitor:
             try:
                 free_bytes = shutil.disk_usage(check_path).free
             except OSError as exc:
-                # ponytail: availability beats blocking recordings on a broken statvfs
+                # Availability beats blocking recordings on a broken statvfs
                 self.logger.warning(
                     f"Could not check free disk space for {output_dir} "
                     f"(via {check_path}): {exc}; allowing session"
@@ -542,10 +505,8 @@ class LiveStreamMonitor:
                 # Real fetch: only successes are cached; failures leave the slot empty.
                 stream_key = self.api_client._get_stream_key()
                 self._cycle_stream_key = stream_key
-                # A later success clears an earlier unrecovered auth failure this cycle.
                 self._cycle_key_fetch_auth_failed = False
-                # Successful key2 re-arms auth-error logging for the next failure streak.
-                # Cache hits skip re-arm — they follow a success already in this cycle.
+                # Success re-arms auth-error logging.
                 self._auth_error_notified = False
             stream_url = self.api_client.get_stream_url(
                 creator_oid, stream_key=stream_key
@@ -564,7 +525,6 @@ class LiveStreamMonitor:
         stream_url: str,
         title: str,
     ) -> None:
-        """Create, register, and start the session-scoped downloader thread."""
         active_downloader = StreamDownloader(
             creator_name=session.creator_name,
             on_download_error=self._make_session_download_error_callback(
@@ -599,8 +559,7 @@ class LiveStreamMonitor:
             )
             return
 
-        # The downloader logs "Recording started" itself; repeating it here added
-        # a line that carried no information the previous one did not already have.
+        # The downloader logs "Recording started" itself.
         active_downloader.download(stream_url, title)
 
     def _handle_start_download_error(
@@ -609,7 +568,6 @@ class LiveStreamMonitor:
         creator_name: str,
         exc: Exception,
     ) -> None:
-        """Remove the pending session and log the download-start failure."""
         self._remove_session(session_key)
 
         if isinstance(exc, RPlayAuthError):
@@ -629,7 +587,6 @@ class LiveStreamMonitor:
         )
 
     def _log_status_summary(self, total_live: int, monitored_live: int) -> None:
-        """Log a summary of the current monitoring status."""
         with self._state_lock:
             self._check_count += 1
             active_downloads = sum(
@@ -697,7 +654,6 @@ class LiveStreamMonitor:
 
     @staticmethod
     def _format_creator_name_summary(creator_names: List[str]) -> str:
-        """Format a concise creator-name summary for info logs."""
         if not creator_names:
             return ""
         if len(creator_names) <= 5:
@@ -706,7 +662,6 @@ class LiveStreamMonitor:
         return f": {preview}, +{len(creator_names) - 5} more"
 
     def _resolve_creator_name_locked(self, creator_oid: str) -> str:
-        """Resolve a creator name from monitored config or known sessions."""
         profile = self.monitored_creators.get(creator_oid)
         if profile is not None:
             return profile.creator_name
@@ -715,33 +670,20 @@ class LiveStreamMonitor:
                 return session.creator_name
         return creator_oid
 
-    def get_active_downloads(self) -> List[str]:
-        """Get list of creators with active raw download sessions."""
-        with self._state_lock:
-            return [
-                session.creator_name
-                for session in self.sessions.values()
-                if session.state == SessionState.RAW_RUNNING
-            ]
-
     @property
     def is_healthy(self) -> bool:
-        """Check if the last monitoring check was successful."""
         with self._state_lock:
             return self._last_check_success
 
     def _update_creator_stream_state(self, stream: LiveStream) -> None:
-        """Update or create creator state with the current handled stream metadata."""
         with self._state_lock:
             if stream.creator_oid not in self._creator_states:
                 self._creator_states[stream.creator_oid] = CreatorStreamState()
             self._creator_states[stream.creator_oid].update_stream_start_time(
                 stream.stream_start_time,
-                stream.oid,
             )
 
     def _clear_creator_stream_state(self, creator_oid: str) -> None:
-        """Remove creator state when they go offline."""
         with self._state_lock:
             creator_name = self._resolve_creator_name_locked(creator_oid)
             creator_state = self._creator_states.pop(creator_oid, None)
@@ -776,7 +718,6 @@ class LiveStreamMonitor:
         creator_oid: str,
         current_stream_start_time: datetime | None = None,
     ) -> None:
-        """Drop older terminal sessions once a newer session becomes current."""
         target_start_time = current_stream_start_time
         if target_start_time is None:
             state = self._creator_states.get(creator_oid)
@@ -795,7 +736,6 @@ class LiveStreamMonitor:
             self.sessions.pop(session_key, None)
 
     def _prune_terminal_sessions_for_creator_locked(self, creator_oid: str) -> int:
-        """Drop terminal sessions for a creator that is no longer active."""
         removable_keys = [
             session_key
             for session_key, session in self.sessions.items()
@@ -841,7 +781,6 @@ class LiveStreamMonitor:
             return self.sessions[session_key]
 
     def _remove_session(self, session_key: str) -> None:
-        """Remove a session that failed before raw download started."""
         with self._state_lock:
             self._active_downloaders.pop(session_key, None)
             session = self.sessions.pop(session_key, None)
@@ -857,7 +796,6 @@ class LiveStreamMonitor:
         creator_oid: str,
         recording_started_at: datetime,
     ) -> str:
-        """Build a session key from the local recording task start time."""
         if recording_started_at.tzinfo is None:
             recording_started_at = recording_started_at.replace(tzinfo=timezone.utc)
         else:
@@ -865,28 +803,22 @@ class LiveStreamMonitor:
         return f"{creator_oid}:{int(recording_started_at.timestamp() * 1000)}"
 
     def _build_session_output_dir(self, creator_name: str) -> Path:
-        """Return the flat output directory for a creator's recordings."""
         return Path.cwd() / StreamDownloader.ARCHIVE_DIR / creator_name
 
     def _make_session_prefix(self, recording_started_at: datetime) -> str:
-        """Build the filename prefix from the local recording start time."""
         local_dt = recording_started_at.astimezone().replace(tzinfo=None)
         return local_dt.strftime("%Y%m%d_%H%M%S_")
 
     def _on_raw_download_complete(self, event: RawDownloadCompleted) -> None:
-        """Receive raw completion from a downloader thread and queue it."""
         self._queue_monitor_event(event)
 
     def _on_raw_download_auth_failed(self, event: RawDownloadAuthFailed) -> None:
-        """Receive raw download auth failure from a downloader thread and queue it."""
         self._queue_monitor_event(event)
 
     def _on_raw_download_failed(self, event: RawDownloadFailed) -> None:
-        """Receive raw download failure from a downloader thread and queue it."""
         self._queue_monitor_event(event)
 
     def _handle_monitor_event(self, event: SessionEvent) -> None:
-        """Apply one monitor event on the control loop."""
         if isinstance(
             event,
             (
@@ -930,13 +862,10 @@ class LiveStreamMonitor:
                 log_method = self.logger.info
                 log_message = f"🎬 Merge started for {session.creator_name}: {session.session_key}"
             elif isinstance(event, MergeCompleted):
-                session.final_output_path = event.output_path
-                session.last_error = None
                 session.state = SessionState.DONE
                 log_method = self.logger.info
                 log_message = f"✅ Merge completed for {session.creator_name}: {event.output_path}"
             elif isinstance(event, MergeFailed):
-                session.last_error = event.error_message
                 session.state = SessionState.MERGE_FAILED
                 log_method = self.logger.warning
                 log_message = (
@@ -951,7 +880,6 @@ class LiveStreamMonitor:
             log_method(log_message)
 
     def _handle_raw_download_completed(self, event: RawDownloadCompleted) -> None:
-        """Queue merge work as soon as raw download completes."""
         with self._state_lock:
             session = self.sessions.get(event.session_key)
             if session is None:
@@ -980,10 +908,9 @@ class LiveStreamMonitor:
                 # after the executor closed. Ignoring it idempotently is the
                 # contract: re-raising would crash the control loop, and
                 # re-queueing would wait on an executor that never reopens.
-                # ponytail: late (>join budget) completions stay orphaned;
-                # startup recovery lane will merge them.
+                # Late completions past the join budget stay orphaned.
+                # Startup recovery merges them.
                 session.state = SessionState.MERGE_FAILED
-                session.last_error = "merge submission closed by shutdown"
                 late_creator_name = session.creator_name
                 late_output_dir = session.output_dir
             else:
@@ -1003,7 +930,6 @@ class LiveStreamMonitor:
         )
 
     def _handle_raw_download_auth_failed(self, event: RawDownloadAuthFailed) -> None:
-        """Clear auth-failed raw sessions and surface credential guidance."""
         with self._state_lock:
             session = self.sessions.pop(event.session_key, None)
             if session is not None:
@@ -1090,7 +1016,6 @@ class LiveStreamMonitor:
         )
 
     def _reset_download_retry_for_new_stream_locked(self, stream: LiveStream) -> None:
-        """Drop retry budget when a creator's stream session changes."""
         creator_oid = stream.creator_oid
         previous_start = self._download_retry_stream_start.get(creator_oid)
         if previous_start is None:
@@ -1138,7 +1063,6 @@ class LiveStreamMonitor:
             if session is None:
                 return
 
-            session.last_error = event.error_message
             session.state = SessionState.BLOCKED
             active_session_key = self._active_raw_session_by_creator.get(
                 session.creator_oid
@@ -1161,7 +1085,6 @@ class LiveStreamMonitor:
             )
 
     def _run_merge_job(self, merge_job: MergeJobSpec) -> None:
-        """Run merge I/O work on the merge executor and emit events back to monitor."""
         self._queue_monitor_event(MergeStarted(session_key=merge_job.session_key))
         result = self._merge_session_to_mp4(merge_job)
         self._queue_monitor_event(result)
@@ -1169,7 +1092,6 @@ class LiveStreamMonitor:
     def _merge_session_to_mp4(
         self, merge_job: MergeJobSpec
     ) -> Union[MergeCompleted, MergeFailed]:
-        """Merge one session's raw ts outputs into the final mp4 artifact."""
         ts_files = sorted(merge_job.output_dir.glob(f"{merge_job.session_prefix}*.ts"))
         output_path: Optional[Path] = None
         temp_path: Optional[Path] = None
@@ -1206,11 +1128,8 @@ class LiveStreamMonitor:
                 self.logger, temp_path, base_output_path
             )
 
-            # The installer may use a filesystem-specific copy fallback. Do
-            # not delete the only recoverable inputs until the final path is
-            # present and non-empty as well. This also keeps a broken artifact
-            # from being mistaken for a completed recording after a copy or
-            # external filesystem failure.
+            # The installer may use a copy fallback. Keep the raw inputs until the
+            # final path is present and non-empty.
             self._validate_merge_output(
                 output_path, "installed merge output is invalid"
             )
@@ -1257,7 +1176,6 @@ class LiveStreamMonitor:
 
     @staticmethod
     def _validate_merge_output(output_path: Path, error_prefix: str) -> None:
-        """Require a regular, non-empty merge artifact before raw cleanup."""
         try:
             is_file = output_path.is_file()
             size = output_path.stat().st_size if is_file else 0
@@ -1270,12 +1188,7 @@ class LiveStreamMonitor:
             raise RuntimeError(f"{error_prefix} at {output_path.name}")
 
     def _discard_partial_merge_output(self, output_path: Optional[Path]) -> None:
-        """
-        Drop a half-written mp4 so a failed merge cannot pass for a finished one.
-
-        The raw .ts inputs are only deleted after a successful merge, so the
-        recording stays recoverable while the broken artifact goes away.
-        """
+        """Drop a half-written mp4 so a failed merge cannot pass for a finished one."""
         if output_path is None:
             return
         try:
@@ -1287,28 +1200,12 @@ class LiveStreamMonitor:
                 f"Could not remove partial merge output {output_path.name}: {exc}"
             )
 
-    def _reserve_final_output_path(
-        self,
-        creator_name: str,
-        title: str,
-        stream_start_time: datetime,
-    ) -> Path:
-        """Reserve the next available final mp4 output path."""
-        return StreamDownloader.get_unique_path(
-            self._build_final_output_base_path(
-                creator_name=creator_name,
-                title=title,
-                stream_start_time=stream_start_time,
-            )
-        )
-
     def _build_final_output_base_path(
         self,
         creator_name: str,
         title: str,
         stream_start_time: datetime,
     ) -> Path:
-        """Build the unsuffixed final path used as the install base name."""
         safe_title = sanitize_filename(title, replacement_text="_") or "untitled"
         date_str = stream_start_time.astimezone().strftime("%Y-%m-%d")
         base_dir = Path.cwd() / StreamDownloader.ARCHIVE_DIR / creator_name
@@ -1320,7 +1217,6 @@ class LiveStreamMonitor:
 
     @staticmethod
     def _build_merge_temp_path(base_output_path: Path) -> Path:
-        """Return a same-directory path that is safe for ffmpeg to overwrite."""
         # Reserve the marker before truncating the base stem. Otherwise a
         # title near the filesystem limit can cut off ``.merging`` entirely,
         # making stale-temp inspection and cleanup ambiguous.
@@ -1329,7 +1225,6 @@ class LiveStreamMonitor:
 
     @staticmethod
     def _clear_stale_merge_temp(temp_path: Path) -> None:
-        """Remove a prior interrupted merge before accepting new output bytes."""
         try:
             temp_path.unlink(missing_ok=True)
         except OSError as exc:
@@ -1338,17 +1233,15 @@ class LiveStreamMonitor:
             ) from exc
 
     def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
-        """Merge ts fragments into one mp4 file using ffmpeg concat."""
         merge_ts_files_to_mp4(ts_files, output_path, self._run_merge_subprocess)
 
     def _run_merge_subprocess(self, command: List[str]) -> None:
         """
         Run one ffmpeg merge as a child this monitor can identify by pid.
 
-        subprocess.run() hides the pid, and without it shutdown cannot tell a
-        merge ffmpeg from a recording ffmpeg: both are plain children of this
-        process, because yt-dlp spawns its own recording ffmpeg directly.
-        Registering the pid is what lets the recording sweep spare this child.
+        subprocess.run() hides the pid. Shutdown needs it to tell a merge ffmpeg
+        from a recording ffmpeg, since yt-dlp spawns the recording ffmpeg as a
+        plain child of this process.
 
         Raises:
             subprocess.TimeoutExpired: If the merge outlives merge_timeout_seconds
@@ -1384,7 +1277,6 @@ class LiveStreamMonitor:
                 self._merge_process_pids.discard(process.pid)
 
     def _shutdown_time_left(self, cap: Optional[float] = None) -> float:
-        """Return the seconds left in the aggregate budget, capped for one phase."""
         if self._shutdown_deadline is None:
             return self.SHUTDOWN_BUDGET_SECONDS if cap is None else cap
         left = max(0.0, self._shutdown_deadline - monotonic())
@@ -1399,9 +1291,6 @@ class LiveStreamMonitor:
         open; only then is the executor closed and its queue flushed. Closing it
         earlier makes submit_merge raise for whatever was still recording, which
         orphans that session's raw .ts files.
-
-        Bounded end to end: every wait draws from one deadline, and a merge that
-        outlives it is abandoned rather than allowed to hold up the process.
         """
         with self._state_lock:
             if self._shutdown_requested:
@@ -1410,28 +1299,25 @@ class LiveStreamMonitor:
 
         self._shutdown_deadline = monotonic() + self.SHUTDOWN_BUDGET_SECONDS
 
-        # 1. No new polls. Draining also lets an in-flight poll finish, so every
-        #    recording it started is registered before step 2 snapshots them.
+        # No new polls. Draining also lets an in-flight poll finish, so every
+        # recording it started is registered before the snapshot below.
         self._drain_monitor_events(
             self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
         )
 
-        # 2. Stop recordings: kill their ffmpeg, spare any merge ffmpeg, and
-        #    wait for the downloader threads to emit their terminal events.
         self._stop_active_recordings()
 
-        # 3. Apply those events. This is where a stopped recording's merge is
-        #    submitted, and it must happen while the executor still accepts work.
+        # Submits each stopped recording's merge, so it must run while the
+        # executor still accepts work.
         self._drain_monitor_events(
             self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
         )
 
-        # 4. Close acceptance and flush the merge queue with whatever budget is
-        #    left. Anything arriving after this is late by definition and is
-        #    refused in _handle_raw_download_completed.
+        # Close acceptance and flush the merge queue with whatever budget is
+        # left. Anything arriving after this is late by definition and is
+        # refused in _handle_raw_download_completed.
         self._close_merge_executor()
 
-        # 5. Merge result events, then stop the control loop.
         self._drain_monitor_events(
             self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
         )
@@ -1441,14 +1327,13 @@ class LiveStreamMonitor:
         )
 
     def _close_merge_executor(self) -> None:
-        """Flush queued merges within the remaining budget, then close the pool."""
         if self.merge_executor.drain(timeout=self._shutdown_time_left()):
             # Nothing is queued behind the barrier, so this cannot block.
             self.merge_executor.shutdown(wait=True)
             return
 
-        # Waiting on wait=True here is what used to make the budget a lie: a
-        # wedged ffmpeg merge would hold shutdown open with no deadline at all.
+        # wait=True here would hold shutdown open with no deadline behind a
+        # wedged ffmpeg merge.
         self.logger.warning(
             f"⚠️ A merge was still running after the {self.SHUTDOWN_BUDGET_SECONDS:.0f}s "
             "shutdown budget; abandoning it instead of blocking exit. Its raw .ts "
@@ -1457,7 +1342,6 @@ class LiveStreamMonitor:
         self.merge_executor.shutdown(wait=False, cancel_futures=True)
 
     def _stop_active_recordings(self) -> None:
-        """Stop recording downloads and wait for their terminal events."""
         with self._state_lock:
             downloaders = list(self._active_downloaders.values())
             for downloader in downloaders:
@@ -1481,7 +1365,6 @@ class LiveStreamMonitor:
         self._join_recording_threads(downloaders)
 
     def _join_recording_threads(self, downloaders: List[StreamDownloader]) -> None:
-        """Give stopped downloader threads a bounded window to report their outcome."""
         join_budget = self._shutdown_time_left(self.SHUTDOWN_PHASE_TIMEOUT_SECONDS)
         deadline = monotonic() + join_budget
         unfinished: List[str] = []
@@ -1505,8 +1388,6 @@ class LiveStreamMonitor:
     def _make_session_download_error_callback(
         self, session_key: str
     ) -> Callable[[str], None]:
-        """Create a callback for a specific session download failure."""
-
         def _on_error(error_message: str) -> None:
             self._queue_monitor_event(
                 RawDownloadBlocked(

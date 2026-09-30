@@ -1,9 +1,4 @@
-﻿"""
-Scheduler module for rplay-live-dl.
-
-Provides the scheduling infrastructure for periodic live stream
-monitoring and downloading operations.
-"""
+﻿"""Periodic live stream check scheduler for rplay-live-dl."""
 
 import logging
 import os
@@ -25,12 +20,10 @@ __all__ = [
     "run_scheduler",
 ]
 
-# Global scheduler reference for signal handling
 _scheduler: Optional["LiveStreamScheduler"] = None
 
 
 def _signal_handler(signum: int, frame) -> None:
-    """Handle shutdown signals gracefully."""
     signal_name = signal.Signals(signum).name
     if _scheduler:
         _scheduler.logger.info(f"Received {signal_name}, shutting down gracefully...")
@@ -39,13 +32,6 @@ def _signal_handler(signum: int, frame) -> None:
 
 
 class LiveStreamScheduler:
-    """
-    Scheduler for periodic live stream monitoring and downloading.
-
-    Manages the APScheduler instance and coordinates the monitoring
-    of configured creators for active live streams.
-    """
-
     def __init__(
         self,
         env: EnvConfig,
@@ -53,15 +39,6 @@ class LiveStreamScheduler:
         api_client: RPlayAPI,
         version: str = "unknown",
     ) -> None:
-        """
-        Initialize the scheduler with environment configuration.
-
-        Args:
-            env: Environment configuration containing auth and interval settings
-            logger: Logger instance for output
-            api_client: Validated RPlay client shared with the monitor
-            version: Application version string for display
-        """
         self.logger = logger
         self.env = env
         self.version = version
@@ -74,19 +51,12 @@ class LiveStreamScheduler:
         self._stopped = False
 
     def check_and_download(self) -> None:
-        """Execute check and download task."""
         try:
             self.monitor.check_live_streams_and_start_download()
         except Exception as e:
             self.logger.exception(f"Error while checking live streams: {e}")
 
     def start(self) -> None:
-        """
-        Start the scheduler and begin monitoring.
-
-        Performs an initial check immediately, then schedules
-        periodic checks at the configured interval.
-        """
         try:
             build = f" ({self.git_sha[:7]})" if self.git_sha else ""
             self.logger.info(
@@ -100,7 +70,6 @@ class LiveStreamScheduler:
                 name="check_livestreams",
             )
 
-            # Perform initial check
             self.check_and_download()
 
             self.scheduler.start()
@@ -113,7 +82,6 @@ class LiveStreamScheduler:
             raise
 
     def stop(self) -> None:
-        """Stop the scheduler, drain the monitor, and reap download subprocesses."""
         if self._stopped:
             return
         self._stopped = True
@@ -121,16 +89,14 @@ class LiveStreamScheduler:
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
 
-        # Always shut the monitor down, even when the scheduler never started:
-        # its control thread and merge executor exist from construction.
-        # The monitor owns recording subprocess lifecycle: it stops recordings
-        # while sparing merge children, then merges what they left behind.
+        # Always shut the monitor down, even when the scheduler never started,
+        # because its control thread and merge executor exist from construction.
+        # It stops recordings while sparing merge children, then merges what they left.
         self.monitor.shutdown()
 
-        # Safety net only. The monitor has closed its merge executor by now, so
-        # nothing here can be a merge ffmpeg; anything still alive is a
-        # recording child that escaped the monitor's sweep (a yt-dlp retry that
-        # respawned after it). Those outlive the interpreter unless reaped.
+        # Safety net only. The merge executor is already closed, so anything alive
+        # is a recording child that escaped the monitor's sweep (a yt-dlp retry
+        # that respawned). Those outlive the interpreter unless reaped.
         reaped = terminate_child_processes()
         if reaped:
             self.logger.warning(
@@ -146,18 +112,8 @@ def run_scheduler(
     version: str,
     api_client: RPlayAPI,
 ) -> None:
-    """
-    Initialize and run the scheduler with signal handling.
-
-    Args:
-        env: Environment configuration
-        logger: Logger instance
-        version: Application version string
-        api_client: Validated RPlay client shared with the monitor
-    """
     global _scheduler
 
-    # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 

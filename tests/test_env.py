@@ -5,6 +5,13 @@ import pytest
 from core.env import EnvConfigError, load_env
 
 
+@pytest.fixture
+def valid_env(monkeypatch):
+    """Minimal valid credentials. Tests about other settings build on this."""
+    monkeypatch.setenv("REFRESH_TOKEN", "test_token")
+    monkeypatch.setenv("USER_OID", "test_oid")
+
+
 class TestLoadEnv:
     """Tests for load_env function."""
 
@@ -20,15 +27,34 @@ class TestLoadEnv:
         assert config.user_oid == "test_user_456"
         assert config.interval == 120
 
-    def test_load_env_default_interval(self, monkeypatch):
+    def test_load_env_default_interval(self, valid_env):
         """Test that interval has default value of 60."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
         # Don't set INTERVAL to test default
 
         config = load_env()
 
         assert config.interval == 60
+
+    @pytest.mark.parametrize("raw", ["9", "3601"])
+    def test_load_env_interval_out_of_range(self, valid_env, monkeypatch, raw):
+        """Test that an interval just outside 10-3600 raises ValueError."""
+        monkeypatch.setenv("INTERVAL", raw)
+
+        with pytest.raises(ValueError) as exc_info:
+            load_env()
+
+        message = str(exc_info.value)
+        assert "Invalid environment configuration" in message
+        assert "INTERVAL" in message
+
+    @pytest.mark.parametrize("raw", ["10", "3600"])
+    def test_load_env_interval_at_boundaries(self, valid_env, monkeypatch, raw):
+        """Test that the interval boundaries (10 and 3600) are accepted."""
+        monkeypatch.setenv("INTERVAL", raw)
+
+        config = load_env()
+
+        assert config.interval == int(raw)
 
     def test_load_env_missing_refresh_token(self, no_dotenv_file):
         """Without REFRESH_TOKEN, startup fails with a clear message."""
@@ -42,17 +68,6 @@ class TestLoadEnv:
         assert "REFRESH_TOKEN" in str(exc_info.value)
         assert "Invalid environment configuration" in str(exc_info.value)
 
-    def test_load_env_missing_user_oid(self, no_dotenv_file):
-        """Test that missing USER_OID raises EnvConfigError."""
-        no_dotenv_file.setenv("REFRESH_TOKEN", "test_token")
-        no_dotenv_file.delenv("USER_OID", raising=False)
-
-        with pytest.raises(EnvConfigError) as exc_info:
-            load_env()
-
-        assert "USER_OID" in str(exc_info.value)
-        assert "Missing required" in str(exc_info.value)
-
     def test_load_env_missing_both_required(self, no_dotenv_file):
         """Test that missing both required vars raises EnvConfigError."""
         no_dotenv_file.delenv("REFRESH_TOKEN", raising=False)
@@ -65,41 +80,8 @@ class TestLoadEnv:
         assert "REFRESH_TOKEN" in error_msg
         assert "USER_OID" in error_msg
 
-    def test_load_env_invalid_interval_too_low(self, monkeypatch):
-        """Test that interval below minimum (10) raises ValueError."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("INTERVAL", "5")
-
-        with pytest.raises(ValueError) as exc_info:
-            load_env()
-
-        assert "Invalid environment configuration" in str(exc_info.value)
-
-    def test_load_env_invalid_interval_too_high(self, monkeypatch):
-        """Test that interval above maximum (3600) raises ValueError."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("INTERVAL", "4000")
-
-        with pytest.raises(ValueError) as exc_info:
-            load_env()
-
-        assert "Invalid environment configuration" in str(exc_info.value)
-
-    def test_load_env_whitespace_refresh_token(self, monkeypatch):
-        """Test that whitespace-only REFRESH_TOKEN raises ValueError."""
-        monkeypatch.setenv("REFRESH_TOKEN", "   ")
-        monkeypatch.setenv("USER_OID", "test_oid")
-
-        with pytest.raises(ValueError) as exc_info:
-            load_env()
-
-        assert "Invalid environment configuration" in str(exc_info.value)
-
-    def test_load_env_whitespace_user_oid(self, monkeypatch):
+    def test_load_env_whitespace_user_oid(self, monkeypatch, valid_env):
         """Test that whitespace-only USER_OID raises ValueError."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
         monkeypatch.setenv("USER_OID", "   ")
 
         with pytest.raises(ValueError) as exc_info:
@@ -116,26 +98,6 @@ class TestLoadEnv:
 
         assert config.refresh_token == "test_token"
         assert config.user_oid == "test_oid"
-
-    def test_load_env_interval_at_minimum(self, monkeypatch):
-        """Test that interval at minimum boundary (10) is accepted."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("INTERVAL", "10")
-
-        config = load_env()
-
-        assert config.interval == 10
-
-    def test_load_env_interval_at_maximum(self, monkeypatch):
-        """Test that interval at maximum boundary (3600) is accepted."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("INTERVAL", "3600")
-
-        config = load_env()
-
-        assert config.interval == 3600
 
 
 class TestRefreshConfig:
@@ -163,23 +125,21 @@ class TestRefreshConfig:
         assert "REFRESH_TOKEN" in str(caught.value)
         assert "legacy-secret" not in str(caught.value)
 
-    def test_blank_refresh_token_is_rejected(self, monkeypatch):
-        monkeypatch.setenv("USER_OID", "test-oid")
+    def test_blank_refresh_token_is_rejected(self, monkeypatch, valid_env):
         monkeypatch.setenv("REFRESH_TOKEN", "  ")
         with pytest.raises(ValueError, match="REFRESH_TOKEN"):
             load_env()
 
-    def test_refresh_only_still_requires_user_oid(self, monkeypatch):
-        monkeypatch.delenv("USER_OID", raising=False)
-        monkeypatch.setenv("REFRESH_TOKEN", "private-refresh")
+    def test_refresh_only_still_requires_user_oid(self, no_dotenv_file):
+        no_dotenv_file.setenv("REFRESH_TOKEN", "private-refresh")
+        no_dotenv_file.delenv("USER_OID", raising=False)
         with pytest.raises(EnvConfigError, match="USER_OID") as caught:
             load_env()
+        assert "Missing required" in str(caught.value)
         assert "private-refresh" not in str(caught.value)
 
     @pytest.mark.parametrize("value", ["0", "60", "300"])
-    def test_valid_leeway(self, monkeypatch, value):
-        monkeypatch.setenv("REFRESH_TOKEN", "static")
-        monkeypatch.setenv("USER_OID", "test-oid")
+    def test_valid_leeway(self, monkeypatch, valid_env, value):
         monkeypatch.setenv("TOKEN_REFRESH_LEEWAY_SECONDS", value)
         assert load_env().token_refresh_leeway_seconds == int(value)
 
@@ -196,11 +156,8 @@ class TestRefreshConfig:
 class TestLogConfigEnvVars:
     """Tests for log configuration environment variables."""
 
-    def test_log_config_defaults(self, no_dotenv_file):
+    def test_log_config_defaults(self, valid_env):
         """Test public default values for log configuration."""
-        no_dotenv_file.setenv("REFRESH_TOKEN", "test_token")
-        no_dotenv_file.setenv("USER_OID", "test_oid")
-
         config = load_env()
 
         assert config.log_level == "INFO"
@@ -209,20 +166,16 @@ class TestLogConfigEnvVars:
         assert config.log_backup_count == 5
         assert config.log_retention_days == 30
 
-    def test_log_level_valid_debug(self, monkeypatch):
+    def test_log_level_valid_debug(self, monkeypatch, valid_env):
         """Test valid LOG_LEVEL=DEBUG is accepted and normalized."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
         monkeypatch.setenv("LOG_LEVEL", "debug")
 
         config = load_env()
 
         assert config.log_level == "DEBUG"
 
-    def test_log_level_invalid_raises(self, monkeypatch):
+    def test_log_level_invalid_raises(self, monkeypatch, valid_env):
         """Test invalid LOG_LEVEL is a startup validation error."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
         monkeypatch.setenv("LOG_LEVEL", "LOUD")
 
         with pytest.raises(ValueError) as exc_info:
@@ -231,10 +184,8 @@ class TestLogConfigEnvVars:
         assert "Invalid environment configuration" in str(exc_info.value)
         assert "LOG_LEVEL" in str(exc_info.value)
 
-    def test_log_ytdlp_internal_parsing(self, monkeypatch):
+    def test_log_ytdlp_internal_parsing(self, monkeypatch, valid_env):
         """Test LOG_YTDLP_INTERNAL truthy/falsy/invalid spellings."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
 
         cases = [
             ("1", True),
@@ -266,107 +217,50 @@ class TestLogConfigEnvVars:
             assert "Invalid environment configuration" in message
             assert "LOG_YTDLP_INTERNAL" in message
 
-    def test_log_max_size_mb_custom(self, monkeypatch):
-        """Test custom LOG_MAX_SIZE_MB value."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("LOG_MAX_SIZE_MB", "10")
+    @pytest.mark.parametrize(
+        "name,attr,raw",
+        [
+            ("LOG_MAX_SIZE_MB", "log_max_size_mb", "1"),
+            ("LOG_BACKUP_COUNT", "log_backup_count", "1"),
+            ("LOG_RETENTION_DAYS", "log_retention_days", "365"),
+        ],
+    )
+    def test_log_rotation_boundary_values_accepted(
+        self, monkeypatch, valid_env, name, attr, raw
+    ):
+        """Test that a rotation setting at its boundary maps to its field."""
+        monkeypatch.setenv(name, raw)
 
         config = load_env()
 
-        assert config.log_max_size_mb == 10
+        assert getattr(config, attr) == int(raw)
 
-    def test_log_backup_count_custom(self, monkeypatch):
-        """Test custom LOG_BACKUP_COUNT value."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("LOG_BACKUP_COUNT", "10")
-
-        config = load_env()
-
-        assert config.log_backup_count == 10
-
-    def test_log_retention_days_custom(self, monkeypatch):
-        """Test custom LOG_RETENTION_DAYS value."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("LOG_RETENTION_DAYS", "90")
-
-        config = load_env()
-
-        assert config.log_retention_days == 90
-
-    def test_log_max_size_mb_minimum(self, monkeypatch):
-        """Test LOG_MAX_SIZE_MB at minimum boundary (1)."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("LOG_MAX_SIZE_MB", "1")
-
-        config = load_env()
-
-        assert config.log_max_size_mb == 1
-
-    def test_log_max_size_mb_below_minimum_raises(self, monkeypatch):
+    def test_log_max_size_mb_below_minimum_raises(self, monkeypatch, valid_env):
         """Test LOG_MAX_SIZE_MB below minimum raises error."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
         monkeypatch.setenv("LOG_MAX_SIZE_MB", "0")
 
         with pytest.raises(ValueError):
             load_env()
 
-    def test_log_backup_count_minimum(self, monkeypatch):
-        """Test LOG_BACKUP_COUNT at minimum boundary (1)."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("LOG_BACKUP_COUNT", "1")
-
-        config = load_env()
-
-        assert config.log_backup_count == 1
-
-    def test_log_retention_days_maximum(self, monkeypatch):
-        """Test LOG_RETENTION_DAYS at maximum boundary (365)."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("LOG_RETENTION_DAYS", "365")
-
-        config = load_env()
-
-        assert config.log_retention_days == 365
-
 
 class TestMinFreeDiskGbEnv:
     """Tests for MIN_FREE_DISK_GB environment variable."""
 
-    def test_custom_value(self, monkeypatch):
-        """Test custom MIN_FREE_DISK_GB value."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("MIN_FREE_DISK_GB", "10.5")
+    @pytest.mark.parametrize("raw,expected", [("10.5", 10.5), ("0", 0.0)])
+    def test_valid_values_accepted(self, monkeypatch, valid_env, raw, expected):
+        """Test MIN_FREE_DISK_GB is read, and 0 is accepted (disables the guard)."""
+        monkeypatch.setenv("MIN_FREE_DISK_GB", raw)
 
         config = load_env()
 
-        assert config.min_free_disk_gb == 10.5
-
-    def test_zero_accepted(self, monkeypatch):
-        """Test MIN_FREE_DISK_GB=0 is accepted (disables the guard)."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
-        monkeypatch.setenv("MIN_FREE_DISK_GB", "0")
-
-        config = load_env()
-
-        assert config.min_free_disk_gb == 0.0
+        assert config.min_free_disk_gb == expected
 
     @pytest.mark.parametrize(
         "raw",
         ["", "nan", "inf", "-inf", "-1"],
     )
-    def test_invalid_values_raise_actionable_error(self, monkeypatch, raw):
+    def test_invalid_values_raise_actionable_error(self, monkeypatch, valid_env, raw):
         """Blank, non-finite, and negative values fail startup with field name."""
-        monkeypatch.setenv("REFRESH_TOKEN", "test_token")
-        monkeypatch.setenv("USER_OID", "test_oid")
         monkeypatch.setenv("MIN_FREE_DISK_GB", raw)
 
         with pytest.raises(ValueError) as exc_info:
