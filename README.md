@@ -69,6 +69,18 @@ Startup protection:
 - and legacy `./config.yaml` still exists
 - the app exits early with a migration error instead of silently starting with the wrong mount layout
 
+<a id="v25-upgrade-notes"></a>
+
+## ⚠️ v2.5 Upgrade Notes
+
+`2.5.0-vibe` removes `AUTH_TOKEN`. RPlay no longer accepts the old static JWT, so `REFRESH_TOKEN` is now the only credential.
+
+Upgrade checklist:
+
+1. Follow [Account credentials](#account-credentials) to copy a new `REFRESH_TOKEN`.
+2. Set it in `.env` and remove `AUTH_TOKEN`.
+3. Recreate the container with `docker compose up -d --force-recreate`.
+
 ---
 
 <a id="features"></a>
@@ -144,18 +156,26 @@ Development:
 ![User Number on the account information page](images/user_oid.png)
 
 3. Open browser DevTools (`F12`) → **Console**.
-4. Run the command for your session:
+4. Paste this script and press Enter. If Chrome asks, type `allow pasting` first.
 
-| Session | Console command | `.env` variable |
-| --- | --- | --- |
-| Existing legacy session | `localStorage.getItem('_AUTHORIZATION_')` | `AUTH_TOKEN` |
-| New login | `JSON.parse(localStorage.vuex).AccountModule.refreshToken` | `REFRESH_TOKEN` |
+```js
+const c = copy;
+const open = indexedDB.open('rplay-account-session');
+open.onsuccess = () => {
+  const req = open.result.transaction('records').objectStore('records').get('session');
+  req.onsuccess = () => {
+    const token = req.result?.session?.refreshToken;
+    token ? (c(token), console.log('✅ REFRESH_TOKEN copied to clipboard')) : console.log('❌ Not found. Make sure you are logged in.');
+  };
+};
+```
 
-![Browser console example using the legacy credential command](images/auth_token.png)
+5. When you see `✅ REFRESH_TOKEN copied to clipboard`, paste the value into `REFRESH_TOKEN` in `.env`. The `undefined` line printed afterwards is normal.
 
-5. Copy the returned value without surrounding quotes into the matching `.env` variable. Leave the other token variable empty.
+If the script reports `❌ Not found`, sign in again and retry. If the clipboard is not available, open **Application** → **IndexedDB** → `rplay-account-session` → `records` → `session`, expand `session`, and copy the `refreshToken` value by hand.
 
-For the new-login flow, an empty or `undefined` refresh token means you need to sign in again. Use the same account for the token and `USER_OID`. Keep token values out of screenshots, logs, and issues.
+Use the same account for the token and `USER_OID`. Keep token values out of screenshots, logs, and issues.
+Signing out of the website may invalidate the token, so close the tab instead of signing out after you copy it.
 
 #### Creator ID
 
@@ -175,10 +195,8 @@ Copy `.env.example` to `.env`. Both local runs and the bundled `docker-compose.y
 Full example:
 
 ```dotenv
-# Required: new login credentials
+# Required: account credentials
 USER_OID=your_user_oid
-# Legacy alternative: leave REFRESH_TOKEN empty and set AUTH_TOKEN instead
-AUTH_TOKEN=
 REFRESH_TOKEN=your_refresh_token
 TOKEN_REFRESH_LEEWAY_SECONDS=300
 
@@ -209,8 +227,7 @@ Environment variables:
 | Variable | Required | Default | Validation / accepted values | Purpose |
 | --- | --- | --- | --- | --- |
 | `USER_OID` | yes | none | non-empty | Your RPlay user identifier |
-| `AUTH_TOKEN` | without `REFRESH_TOKEN` | empty | required when refresh token is empty | Existing static-token flow; ignored when `REFRESH_TOKEN` is set |
-| `REFRESH_TOKEN` | for new logins | empty | non-empty selects refresh flow | Acquires and renews access JWTs; takes precedence over `AUTH_TOKEN` |
+| `REFRESH_TOKEN` | yes | none | non-empty | Acquires and renews access JWTs |
 | `TOKEN_REFRESH_LEEWAY_SECONDS` | no | `300` | non-negative integer | Renew before key2 when JWT has fewer seconds remaining; `0` renews only when expired |
 | `INTERVAL` | no | `60` | integer `10`-`3600` | Poll interval in seconds |
 | `MIN_FREE_DISK_GB` | no | `5` | non-negative number; `0` disables the guard; invalid/negative values abort startup | Skip starting a new recording when free space on the output volume is below this many GiB |
@@ -227,15 +244,12 @@ Notes:
 - the bundled Docker Compose file loads `.env` through `env_file`, so its values become real container environment variables
 - `LOG_YTDLP_INTERNAL=true` is only for deep diagnosis; it is intentionally noisy
 
-| Configuration | Behavior |
-| --- | --- |
-| `REFRESH_TOKEN` set | Acquire and renew JWTs automatically; `AUTH_TOKEN` is ignored |
-| Only `AUTH_TOKEN` set | Use the existing static token |
-| Neither token set | Fail startup with a configuration error |
+`USER_OID` and `REFRESH_TOKEN` are both required. If `REFRESH_TOKEN` is missing, startup fails with a configuration error.
 
-A non-empty `REFRESH_TOKEN` selects the refresh flow, even if `AUTH_TOKEN` is also set. Startup obtains a JWT and validates key2 with `loginType=rplay`; monitoring reuses that client. JWTs stay in memory and are never written to `.env`. Before another key2 request, the client refreshes if the JWT has expired or has fewer than the configured seconds remaining. There is no periodic refresh timer, and refreshing does not restart an active recording.
-
-Without `REFRESH_TOKEN`, the existing `AUTH_TOKEN` is used with `loginType=plax`, without JWT parsing or automatic renewal. `USER_OID` is required in either flow; supplying neither token fails startup. See [authentication behavior and verification](docs/authentication.md) for protocol details and limitations.
+Startup obtains a JWT and validates key2 with `loginType=rplay`. Monitoring reuses that client. JWTs stay in memory.
+Before another key2 request, the client refreshes if the JWT has expired or has fewer than the configured seconds remaining.
+There is no periodic refresh timer, and refreshing does not restart an active recording.
+See [authentication behavior and verification](docs/authentication.md) for protocol details and limitations.
 
 #### Creator configuration
 
@@ -417,7 +431,7 @@ Fix:
 
 Check:
 
-- the configured `REFRESH_TOKEN` (or legacy `AUTH_TOKEN`) is still valid
+- the configured `REFRESH_TOKEN` is still valid
 - `USER_OID` is correct
 - creator ID is correct
 - there is enough free disk space
@@ -437,7 +451,7 @@ Behavior:
 Check:
 
 - if token refresh is rejected (`401` / `403`), sign in to the website, copy the current `REFRESH_TOKEN`, verify `USER_OID`, and recreate the container with `docker compose up -d --force-recreate` (or restart the local process)
-- for the static flow, replace an invalid `AUTH_TOKEN`; new login sessions should use `REFRESH_TOKEN`
+- if startup says `AUTH_TOKEN is no longer supported`, follow the [v2.5 upgrade notes](#v25-upgrade-notes)
 - if repeated `403` persists, confirm the stream is not paid/private for your account
 - if repeated `404` persists after the automatic retries, wait a few seconds and confirm the stream actually remained live
 
@@ -543,7 +557,6 @@ rplay-live-dl/
 │   ├── test_scheduler.py
 │   └── test_utils.py
 ├── images/
-│   ├── auth_token.png
 │   ├── creator_oid.png
 │   └── user_oid.png
 ├── config/
