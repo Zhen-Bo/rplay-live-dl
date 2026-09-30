@@ -13,7 +13,7 @@ from models.env import EnvConfig
 
 def _patch_main_startup(monkeypatch, *, api_side_effect=None, calls=None):
     """Patch main() deps; optionally record call order in ``calls``."""
-    monkeypatch.setenv("AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("REFRESH_TOKEN", "test-token")
     monkeypatch.setenv("USER_OID", "test-oid")
     monkeypatch.setattr("main.load_dotenv", lambda: None)
     monkeypatch.setattr(
@@ -136,7 +136,7 @@ def test_main_invalid_log_level_exits_before_setup_logger(monkeypatch, capsys):
     secret_token = "secret-auth-token-xyz"
     secret_oid = "secret-user-oid-abc"
 
-    monkeypatch.setenv("AUTH_TOKEN", secret_token)
+    monkeypatch.setenv("REFRESH_TOKEN", secret_token)
     monkeypatch.setenv("USER_OID", secret_oid)
     monkeypatch.setenv("LOG_LEVEL", "LOUD")
     monkeypatch.setattr("main.load_dotenv", lambda: None)
@@ -195,12 +195,11 @@ def test_main_success_order(monkeypatch):
 
 def test_main_passes_open_validated_client_to_scheduler(monkeypatch):
     api, scheduler = _patch_main_startup(monkeypatch)
-    monkeypatch.delenv("AUTH_TOKEN")
     monkeypatch.setenv("REFRESH_TOKEN", "test-refresh")
 
     def run(**kwargs):
         assert kwargs["api_client"] is api
-        assert kwargs["env"].auth_token == ""
+        assert kwargs["env"].refresh_token == "test-refresh"
         api.validate_credentials.assert_called_once()
         api.close.assert_not_called()
 
@@ -216,7 +215,7 @@ def test_main_auth_failure_exits_once_and_never_starts_scheduler(monkeypatch):
     api, run_scheduler_mock = _patch_main_startup(
         monkeypatch,
         api_side_effect=RPlayAuthError(
-            "Authentication failed. Please check your AUTH_TOKEN."
+            "Authentication failed. Please check your REFRESH_TOKEN."
         ),
     )
     monkeypatch.setattr("main.setup_logger", MagicMock(return_value=logger))
@@ -229,7 +228,7 @@ def test_main_auth_failure_exits_once_and_never_starts_scheduler(monkeypatch):
     assert logger.error.call_count == 1
     error_msg = str(logger.error.call_args.args[0])
     assert "Authentication failed" in error_msg
-    assert "AUTH_TOKEN" in error_msg
+    assert "REFRESH_TOKEN" in error_msg
     api.close.assert_called_once_with()
 
 

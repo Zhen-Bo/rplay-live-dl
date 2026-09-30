@@ -66,7 +66,7 @@ class TestSetupLogger:
         configure_logging(
             EnvConfig(
                 user_oid="oid",
-                auth_token="token",
+                refresh_token="token",
                 log_level="DEBUG",
                 log_ytdlp_internal=True,
             )
@@ -83,7 +83,7 @@ class TestSetupLogger:
         monkeypatch.setattr(logger_module, "_logs_dir", tmp_path)
         config = EnvConfig(
             user_oid="oid",
-            auth_token="token",
+            refresh_token="token",
             log_max_size_mb=7,
             log_backup_count=3,
             log_retention_days=42,

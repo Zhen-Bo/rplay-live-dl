@@ -79,8 +79,7 @@ class RPlayAPI:
         self,
         base_url: str,
         user_oid: str,
-        auth_token: str = "",
-        refresh_token: str = "",
+        refresh_token: str,
         token_refresh_leeway_seconds: int = DEFAULT_TOKEN_REFRESH_LEEWAY_SECONDS,
     ) -> None:
         """
@@ -89,14 +88,13 @@ class RPlayAPI:
         Args:
             base_url: Base URL for RPlay API requests
             user_oid: Unique identifier for the authenticated user
-            auth_token: Static JWT, ignored when refresh_token is provided
             refresh_token: Credential used to acquire and renew access JWTs
             token_refresh_leeway_seconds: Refresh before key2 below this remaining lifetime
         """
         refresh_token = refresh_token.strip()
         self.base_url = base_url.rstrip("/")
         self.user_oid = user_oid
-        self.auth_token = "" if refresh_token else auth_token
+        self.auth_token = ""
         self.refresh_token = refresh_token
         self.token_refresh_leeway_seconds = token_refresh_leeway_seconds
         self._token_expires_at: float | None = None
@@ -234,7 +232,7 @@ class RPlayAPI:
 
     def validate_credentials(self) -> None:
         """
-        Verify AUTH_TOKEN/USER_OID by fetching a stream key once.
+        Verify REFRESH_TOKEN/USER_OID by fetching a stream key once.
 
         Raises:
             RPlayAuthError: If credentials are invalid or expired
@@ -246,7 +244,7 @@ class RPlayAPI:
 
     @staticmethod
     def _access_token_expiry(token: str) -> float:
-        """Read the expiry of a server-issued JWT; never inspect static tokens."""
+        """Read the expiry of a server-issued JWT."""
         try:
             parts = token.split(".")
             if len(parts) != 3 or not all(parts):
@@ -270,8 +268,6 @@ class RPlayAPI:
 
     def _ensure_valid_token(self) -> None:
         """Acquire a JWT on first use, then renew it only before key2 requests."""
-        if not self.refresh_token:
-            return
         remaining = (
             self._token_expires_at - time.time()
             if self._token_expires_at is not None
@@ -377,9 +373,8 @@ class RPlayAPI:
             status = exc.response.status_code if exc.response is not None else "error"
             if status in (401, 403):
                 # Caller logs expected auth failures (startup / monitor dedup).
-                credential = "REFRESH_TOKEN" if self.refresh_token else "AUTH_TOKEN"
                 raise RPlayAuthError(
-                    f"Authentication failed. Please check your {credential} and USER_OID."
+                    "Authentication failed. Please check your REFRESH_TOKEN and USER_OID."
                 ) from None
             raise RPlayAPIError(f"Failed to get stream key: HTTP {status}") from None
 
@@ -392,10 +387,9 @@ class RPlayAPI:
     def _request_stream_key(self) -> str:
         """Make one key2 request, renewing the JWT before each retry if needed."""
         self._ensure_valid_token()
-        login_type = "rplay" if self.refresh_token else "plax"
         url = (
             f"{self.base_url}/live/key2?"
-            f"lang=en&requestorOid={self.user_oid}&loginType={login_type}"
+            f"lang=en&requestorOid={self.user_oid}&loginType=rplay"
         )
         response = self._session.get(
             url,
@@ -404,9 +398,8 @@ class RPlayAPI:
         )
         status_code = response.status_code
         if status_code in (401, 403):
-            credential = "REFRESH_TOKEN" if self.refresh_token else "AUTH_TOKEN"
             raise RPlayAuthError(
-                f"Authentication failed. Please check your {credential} and USER_OID."
+                "Authentication failed. Please check your REFRESH_TOKEN and USER_OID."
             )
         if status_code in RETRY_STATUS_CODES:
             raise _RetryableStatusCodeError(status_code)

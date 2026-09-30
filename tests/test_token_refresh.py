@@ -53,14 +53,10 @@ def api(clock):
             yield client
 
 
-@pytest.mark.parametrize("configured_token", ["", "not-a-jwt", access_token(1)])
-def test_refresh_precedes_key2_and_ignores_configured_auth_token(
-    clock, configured_token
-):
+def test_refresh_precedes_key2(clock):
     with RPlayAPI(
         base_url="https://api.example.test/",
         user_oid="test-oid",
-        auth_token=configured_token,
         refresh_token="test-refresh",
     ) as api:
         calls = Mock()
@@ -87,31 +83,6 @@ def test_refresh_precedes_key2_and_ignores_configured_auth_token(
             assert get.call_args.args[0].endswith("loginType=rplay")
             assert get.call_args.kwargs["headers"]["Authorization"] == access_token()
             assert "refresh-token" not in get.call_args.kwargs["headers"]
-
-
-def test_static_flow_does_not_decode_or_refresh(clock):
-    # Static mode deliberately accepts the same opaque string as before.
-    with RPlayAPI(
-        base_url="https://api.rplay.live",
-        user_oid="test-oid",
-        auth_token="static-token",
-        refresh_token="  ",
-    ) as api:
-        with (
-            patch.object(
-                api,
-                "_access_token_expiry",
-                side_effect=AssertionError("must not decode"),
-            ),
-            patch.object(api._session, "post") as post,
-            patch.object(
-                api._session, "get", return_value=response({"authKey": "key"})
-            ) as get,
-        ):
-            api.validate_credentials()
-            assert get.call_args.args[0].endswith("loginType=plax")
-            assert get.call_args.kwargs["headers"]["Authorization"] == "static-token"
-            post.assert_not_called()
 
 
 @pytest.mark.parametrize(

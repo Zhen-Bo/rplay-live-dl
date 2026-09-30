@@ -75,35 +75,35 @@ class TestEnvConfig:
 
     def test_valid_env_config(self):
         """Test creating a valid environment config."""
-        config = EnvConfig(user_oid="user456", auth_token="token123", interval=60)
-        assert config.auth_token == "token123"
+        config = EnvConfig(user_oid="user456", refresh_token="token123", interval=60)
+        assert config.refresh_token == "token123"
         assert config.user_oid == "user456"
         assert config.interval == 60
 
     def test_default_interval(self):
         """Test that interval has a default value."""
-        config = EnvConfig(user_oid="user456", auth_token="token123")
+        config = EnvConfig(user_oid="user456", refresh_token="token123")
         assert config.interval == 60
 
     def test_interval_minimum(self):
         """Test that interval has a minimum value."""
         with pytest.raises(ValidationError):
-            EnvConfig(user_oid="user456", auth_token="token123", interval=5)
+            EnvConfig(user_oid="user456", refresh_token="token123", interval=5)
 
     def test_interval_maximum(self):
         """Test that interval has a maximum value."""
         with pytest.raises(ValidationError):
-            EnvConfig(user_oid="user456", auth_token="token123", interval=4000)
+            EnvConfig(user_oid="user456", refresh_token="token123", interval=4000)
 
-    def test_empty_auth_token_rejected(self):
+    def test_empty_refresh_token_rejected(self):
         """Test that empty auth token is rejected."""
         with pytest.raises(ValidationError):
-            EnvConfig(user_oid="user456", auth_token="")
+            EnvConfig(user_oid="user456", refresh_token="")
 
-    def test_whitespace_auth_token_rejected(self):
+    def test_whitespace_refresh_token_rejected(self):
         """Test that whitespace-only auth token is rejected."""
         with pytest.raises(ValidationError):
-            EnvConfig(user_oid="user456", auth_token="   ")
+            EnvConfig(user_oid="user456", refresh_token="   ")
 
 
 class TestMultiLangNick:

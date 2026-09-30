@@ -121,7 +121,6 @@ def main() -> None:
     api_client = RPlayAPI(
         base_url=api_base_url,
         user_oid=env.user_oid,
-        auth_token=env.auth_token,
         refresh_token=env.refresh_token,
         token_refresh_leeway_seconds=env.token_refresh_leeway_seconds,
     )
@@ -130,10 +129,9 @@ def main() -> None:
             api_client.validate_credentials()
             logger.info("API credentials validated successfully")
         except RPlayAuthError as exc:
-            credential = "REFRESH_TOKEN" if env.refresh_token else "AUTH_TOKEN"
             logger.error(
                 f"Authentication failed: {exc}. "
-                f"Please update {credential} and USER_OID in your .env file, then restart."
+                "Please update REFRESH_TOKEN and USER_OID in your .env file, then restart."
             )
             sys.exit(1)
         except RPlayAPIError as exc:
