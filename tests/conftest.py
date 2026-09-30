@@ -1,6 +1,7 @@
 """Pytest configuration and fixtures."""
 
 import logging
+import time
 
 import pytest
 
@@ -89,3 +90,27 @@ def disable_file_logging(monkeypatch):
         monkeypatch.setattr(config_module, "_get_logger", patched_get_logger)
     except (ImportError, AttributeError):
         pass
+
+
+@pytest.fixture(autouse=True)
+def skip_retry_backoff(monkeypatch):
+    """Retry without waiting, unless a test installs its own fake sleep."""
+    from core.downloader import StreamDownloader
+    from core.rplay import RPlayAPI
+
+    real_sleep = time.sleep
+
+    def without_backoff(build):
+        def wrapper(self, *args, **kwargs):
+            retrying = build(self, *args, **kwargs)
+            if retrying.sleep is real_sleep:
+                retrying.sleep = lambda _seconds: None
+            return retrying
+
+        return wrapper
+
+    for owner, name in (
+        (RPlayAPI, "_build_retrying"),
+        (StreamDownloader, "_build_download_retrying"),
+    ):
+        monkeypatch.setattr(owner, name, without_backoff(getattr(owner, name)))
