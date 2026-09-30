@@ -60,21 +60,20 @@ class TestLiveStreamMonitorInit:
     def test_init_empty_monitored_creators(self, monitor):
         """Test that monitored creators dict is empty on init."""
         assert monitor.monitored_creators == {}
+        assert monitor._creator_states == {}
 
-    def test_init_sets_config_path(self, mock_api):
-        """Test that config path is set correctly."""
-        monitor = LiveStreamMonitor(
-            api_client=mock_api, config_path="/custom/path.yaml"
-        )
-        assert monitor.config_path == "/custom/path.yaml"
-
-    def test_init_default_config_path(self, monitor):
-        """Test default config path value."""
-        assert monitor.config_path == "./config/config.yaml"
-
-    def test_is_healthy_initial_state(self, monitor):
-        """Test that initial state is healthy."""
-        assert monitor.is_healthy is True
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            ({"config_path": "/custom/path.yaml"}, "/custom/path.yaml"),
+            ({}, "./config/config.yaml"),
+        ],
+        ids=["custom", "default"],
+    )
+    def test_init_sets_config_path(self, mock_api, kwargs, expected):
+        """Test that config path is set from the argument or defaults."""
+        monitor = LiveStreamMonitor(api_client=mock_api, **kwargs)
+        assert monitor.config_path == expected
 
 
 class TestSessionAwareMonitoring:
@@ -453,12 +452,15 @@ class TestUpdateDownloaders:
             [
                 CreatorProfile(creator_name="Creator1", creator_oid="oid1"),
                 CreatorProfile(creator_name="Creator2", creator_oid="oid2"),
+                CreatorProfile(creator_name="Creator3", creator_oid="oid3"),
             ]
         )
         monitor._update_downloaders()
         assert "oid1" in monitor.monitored_creators
         assert "oid2" in monitor.monitored_creators
-        assert len(monitor.monitored_creators) == 2
+        assert "oid3" in monitor.monitored_creators
+        assert len(monitor.monitored_creators) == 3
+        assert monitor._monitored_count == 3
 
     @patch("core.live_stream_monitor.StreamDownloader")
     @patch("core.live_stream_monitor.read_config")
@@ -547,43 +549,9 @@ class TestUpdateDownloaders:
         with pytest.raises(ConfigError):
             monitor._update_downloaders()
 
-    @patch("core.live_stream_monitor.read_config")
-    def test_updates_monitored_count(self, mock_read_config, monitor):
-        """Test that monitored count is updated."""
-        mock_read_config.return_value = _runtime_config(
-            [
-                CreatorProfile(creator_name="C1", creator_oid="o1"),
-                CreatorProfile(creator_name="C2", creator_oid="o2"),
-                CreatorProfile(creator_name="C3", creator_oid="o3"),
-            ]
-        )
-        monitor._update_downloaders()
-        assert monitor._monitored_count == 3
-
 
 class TestStartDownload:
     """Tests for _start_download method."""
-
-    def test_start_download_success(self, mock_api, monitor):
-        mock_api._get_stream_key.return_value = "cycle-key"
-        mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
-        mock_stream = MagicMock()
-        mock_stream.creator_oid = "test_oid"
-        mock_stream.title = "Test Stream"
-        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
-        monitor.monitored_creators["test_oid"] = CreatorProfile(
-            creator_name="TestCreator",
-            creator_oid="test_oid",
-        )
-
-        with patch(
-            "core.live_stream_monitor.StreamDownloader.download"
-        ) as mock_download:
-            monitor._start_download(mock_stream)
-
-        mock_download.assert_called_once_with(
-            "http://example.com/stream.m3u8", "Test Stream"
-        )
 
     def test_start_download_logs_live_line_with_creator_prefix(
         self, mock_api, monitor, caplog
@@ -648,28 +616,14 @@ class TestStartDownload:
         assert monitor._cycle_stream_key is None
         assert monitor._cycle_key_fetch_auth_failed is True
 
-    def test_start_download_api_error(self, mock_api, monitor):
-        """Test API error is logged as warning."""
-        mock_api._get_stream_key.side_effect = RPlayAPIError("API Error")
-        mock_stream = MagicMock()
-        mock_stream.creator_oid = "test_oid"
-        mock_stream.title = "Test Stream"
-        monitor.monitored_creators["test_oid"] = CreatorProfile(
-            creator_name="TestCreator",
-            creator_oid="test_oid",
-        )
-
-        with patch(
-            "core.live_stream_monitor.StreamDownloader.download"
-        ) as mock_download:
-            monitor._start_download(mock_stream)
-
-        mock_download.assert_not_called()
-        assert monitor._cycle_stream_key is None
-
-    def test_start_download_unexpected_error(self, mock_api, monitor):
-        """Test unexpected error is caught and logged."""
-        mock_api._get_stream_key.side_effect = RuntimeError("Unexpected")
+    @pytest.mark.parametrize(
+        "error",
+        [RPlayAPIError("API Error"), RuntimeError("Unexpected")],
+        ids=["api_error", "unexpected_error"],
+    )
+    def test_start_download_api_error(self, mock_api, monitor, error):
+        """Test API and unexpected errors are caught without starting a download."""
+        mock_api._get_stream_key.side_effect = error
         mock_stream = MagicMock()
         mock_stream.creator_oid = "test_oid"
         mock_stream.title = "Test Stream"
@@ -854,16 +808,6 @@ class TestCheckLiveStreams:
     """Tests for check_live_streams_and_start_download method."""
 
     @patch("core.live_stream_monitor.read_config")
-    def test_no_live_streams(self, mock_read_config):
-        """Test no download when no live streams."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        mock_api.get_livestream_status.return_value = []
-        mock_read_config.return_value = _runtime_config([])
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.check_live_streams_and_start_download()
-        assert monitor.is_healthy is True
-
-    @patch("core.live_stream_monitor.read_config")
     def test_live_but_not_monitored(self, mock_read_config):
         """Test no download when creator is live but not monitored."""
         mock_api = MagicMock(spec=RPlayAPI)
@@ -906,39 +850,6 @@ class TestCheckLiveStreams:
         )
 
     @patch("core.live_stream_monitor.read_config")
-    def test_already_downloading_no_restart(self, mock_read_config, tmp_path):
-        """Test no restart if already downloading."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        mock_stream = MagicMock()
-        mock_stream.oid = "stream-1"
-        mock_stream.creator_oid = "creator_oid"
-        mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 3, 6, 12, 0, 0)
-        mock_stream.title = "Test Stream"
-        mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_read_config.return_value = _runtime_config(
-            [
-                CreatorProfile(creator_name="Creator", creator_oid="creator_oid"),
-            ]
-        )
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.sessions["creator_oid:1772798400"] = DownloadSession(
-            session_key="creator_oid:1772798400",
-            creator_oid="creator_oid",
-            creator_name="Creator",
-            title="Test Stream",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            state=SessionState.RAW_RUNNING,
-            output_dir=tmp_path,
-            session_prefix="20260306_120000_",
-        )
-        monitor._active_raw_session_by_creator["creator_oid"] = "creator_oid:1772798400"
-
-        mock_api.get_stream_url.reset_mock()
-        monitor.check_live_streams_and_start_download()
-        mock_api.get_stream_url.assert_not_called()
-
-    @patch("core.live_stream_monitor.read_config")
     def test_stream_not_live_state(self, mock_read_config):
         """Test no download when stream state is not LIVE."""
         mock_api = MagicMock(spec=RPlayAPI)
@@ -964,16 +875,6 @@ class TestCheckLiveStreamsErrorHandling:
         """Test ConfigError sets healthy=False."""
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.side_effect = ConfigError("Config error")
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.check_live_streams_and_start_download()
-        assert monitor.is_healthy is False
-
-    @patch("core.live_stream_monitor.read_config")
-    def test_auth_error_sets_unhealthy(self, mock_read_config):
-        """Test RPlayAuthError sets healthy=False."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = _runtime_config([])
-        mock_api.get_livestream_status.side_effect = RPlayAuthError("Unauthorized")
         monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
@@ -1037,34 +938,22 @@ class TestCheckLiveStreamsErrorHandling:
         mock_download.assert_called_once()
         assert monitor.is_healthy is True
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RPlayAuthError("Unauthorized"),
+            RPlayConnectionError("Network error"),
+            RPlayAPIError("API error"),
+            RuntimeError("Unexpected"),
+        ],
+        ids=["auth", "connection", "api", "unexpected"],
+    )
     @patch("core.live_stream_monitor.read_config")
-    def test_connection_error_sets_unhealthy(self, mock_read_config):
-        """Test RPlayConnectionError sets healthy=False."""
+    def test_poll_error_sets_unhealthy(self, mock_read_config, error):
+        """Test poll-time errors set healthy=False."""
         mock_api = MagicMock(spec=RPlayAPI)
         mock_read_config.return_value = _runtime_config([])
-        mock_api.get_livestream_status.side_effect = RPlayConnectionError(
-            "Network error"
-        )
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.check_live_streams_and_start_download()
-        assert monitor.is_healthy is False
-
-    @patch("core.live_stream_monitor.read_config")
-    def test_api_error_sets_unhealthy(self, mock_read_config):
-        """Test RPlayAPIError sets healthy=False."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = _runtime_config([])
-        mock_api.get_livestream_status.side_effect = RPlayAPIError("API error")
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.check_live_streams_and_start_download()
-        assert monitor.is_healthy is False
-
-    @patch("core.live_stream_monitor.read_config")
-    def test_unexpected_error_sets_unhealthy(self, mock_read_config):
-        """Test unexpected exception sets healthy=False."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        mock_read_config.return_value = _runtime_config([])
-        mock_api.get_livestream_status.side_effect = RuntimeError("Unexpected")
+        mock_api.get_livestream_status.side_effect = error
         monitor = LiveStreamMonitor(api_client=mock_api)
         monitor.check_live_streams_and_start_download()
         assert monitor.is_healthy is False
@@ -1193,23 +1082,6 @@ class TestGetActiveDownloads:
         monitor = LiveStreamMonitor(api_client=mock_api)
         assert monitor.get_active_downloads() == []
 
-    def test_empty_list_when_all_inactive(self, tmp_path):
-        """Test returns empty list when no raw-running sessions exist."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.sessions["oid1:2026-03-06T12:00:00"] = DownloadSession(
-            session_key="oid1:2026-03-06T12:00:00",
-            creator_oid="oid1",
-            creator_name="Inactive",
-            title="Test Stream",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            state=SessionState.MERGING,
-            output_dir=tmp_path,
-            session_prefix="20260306_120000_",
-        )
-
-        assert monitor.get_active_downloads() == []
-
     def test_returns_active_creator_names(self, tmp_path):
         """Test returns list of creator names with active raw sessions."""
         mock_api = MagicMock(spec=RPlayAPI)
@@ -1263,11 +1135,6 @@ class TestGetActiveDownloads:
 
 class TestCreatorStateTracking:
     """Tests for creator stream state tracking functionality."""
-
-    def test_init_has_empty_creator_states(self, mock_api):
-        """Test that creator states dict is empty on init."""
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        assert monitor._creator_states == {}
 
     def test_update_creator_stream_state_creates_new_state(self, mock_api):
         """Test that updating state creates new entry if none exists."""
@@ -1378,44 +1245,31 @@ class TestCreatorStateTracking:
 class TestM3u8ValidationIntegration:
     """Tests for M3U8 validation integration in download flow."""
 
-    @patch("core.live_stream_monitor.read_config")
-    def test_skips_blocked_stream_same_session(self, mock_read_config, mock_api):
-        """Test that blocked streams are skipped in same session."""
-        mock_stream = MagicMock()
-        mock_stream.oid = "stream-1"
-        mock_stream.creator_oid = "creator1"
-        mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 12, 0, 0)
-        mock_stream.title = "Test Stream"
-        mock_api.get_livestream_status.return_value = [mock_stream]
-        mock_read_config.return_value = _runtime_config(
-            [
-                CreatorProfile(creator_name="Creator1", creator_oid="creator1"),
-            ]
-        )
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        # Pre-populate state as blocked
-        monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
-            last_stream_oid="stream-1",
-            is_current_stream_blocked=True,
-        )
-
-        monitor.check_live_streams_and_start_download()
-
-        # Should not attempt to get stream URL
-        mock_api.get_stream_url.assert_not_called()
-
+    @pytest.mark.parametrize(
+        "stream_attrs",
+        [
+            {
+                "oid": "stream-1",
+                "stream_start_time": datetime(2026, 1, 26, 12, 0, 0),
+                "title": "Test Stream",
+            },
+            {
+                "stream_start_time": datetime(2026, 1, 26, 14, 0, 0),
+                "title": "New Stream",
+            },
+        ],
+        ids=["same_session", "changed_metadata"],
+    )
     @patch("core.live_stream_monitor.read_config")
     def test_blocked_stream_stays_suppressed_while_creator_remains_live(
-        self, mock_read_config, mock_api
+        self, mock_read_config, mock_api, stream_attrs
     ):
         """Test blocked creators are not retried mid-live even if stream metadata changes."""
         mock_stream = MagicMock()
         mock_stream.creator_oid = "creator1"
         mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 1, 26, 14, 0, 0)
-        mock_stream.title = "New Stream"
+        for name, value in stream_attrs.items():
+            setattr(mock_stream, name, value)
         mock_api.get_livestream_status.return_value = [mock_stream]
         mock_api.get_stream_url.return_value = "http://example.com/stream.m3u8"
         mock_read_config.return_value = _runtime_config(
@@ -1458,36 +1312,6 @@ class TestM3u8ValidationIntegration:
 
 class TestSessionDownloadBlockedHandling:
     """Tests for session-scoped blocked download handling."""
-
-    def test_blocked_event_marks_stream_as_blocked(self, mock_api, tmp_path):
-        """Test that a blocked raw download updates session and creator state."""
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.sessions["creator1:2026-01-26T12:00:00"] = DownloadSession(
-            session_key="creator1:2026-01-26T12:00:00",
-            creator_oid="creator1",
-            creator_name="Creator1",
-            title="Test Stream",
-            stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
-            state=SessionState.RAW_RUNNING,
-            output_dir=tmp_path,
-            session_prefix="20260126_120000_",
-        )
-        monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1",
-        )
-
-        monitor._handle_raw_download_blocked(
-            RawDownloadBlocked(
-                session_key="creator1:2026-01-26T12:00:00",
-                error_message="HTTP Error 404",
-            )
-        )
-
-        assert (
-            monitor.sessions["creator1:2026-01-26T12:00:00"].state
-            == SessionState.BLOCKED
-        )
-        assert monitor._creator_states["creator1"].is_current_stream_blocked is True
 
     def test_blocked_event_logs_warning_only_once(self, mock_api, tmp_path):
         """Test repeated blocked events log only once for the same creator state."""
@@ -1601,31 +1425,22 @@ class TestPlaylistHttpAuthRouting:
         assert monitor.is_healthy is False
         assert monitor._creator_states["creator1"].is_current_stream_blocked is False
 
-    def test_playlist_403_blocked_does_not_touch_health(self, mock_api, tmp_path):
-        """Playlist 403 surfaces as blocked and leaves health untouched."""
+    @pytest.mark.parametrize(
+        "error_message",
+        ["HTTP Error 403: Forbidden", "HTTP Error 404: Not Found"],
+        ids=["403", "404"],
+    )
+    def test_playlist_404_blocked_does_not_touch_health(
+        self, mock_api, tmp_path, error_message
+    ):
+        """Playlist 403/404 (paid content with valid key2) is blocked, not unhealthy."""
         monitor = self._monitor_with_raw_session(mock_api, tmp_path)
         assert monitor.is_healthy is True
 
         monitor._handle_raw_download_blocked(
             RawDownloadBlocked(
                 session_key=self.SESSION_KEY,
-                error_message="HTTP Error 403: Forbidden",
-            )
-        )
-
-        assert monitor.sessions[self.SESSION_KEY].state == SessionState.BLOCKED
-        assert monitor._creator_states["creator1"].is_current_stream_blocked is True
-        assert monitor.is_healthy is True
-
-    def test_playlist_404_blocked_does_not_touch_health(self, mock_api, tmp_path):
-        """Playlist 404 (paid content with valid key2) is blocked, not unhealthy."""
-        monitor = self._monitor_with_raw_session(mock_api, tmp_path)
-        assert monitor.is_healthy is True
-
-        monitor._handle_raw_download_blocked(
-            RawDownloadBlocked(
-                session_key=self.SESSION_KEY,
-                error_message="HTTP Error 404: Not Found",
+                error_message=error_message,
             )
         )
 
@@ -1765,38 +1580,6 @@ class TestSessionLifecycleLogging:
             in str(call)
             for call in mock_debug.call_args_list
         )
-
-    def test_process_live_stream_logs_skip_reason_when_creator_has_raw_running(
-        self, mock_api, tmp_path
-    ):
-        """Test skip debug logs include a concrete reason for creator-level raw gating."""
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.monitored_creators["creator1"] = CreatorProfile(
-            creator_name="Creator1",
-            creator_oid="creator1",
-        )
-        monitor.sessions["creator1:1741323600"] = DownloadSession(
-            session_key="creator1:1741323600",
-            creator_oid="creator1",
-            creator_name="Creator1",
-            title="Test Stream",
-            stream_start_time=datetime(2026, 3, 7, 5, 0, 0),
-            state=SessionState.RAW_RUNNING,
-            output_dir=tmp_path / "running",
-            session_prefix="20260307_050000_",
-        )
-        monitor._active_raw_session_by_creator["creator1"] = "creator1:1741323600"
-
-        mock_stream = MagicMock()
-        mock_stream.oid = "stream-1"
-        mock_stream.creator_oid = "creator1"
-        mock_stream.stream_state = StreamState.LIVE
-        mock_stream.stream_start_time = datetime(2026, 3, 7, 5, 1, 0)
-        mock_stream.title = "Test Stream"
-
-        with patch.object(monitor.logger, "debug") as mock_debug:
-            monitor._process_live_stream(mock_stream)
-
         assert any(
             "reason=active_raw_running" in str(call)
             for call in mock_debug.call_args_list

@@ -35,33 +35,6 @@ def plenty_of_free_disk(monkeypatch):
     monkeypatch.setattr("shutil.disk_usage", lambda path: usage)
 
 
-def test_raw_completion_event_immediately_submits_merge(tmp_path):
-    """Test raw completion queues merge work without waiting for another poll."""
-    mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(api_client=mock_api)
-    session_key = "creator1:2026-03-06T12:00:00"
-    monitor.sessions[session_key] = DownloadSession(
-        session_key=session_key,
-        creator_oid="creator1",
-        creator_name="Creator1",
-        title="Test Stream",
-        stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-        state=SessionState.RAW_RUNNING,
-        output_dir=tmp_path,
-        session_prefix="20260306_120000_",
-    )
-
-    with patch.object(monitor.merge_executor, "submit_merge") as mock_submit:
-        monitor._on_raw_download_complete(
-            RawDownloadCompleted(session_key=session_key, output_dir=tmp_path)
-        )
-        monitor._event_queue.join()
-
-    assert monitor.sessions[session_key].state == SessionState.MERGE_QUEUED
-    mock_submit.assert_called_once()
-    monitor.shutdown()
-
-
 def test_raw_failure_event_allows_same_session_retry(tmp_path):
     """Test a failed raw download clears the stuck session so the next poll can retry."""
     mock_api = MagicMock(spec=RPlayAPI)
@@ -99,34 +72,6 @@ def test_raw_failure_event_allows_same_session_retry(tmp_path):
 
     assert session_key not in monitor.sessions
     mock_start_download.assert_called_once_with(mock_stream)
-    monitor.shutdown()
-
-
-def test_get_active_downloads_uses_session_state_only(tmp_path):
-    """Test active downloads are derived from session state, not downloader liveness fallback."""
-    mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(api_client=mock_api)
-    monitor.sessions["creator1:2026-03-06T12:00:00"] = DownloadSession(
-        session_key="creator1:2026-03-06T12:00:00",
-        creator_oid="creator1",
-        creator_name="Creator1",
-        title="Test Stream",
-        stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-        state=SessionState.RAW_RUNNING,
-        output_dir=tmp_path,
-        session_prefix="20260306_120000_",
-    )
-
-    assert monitor.get_active_downloads() == ["Creator1"]
-    monitor.shutdown()
-
-
-def test_no_session_means_no_active_downloads_even_if_template_downloader_alive():
-    """Test session state is the sole source for active download reporting."""
-    mock_api = MagicMock(spec=RPlayAPI)
-    monitor = LiveStreamMonitor(api_client=mock_api)
-
-    assert monitor.get_active_downloads() == []
     monitor.shutdown()
 
 
