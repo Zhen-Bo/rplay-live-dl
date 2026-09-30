@@ -175,7 +175,7 @@ open.onsuccess = () => {
 If the script reports `❌ Not found`, sign in again and retry. If the clipboard is not available, open **Application** → **IndexedDB** → `rplay-account-session` → `records` → `session`, expand `session`, and copy the `refreshToken` value by hand.
 
 Use the same account for the token and `USER_OID`. Keep token values out of screenshots, logs, and issues.
-Signing out of the website may invalidate the token, so close the tab instead of signing out after you copy it.
+Close the browser tab after copying. Do not sign out.
 
 #### Creator ID
 
