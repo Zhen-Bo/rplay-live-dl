@@ -6,10 +6,12 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS
 from core.downloader import StreamDownloader
+from core.notifications import DiscordNotifier
+from models.notification import Notification
 from core.utils import fit_filename_component_bytes, merge_ts_files_to_mp4
 
 __all__ = [
@@ -27,6 +29,7 @@ def recover_orphaned_sessions(
     *,
     reserve_gb: float = 1,
     space_multiplier: float = 2.2,
+    notifier: Optional[DiscordNotifier] = None,
 ) -> None:
     """
     Merge every recoverable orphaned session under the archive directory.
@@ -57,6 +60,7 @@ def recover_orphaned_sessions(
             ts_files,
             reserve_gb=reserve_gb,
             space_multiplier=space_multiplier,
+            notifier=notifier,
         )
 
 
@@ -94,6 +98,7 @@ def _recover_one_session(
     *,
     reserve_gb: float = 1,
     space_multiplier: float = 2.2,
+    notifier: Optional[DiscordNotifier] = None,
 ) -> None:
     """Merge one session's raw .ts files, deleting them only once the mp4 is proven."""
     session_id = session_prefix.rstrip("_")
@@ -154,6 +159,20 @@ def _recover_one_session(
             logger, temp_path, output_dir / f"{final_stem}.mp4"
         )
     except Exception as exc:
+        if notifier is not None:
+            try:
+                notifier.notify(
+                    Notification(
+                        "merge_failed",
+                        creator=output_dir.name,
+                        detail="Startup recovery failed. Raw TS files retained; check logs, free space if needed, and restart to retry.",
+                    ),
+                    key=f"recovery:{output_dir.name}:{session_prefix}",
+                )
+            except Exception:
+                logger.warning(
+                    "Could not queue recovery notification; raw inputs retained"
+                )
         # Drop the partial output and keep every input so the next startup
         # can retry unchanged.
         _discard_partial_output(logger, temp_path)

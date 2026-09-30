@@ -12,6 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from core.config import DEFAULT_CONFIG_PATH, validate_startup_config_path
 from core.env import EnvConfig
 from core.disk_space import DiskSpaceMonitor
+from core.notifications import DiscordNotifier
 from core.live_stream_monitor import LiveStreamMonitor
 from core.rplay import RPlayAPI
 from core.utils import terminate_child_processes
@@ -39,6 +40,7 @@ class LiveStreamScheduler:
         logger: logging.Logger,
         api_client: RPlayAPI,
         version: str = "unknown",
+        notifier: Optional[DiscordNotifier] = None,
     ) -> None:
         self.logger = logger
         self.env = env
@@ -55,6 +57,7 @@ class LiveStreamScheduler:
             ),
             merge_reserve_gb=self.env.merge_min_free_disk_gb,
             merge_space_multiplier=self.env.merge_space_multiplier,
+            notifier=notifier,
         )
         self.scheduler = BlockingScheduler()
         self._stopped = False
@@ -120,6 +123,7 @@ def run_scheduler(
     logger: logging.Logger,
     version: str,
     api_client: RPlayAPI,
+    notifier: Optional[DiscordNotifier] = None,
 ) -> None:
     global _scheduler
 
@@ -128,7 +132,11 @@ def run_scheduler(
 
     validate_startup_config_path(DEFAULT_CONFIG_PATH)
     _scheduler = LiveStreamScheduler(
-        env=env, logger=logger, api_client=api_client, version=version
+        env=env,
+        logger=logger,
+        api_client=api_client,
+        version=version,
+        notifier=notifier,
     )
     try:
         _scheduler.start()

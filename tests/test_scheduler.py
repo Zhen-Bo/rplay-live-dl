@@ -74,6 +74,7 @@ class TestLiveStreamSchedulerInit:
             disk_monitor=ANY,
             merge_reserve_gb=1.0,
             merge_space_multiplier=2.2,
+            notifier=None,
         )
         assert scheduler.monitor is mock_monitor_class.return_value
 
@@ -364,7 +365,11 @@ class TestRunScheduler:
         _run(mock_env, mock_logger, version="2.0.0")
 
         mock_scheduler_class.assert_called_once_with(
-            env=mock_env, logger=mock_logger, api_client=ANY, version="2.0.0"
+            env=mock_env,
+            logger=mock_logger,
+            api_client=ANY,
+            version="2.0.0",
+            notifier=None,
         )
         mock_instance.start.assert_called_once()
 

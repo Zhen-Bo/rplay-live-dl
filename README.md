@@ -303,6 +303,54 @@ An insufficient or unreadable space check skips that merge and preserves the raw
 inputs. Free space and restart to retry startup recovery; there is no automatic
 running merge retry. These environment settings require container recreation.
 
+### Discord notifications
+
+Set `DISCORD_WEBHOOK_URL` in your local `.env` to a Discord **incoming webhook**
+URL, then recreate the container (`docker compose up -d --force-recreate`).
+Leave it empty to disable notifications. Keep this URL private: it authorizes
+message sending. Never commit it or paste it into logs. Only HTTPS Discord webhook
+URLs are accepted; URL query parameters (including thread targets) are not supported.
+
+`DISCORD_WEBHOOK_EVENTS` is a comma-separated selection (all events below by
+default); an empty value disables all events. Messages are plain text, with
+mentions and automatic link embeds disabled. Message presentation is isolated in
+`core/notifications.py::format_discord_message`; event data lives in
+`models/notification.py`. No changes to the recorder are needed to revise the format.
+
+| Event | Trigger |
+| --- | --- |
+| `live` | A monitored RPlay stream is first observed, including already-live streams at startup; not proof recording started |
+| `blocked` | Download access is denied under the existing 403/404 retry policy; possibly paid/private, not a confirmed paid classification |
+| `auth_failed` | Startup or runtime RPlay credentials are rejected |
+| `download_failed` | Repeated raw download failures enter the existing retry cooldown |
+| `merge_failed` | Normal merge or startup recovery fails, including insufficient merge space; raw inputs retained |
+| `disk_warning` | Archive space enters warning level, de-escalates from critical, or reminder is due |
+| `disk_critical` | Archive space enters critical level or reminder is due |
+| `disk_recovered` | Space returns above warning plus the recovery margin |
+
+For capacity alerts only:
+
+```dotenv
+DISCORD_WEBHOOK_EVENTS=disk_warning,disk_critical,disk_recovered,merge_failed
+```
+
+Live detection is deduplicated by creator and stream start time, independent of
+title changes. Other errors are deduplicated when queued (one hour per event/key);
+disk reminders follow `DISK_REMINDER_SECONDS` instead. All state is in memory and
+resets on restart. Startup can therefore notify again about ongoing streams.
+
+Delivery uses one background worker and a bounded 100-message queue, never HTTP
+on the recording thread. HTTP 429 waits for Discord's retry delay; connection
+errors and HTTP 5xx have at most three attempts total. HTTP 401/403/404 disables
+the webhook until restart. Other rejected messages are not retried. Update an
+invalid URL in `.env` and recreate the container. Queue overflow, delivery failure,
+and shutdown drops are logged without the webhook URL or response body.
+
+Notifications are best-effort, not durable: queue overflow or shutdown after the
+five-second drain deadline can lose messages, and a network timeout can produce
+a duplicate on retry. Failure details remain in local logs; messages include safe
+operator guidance instead of raw upstream errors, credentials, or stream URLs.
+
 ### Recording metadata
 
 New normal merges store the original (unsanitized) `title`, creator display name

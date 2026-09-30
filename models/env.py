@@ -1,7 +1,10 @@
 """Environment settings model for rplay-live-dl."""
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+import re
+
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from models.notification import DEFAULT_EVENTS, EVENT_KINDS
 
 from core.constants import (
     DEFAULT_INTERVAL,
@@ -88,6 +91,29 @@ class EnvConfig(BaseSettings):
     disk_reminder_seconds: int = Field(default=3600, ge=60)
     merge_min_free_disk_gb: float = Field(default=1, ge=0, allow_inf_nan=False)
     merge_space_multiplier: float = Field(default=2.2, ge=2, allow_inf_nan=False)
+    discord_webhook_url: SecretStr = Field(default=SecretStr(""), repr=False)
+    discord_webhook_events: str = Field(default=DEFAULT_EVENTS)
+
+    @field_validator("discord_webhook_url")
+    @classmethod
+    def validate_discord_url(cls, value: SecretStr) -> SecretStr:
+        url = value.get_secret_value().strip()
+        if url and not re.fullmatch(
+            r"https://(?:discord\.com|discordapp\.com)/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9._-]+/?",
+            url,
+        ):
+            raise ValueError(
+                "DISCORD_WEBHOOK_URL must be an HTTPS Discord webhook URL without query parameters"
+            )
+        return SecretStr(url.rstrip("/"))
+
+    @field_validator("discord_webhook_events")
+    @classmethod
+    def validate_discord_events(cls, value: str) -> str:
+        events = [item.strip() for item in value.split(",") if item.strip()]
+        if set(events) - EVENT_KINDS:
+            raise ValueError("DISCORD_WEBHOOK_EVENTS contains an unsupported event")
+        return ",".join(dict.fromkeys(events))
 
     @model_validator(mode="after")
     def validate_disk_thresholds(self):
