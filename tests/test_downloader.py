@@ -10,18 +10,59 @@ import yt_dlp
 import yt_dlp.utils
 from freezegun import freeze_time
 
+import core.logger as logger_module
 from core.downloader import StreamDownloader
 from models.download import RawDownloadCompleted, RawDownloadFailed
 
+STREAM_URL = "http://example.com/stream.m3u8"
+
 
 @pytest.fixture
-def mock_yt_dlp():
-    """Create a mock yt-dlp YoutubeDL context manager."""
+def mock_ydl():
+    """Patch yt-dlp's YoutubeDL and yield the instance used as a context manager."""
     with patch("core.downloader.yt_dlp.YoutubeDL") as mock_ydl_class:
         mock_ydl = MagicMock()
         mock_ydl_class.return_value.__enter__ = MagicMock(return_value=mock_ydl)
         mock_ydl_class.return_value.__exit__ = MagicMock(return_value=False)
-        yield mock_ydl_class, mock_ydl
+        yield mock_ydl
+
+
+@pytest.fixture
+def downloader():
+    """A downloader with default arguments."""
+    return StreamDownloader("TestCreator")
+
+
+@pytest.fixture
+def mock_sleep():
+    """Patch the retry backoff sleep."""
+    with patch("core.downloader.time.sleep") as mock:
+        yield mock
+
+
+@pytest.fixture
+def completed_events():
+    """Collects raw download completion events."""
+    return []
+
+
+@pytest.fixture
+def failed_events():
+    """Collects raw download failure events."""
+    return []
+
+
+def _run_worker(downloader, output_path):
+    """Run the download worker as the download thread would, with a start time set."""
+    downloader._download_start_time = datetime.now()
+    downloader._download_worker(STREAM_URL, {}, output_path)
+
+
+def _ytdlp_logger_bridge(tmp_path, monkeypatch, *, internal_enabled):
+    """Build a downloader and its yt-dlp logger bridge with the internal flag set."""
+    monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", internal_enabled)
+    downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
+    return downloader, downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
 
 
 class TestStreamDownloaderInit:
@@ -51,15 +92,13 @@ class TestStreamDownloaderInit:
 class TestIsAlive:
     """Tests for is_alive method."""
 
-    def test_is_alive_no_thread(self):
+    def test_is_alive_no_thread(self, downloader):
         """Test is_alive returns False when no thread exists."""
-        downloader = StreamDownloader("TestCreator")
         assert downloader.is_alive() is False
 
     @pytest.mark.parametrize("thread_alive", [True, False])
-    def test_is_alive_reflects_thread_state(self, thread_alive):
+    def test_is_alive_reflects_thread_state(self, downloader, thread_alive):
         """Test is_alive mirrors whether the download thread is running."""
-        downloader = StreamDownloader("TestCreator")
         mock_thread = MagicMock(spec=threading.Thread)
         mock_thread.is_alive.return_value = thread_alive
         downloader.download_thread = mock_thread
@@ -198,11 +237,9 @@ class TestYtDlpLoggerBridge:
         self, tmp_path, monkeypatch
     ):
         """Test internal yt-dlp debug chatter is hidden unless explicitly enabled."""
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", False)
-        downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
-        logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
+        downloader, logger_bridge = _ytdlp_logger_bridge(
+            tmp_path, monkeypatch, internal_enabled=False
+        )
 
         with patch.object(downloader, "log") as mock_log:
             logger_bridge.debug("[generic] playlist: Downloading webpage")
@@ -211,11 +248,9 @@ class TestYtDlpLoggerBridge:
 
     def test_internal_ytdlp_debug_logs_can_be_enabled(self, tmp_path, monkeypatch):
         """Test internal yt-dlp debug chatter can be surfaced for diagnosis."""
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", True)
-        downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
-        logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
+        downloader, logger_bridge = _ytdlp_logger_bridge(
+            tmp_path, monkeypatch, internal_enabled=True
+        )
 
         with patch.object(downloader, "log") as mock_log:
             logger_bridge.debug("[generic] playlist: Downloading webpage")
@@ -225,11 +260,9 @@ class TestYtDlpLoggerBridge:
     def test_key2_query_values_are_redacted_before_forwarding(
         self, tmp_path, monkeypatch
     ):
-        import core.logger as logger_module
-
-        monkeypatch.setattr(logger_module, "_configured_ytdlp_internal", True)
-        downloader = StreamDownloader("TestCreator", output_dir=tmp_path)
-        logger_bridge = downloader._build_ydl_options(tmp_path / "test.ts")["logger"]
+        downloader, logger_bridge = _ytdlp_logger_bridge(
+            tmp_path, monkeypatch, internal_enabled=True
+        )
         message = (
             "[generic] Extracting URL: "
             "https://api.example/live/stream/playlist.m3u8"
@@ -252,43 +285,38 @@ class TestYtDlpLoggerBridge:
 class TestBuildYdlOptions:
     """Tests for _build_ydl_options method."""
 
-    def test_options_format(self, tmp_path):
+    def test_options_format(self, downloader, tmp_path):
         """Test ydl options has correct format setting."""
-        downloader = StreamDownloader("TestCreator")
         path = tmp_path / "test.mp4"
         options = downloader._build_ydl_options(path)
         assert options["format"] == "bestvideo+bestaudio/best"
 
-    def test_options_output_path(self, tmp_path):
+    def test_options_output_path(self, downloader, tmp_path):
         """Test ydl options has correct output template."""
-        downloader = StreamDownloader("TestCreator")
         path = tmp_path / "test.mp4"
         options = downloader._build_ydl_options(path)
         assert options["outtmpl"] == str(path)
 
-    def test_options_merge_format(self, tmp_path):
+    def test_options_merge_format(self, downloader, tmp_path):
         """Test ydl options has mp4 merge format."""
-        downloader = StreamDownloader("TestCreator")
         path = tmp_path / "test.mp4"
         options = downloader._build_ydl_options(path)
         assert options["merge_output_format"] == "mp4"
 
-    def test_options_quiet_mode(self, tmp_path):
+    def test_options_quiet_mode(self, downloader, tmp_path):
         """Test ydl options has quiet mode enabled."""
-        downloader = StreamDownloader("TestCreator")
         path = tmp_path / "test.mp4"
         options = downloader._build_ydl_options(path)
         assert options["quiet"] is True
         assert options["no_progress"] is True
         assert options["no_warnings"] is True
 
-    def test_options_retry_settings(self, tmp_path):
+    def test_options_retry_settings(self, downloader, tmp_path):
         """Test ydl options keeps native-downloader retry settings.
 
         These are inert for live HLS (FFmpegFD does the fetching); they only
         matter on yt-dlp's native code paths.
         """
-        downloader = StreamDownloader("TestCreator")
         path = tmp_path / "test.mp4"
         options = downloader._build_ydl_options(path)
         assert "retries" in options
@@ -296,14 +324,13 @@ class TestBuildYdlOptions:
         assert options["continuedl"] is True
         assert options["socket_timeout"] == 10
 
-    def test_options_ffmpeg_input_args_for_live_resilience(self, tmp_path):
+    def test_options_ffmpeg_input_args_for_live_resilience(self, downloader, tmp_path):
         """Test ydl options passes reconnect/timeout args to the ffmpeg input.
 
         Live HLS is always downloaded by FFmpegFD, so these input args are the
         only resilience settings that actually reach the network layer.
         -reconnect_at_eof stays out: HLS segment reads hit EOF by design.
         """
-        downloader = StreamDownloader("TestCreator")
         options = downloader._build_ydl_options(tmp_path / "test.ts")
         assert options["external_downloader_args"] == {
             "ffmpeg_i": [
@@ -357,65 +384,67 @@ class TestLiveHlsDownloaderSelection:
 class TestDownloadMethod:
     """Tests for download method."""
 
-    @patch.object(StreamDownloader, "_download_worker")
-    def test_download_empty_title_fallback(self, mock_worker, tmp_path, monkeypatch):
-        """Test download uses 'untitled' for empty title and sets the output path."""
+    @pytest.fixture(autouse=True)
+    def _run_in_tmp_dir(self, tmp_path, monkeypatch):
+        """Keep the relative archive directory inside the test's temp dir."""
         monkeypatch.chdir(tmp_path)
-        downloader = StreamDownloader("TestCreator")
-        downloader.download("http://example.com/stream.m3u8", "")
+
+    @pytest.fixture
+    def stub_worker(self):
+        """Keep the download thread from running a real download."""
+        with patch.object(StreamDownloader, "_download_worker"):
+            yield
+
+    @pytest.mark.usefixtures("stub_worker")
+    def test_download_empty_title_fallback(self, downloader):
+        """Test download uses 'untitled' for empty title and sets the output path."""
+        downloader.download(STREAM_URL, "")
         assert downloader._current_output_path is not None
         assert "untitled" in downloader._current_output_path.name
         assert downloader._current_output_path.suffix == ".mp4"
 
-    @patch.object(StreamDownloader, "_download_worker")
-    def test_download_starts_thread(self, mock_worker, tmp_path, monkeypatch):
+    @pytest.mark.usefixtures("stub_worker")
+    def test_download_starts_thread(self):
         """Test download starts a new thread."""
-        monkeypatch.chdir(tmp_path)
         downloader = StreamDownloader("TestCreator")
-        downloader.download("http://example.com/stream.m3u8", "Test Stream")
+        downloader.download(STREAM_URL, "Test Stream")
         assert downloader.download_thread is not None
         assert downloader.download_thread.name == "download-TestCreator"
 
-    @patch.object(StreamDownloader, "_download_worker")
-    def test_download_reserves_space_for_part_suffix(
-        self, mock_worker, tmp_path, monkeypatch
-    ):
+    @pytest.mark.usefixtures("stub_worker")
+    def test_download_reserves_space_for_part_suffix(self):
         """Raw output leaves room for yt-dlp's temporary .part suffix."""
-        monkeypatch.chdir(tmp_path)
         downloader = StreamDownloader(
             "TestCreator",
             output_extension=".ts",
         )
 
-        downloader.download("http://example.com/stream.m3u8", "標題" * 200)
+        downloader.download(STREAM_URL, "標題" * 200)
         downloader.download_thread.join(timeout=1)
 
         output_path = downloader._current_output_path
         assert output_path is not None
         assert len(f"{output_path.name}.part".encode("utf-8")) <= 255
 
-    @patch.object(StreamDownloader, "_download_worker")
-    def test_download_sets_start_time(self, mock_worker, tmp_path, monkeypatch):
+    @pytest.mark.usefixtures("stub_worker")
+    def test_download_sets_start_time(self, downloader):
         """Test download sets download start time."""
-        monkeypatch.chdir(tmp_path)
-        downloader = StreamDownloader("TestCreator")
         before = datetime.now()
-        downloader.download("http://example.com/stream.m3u8", "Test")
+        downloader.download(STREAM_URL, "Test")
         after = datetime.now()
         assert downloader._download_start_time is not None
         assert before <= downloader._download_start_time <= after
 
-    @patch.object(StreamDownloader, "_download_worker")
-    def test_download_logs_context(self, mock_worker, tmp_path, monkeypatch):
+    @pytest.mark.usefixtures("stub_worker")
+    def test_download_logs_context(self):
         """Test download logs session and output context before starting."""
-        monkeypatch.chdir(tmp_path)
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:1772880472",
         )
 
         with patch.object(downloader, "log") as mock_log:
-            downloader.download("http://example.com/stream.m3u8", "Test Stream")
+            downloader.download(STREAM_URL, "Test Stream")
             assert downloader.download_thread is not None
             downloader.download_thread.join(timeout=1)
 
@@ -426,18 +455,15 @@ class TestDownloadMethod:
         )
 
     def test_does_not_log_recording_started_when_thread_fails_to_start(
-        self, tmp_path, monkeypatch, caplog
+        self, downloader, caplog
     ):
         """Test a failed thread start leaves no misleading Recording started log."""
-        monkeypatch.chdir(tmp_path)
-        downloader = StreamDownloader("TestCreator")
-
         with patch("core.downloader.threading.Thread") as mock_thread_class:
             mock_thread_class.return_value.start.side_effect = RuntimeError(
                 "can't start new thread"
             )
             with pytest.raises(RuntimeError):
-                downloader.download("http://example.com/stream.m3u8", "Test Stream")
+                downloader.download(STREAM_URL, "Test Stream")
 
         messages = [record.getMessage() for record in caplog.records]
         assert not any("Recording started" in message for message in messages)
@@ -446,25 +472,22 @@ class TestDownloadMethod:
 class TestDownloadWorker:
     """Tests for _download_worker method."""
 
-    def test_worker_success_logs_completion(self, mock_yt_dlp, tmp_path):
+    def test_worker_success_logs_completion(self, mock_ydl, tmp_path):
         """Test successful download logs completion with file size."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader = StreamDownloader("TestCreator")
         output_path = tmp_path / "test.mp4"
         output_path.write_bytes(b"x" * 1024)
-        downloader._download_start_time = datetime.now()
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
         mock_ydl.download.assert_called_once()
         assert downloader._current_output_path is None
         assert downloader._download_start_time is None
 
-    def test_worker_file_not_found_notifies_failure(self, mock_yt_dlp, tmp_path):
+    def test_worker_file_not_found_notifies_failure(self, mock_ydl, tmp_path):
         """Test a missing output file raises a failure event, not silence.
 
         Without the failure notification the session never leaves RAW_RUNNING
         and the creator's raw lock stays held until the process restarts.
         """
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         failures = []
         downloader = StreamDownloader(
             "TestCreator",
@@ -472,29 +495,26 @@ class TestDownloadWorker:
             on_download_failure=failures.append,
         )
         output_path = tmp_path / "nonexistent.mp4"
-        downloader._download_start_time = datetime.now()
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
         assert downloader._current_output_path is None
         assert len(failures) == 1
         assert failures[0].session_key == "creator1:2026-07-27T02:00:00"
         assert "no output file" in failures[0].error_message
 
-    def test_worker_notifies_on_download_complete(self, mock_yt_dlp, tmp_path):
+    def test_worker_notifies_on_download_complete(self, mock_ydl, tmp_path):
         """Test successful raw download emits a completion payload."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         events = []
         downloader = StreamDownloader(
             "Creator",
             session_key="creator1:2026-03-06T12:00:00",
             output_dir=tmp_path,
             output_extension=".ts",
-            on_download_complete=lambda result: events.append(result),
+            on_download_complete=events.append,
         )
         output_path = tmp_path / "#Creator 2026-03-06 Test.ts"
         output_path.write_bytes(b"x")
-        downloader._download_start_time = datetime.now()
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         mock_ydl.download.assert_called_once()
         assert len(events) == 1
@@ -503,44 +523,40 @@ class TestDownloadWorker:
         assert events[0].output_dir == tmp_path
 
     def test_worker_missing_ts_output_without_fragments_does_not_notify_completion(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, tmp_path
     ):
         """Test missing ts output without any fragments does not emit completion."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         events = []
         downloader = StreamDownloader(
             "Creator",
             session_key="creator1:2026-03-06T12:00:00",
             output_dir=tmp_path,
             output_extension=".ts",
-            on_download_complete=lambda result: events.append(result),
+            on_download_complete=events.append,
         )
         output_path = tmp_path / "#Creator 2026-03-06 Missing.ts"
-        downloader._download_start_time = datetime.now()
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         mock_ydl.download.assert_called_once()
         assert events == []
 
     def test_worker_missing_primary_ts_output_with_fragments_still_notifies_completion(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, tmp_path
     ):
         """Test fragmented ts output still emits completion when sibling ts files exist."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         events = []
         downloader = StreamDownloader(
             "Creator",
             session_key="creator1:2026-03-06T12:00:00",
             output_dir=tmp_path,
             output_extension=".ts",
-            on_download_complete=lambda result: events.append(result),
+            on_download_complete=events.append,
         )
         output_path = tmp_path / "#Creator 2026-03-06 Missing.ts"
         (tmp_path / "#Creator 2026-03-06 Missing_1.ts").write_bytes(b"x")
-        downloader._download_start_time = datetime.now()
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         mock_ydl.download.assert_called_once()
         assert len(events) == 1
@@ -561,9 +577,8 @@ class TestDownloadErrorCallback:
         ],
         ids=["404", "401", "403", "case_insensitive", "unrelated", "ffmpeg_exit"],
     )
-    def test_is_m3u8_access_error_classification(self, message, expected):
+    def test_is_m3u8_access_error_classification(self, downloader, message, expected):
         """Test only 403 and 404 style errors count as blocked stream access."""
-        downloader = StreamDownloader("TestCreator")
         assert downloader._is_m3u8_access_error(message) is expected
 
     def test_notify_auth_callback_on_401_error(self):
@@ -580,9 +595,8 @@ class TestDownloadErrorCallback:
         downloader._notify_download_error("Network timeout")
         callback.assert_not_called()
 
-    def test_notify_skips_when_no_callback(self):
+    def test_notify_skips_when_no_callback(self, downloader):
         """Test that no error is raised when callback is None."""
-        downloader = StreamDownloader("TestCreator")
         downloader._notify_download_error("HTTP Error 404: Not Found")
 
     def test_notify_handles_callback_exception(self):
@@ -591,9 +605,8 @@ class TestDownloadErrorCallback:
         downloader = StreamDownloader("TestCreator", on_download_error=callback)
         downloader._notify_download_error("HTTP Error 404: Not Found")
 
-    def test_first_attempt_is_not_logged_at_info(self, mock_yt_dlp, tmp_path):
+    def test_first_attempt_is_not_logged_at_info(self, mock_ydl, tmp_path):
         """Test the first download attempt does not emit a redundant Retry INFO log."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
@@ -612,31 +625,24 @@ class TestDownloadErrorCallback:
         assert not any("Retry" in str(call) for call in mock_log.info.call_args_list)
 
     def test_worker_retries_transient_download_errors_within_same_task(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, mock_sleep, completed_events, failed_events, tmp_path
     ):
         """Test transient download errors retry immediately within the same task."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed_events = []
-        failed_events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
-            on_download_complete=lambda event: completed_events.append(event),
-            on_download_failure=lambda event: failed_events.append(event),
+            on_download_complete=completed_events.append,
+            on_download_failure=failed_events.append,
         )
         output_path = tmp_path / "test.ts"
         output_path.write_bytes(b"x")
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = [
             yt_dlp.utils.DownloadError("HTTP Error 500: Internal Server Error"),
             yt_dlp.utils.DownloadError("HTTP Error 500: Internal Server Error"),
             None,
         ]
 
-        with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        _run_worker(downloader, output_path)
 
         assert mock_ydl.download.call_count == 3
         assert mock_sleep.call_count == 2
@@ -644,57 +650,47 @@ class TestDownloadErrorCallback:
         assert failed_events == []
 
     def test_worker_retries_404_access_errors_before_blocking(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, mock_sleep, failed_events, tmp_path
     ):
         """Test 404 access errors retry before the stream is marked blocked."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         blocked_callback = MagicMock()
-        failed_events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
             on_download_error=blocked_callback,
-            on_download_failure=lambda event: failed_events.append(event),
+            on_download_failure=failed_events.append,
         )
         output_path = tmp_path / "test.ts"
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = [
             yt_dlp.utils.DownloadError("HTTP Error 404: Not Found"),
             yt_dlp.utils.DownloadError("HTTP Error 404: Not Found"),
             yt_dlp.utils.DownloadError("HTTP Error 404: Not Found"),
         ]
 
-        with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        _run_worker(downloader, output_path)
 
         assert mock_ydl.download.call_count == 3
         assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 4.0]
         blocked_callback.assert_called_once_with("HTTP Error 404: Not Found")
         assert failed_events == []
 
-    def test_worker_keeps_403_as_immediate_block(self, mock_yt_dlp, tmp_path):
+    def test_worker_keeps_403_as_immediate_block(
+        self, mock_ydl, mock_sleep, failed_events, tmp_path
+    ):
         """Test 403 access errors still skip retries and mark the stream blocked."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         blocked_callback = MagicMock()
-        failed_events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
             on_download_error=blocked_callback,
-            on_download_failure=lambda event: failed_events.append(event),
+            on_download_failure=failed_events.append,
         )
         output_path = tmp_path / "test.ts"
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
             "HTTP Error 403: Forbidden"
         )
 
-        with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        _run_worker(downloader, output_path)
 
         assert mock_ydl.download.call_count == 1
         mock_sleep.assert_not_called()
@@ -702,21 +698,17 @@ class TestDownloadErrorCallback:
         assert failed_events == []
 
     def test_worker_retries_timeout_errors_before_completing(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, mock_sleep, completed_events, failed_events, tmp_path
     ):
         """Test timeout-like download errors still use same-task retries."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed_events = []
-        failed_events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
-            on_download_complete=lambda event: completed_events.append(event),
-            on_download_failure=lambda event: failed_events.append(event),
+            on_download_complete=completed_events.append,
+            on_download_failure=failed_events.append,
         )
         output_path = tmp_path / "test.ts"
         output_path.write_bytes(b"x")
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = [
             yt_dlp.utils.DownloadError(
                 "HTTPSConnectionPool(host='api.rplay.live', port=443): Read timed out. (read timeout=10.0)"
@@ -724,37 +716,29 @@ class TestDownloadErrorCallback:
             None,
         ]
 
-        with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        _run_worker(downloader, output_path)
 
         assert mock_ydl.download.call_count == 2
         assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0]
         assert len(completed_events) == 1
         assert failed_events == []
 
-    def test_worker_routes_401_to_auth_failure(self, mock_yt_dlp, tmp_path):
+    def test_worker_routes_401_to_auth_failure(self, mock_ydl, mock_sleep, tmp_path):
         """Test 401 errors are surfaced as auth failures instead of blocked streams."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         auth_events = []
         blocked_callback = MagicMock()
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
             on_download_error=blocked_callback,
-            on_download_auth_error=lambda event: auth_events.append(event),
+            on_download_auth_error=auth_events.append,
         )
         output_path = tmp_path / "test.ts"
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
             "HTTP Error 401: Unauthorized"
         )
 
-        with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        _run_worker(downloader, output_path)
 
         assert mock_ydl.download.call_count == 1
         mock_sleep.assert_not_called()
@@ -764,30 +748,24 @@ class TestDownloadErrorCallback:
         assert auth_events[0].error_message == "HTTP Error 401: Unauthorized"
 
     def test_worker_retries_ffmpeg_exit_errors_before_emitting_failure(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, mock_sleep, failed_events, tmp_path
     ):
         """Test ffmpeg exit errors are retried and eventually reported as failures."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         blocked_callback = MagicMock()
-        failed_events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
             on_download_error=blocked_callback,
-            on_download_failure=lambda event: failed_events.append(event),
+            on_download_failure=failed_events.append,
         )
         output_path = tmp_path / "test.ts"
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = [
             yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8"),
             yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8"),
             yt_dlp.utils.DownloadError("ERROR: ffmpeg exited with code 8"),
         ]
 
-        with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        _run_worker(downloader, output_path)
 
         assert mock_ydl.download.call_count == 3
         assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 4.0]
@@ -796,18 +774,15 @@ class TestDownloadErrorCallback:
         assert failed_events[0].error_message == "ERROR: ffmpeg exited with code 8"
 
     def test_worker_stops_retrying_once_shutdown_requests_stop(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, mock_sleep, failed_events, tmp_path
     ):
         """Test a stopped recording gives up its retry budget instead of stalling shutdown."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        failed_events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
-            on_download_failure=lambda event: failed_events.append(event),
+            on_download_failure=failed_events.append,
         )
         output_path = tmp_path / "test.ts"
-        downloader._download_start_time = datetime.now()
 
         def kill_recording_mid_download(*args, **kwargs):
             # What shutdown actually does: reap the recording ffmpeg while
@@ -817,10 +792,7 @@ class TestDownloadErrorCallback:
 
         mock_ydl.download.side_effect = kill_recording_mid_download
 
-        with patch("core.downloader.time.sleep") as mock_sleep:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        _run_worker(downloader, output_path)
 
         # One attempt, no backoff: shutdown has a bounded window to collect the
         # terminal event before the merge executor closes.
@@ -829,21 +801,17 @@ class TestDownloadErrorCallback:
         assert len(failed_events) == 1
 
     def test_worker_reports_stopped_recording_with_output_as_completed(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, completed_events, failed_events, tmp_path
     ):
         """Test a shutdown-stopped recording hands existing raw output to the merge step."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        completed_events = []
-        failed_events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
-            on_download_complete=lambda event: completed_events.append(event),
-            on_download_failure=lambda event: failed_events.append(event),
+            on_download_complete=completed_events.append,
+            on_download_failure=failed_events.append,
         )
         output_path = tmp_path / "test.ts"
         output_path.write_bytes(b"raw recording")
-        downloader._download_start_time = datetime.now()
 
         def kill_recording_mid_download(*args, **kwargs):
             downloader.request_stop()
@@ -851,7 +819,7 @@ class TestDownloadErrorCallback:
 
         mock_ydl.download.side_effect = kill_recording_mid_download
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         # Reporting this as a failure would drop the session and orphan the .ts.
         assert failed_events == []
@@ -868,11 +836,10 @@ class TestDownloadErrorCallback:
             "TestCreator",
             session_key="creator1:stream1",
             output_dir=tmp_path,
-            on_download_complete=lambda event: completed.append(event),
-            on_download_failure=lambda event: failed.append(event),
+            on_download_complete=completed.append,
+            on_download_failure=failed.append,
             **kwargs,
         )
-        downloader._download_start_time = datetime.now()
 
         def kill_recording_mid_download(*args, **kwargs):
             downloader.request_stop()
@@ -884,10 +851,9 @@ class TestDownloadErrorCallback:
         return downloader, completed, failed
 
     def test_worker_adopts_the_partial_download_left_by_a_reaped_recording(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, tmp_path
     ):
         """Test the stranded .ts.part becomes the raw output and reaches the merge step."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader, completed, failed = self._stopped_downloader(
             tmp_path, mock_ydl, output_extension=".ts"
         )
@@ -895,7 +861,7 @@ class TestDownloadErrorCallback:
         part_path = Path(f"{output_path}.part")
         part_path.write_bytes(b"\x47" * 188)
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         # The whole recording moves under the name the merge step globs for.
         assert output_path.read_bytes() == b"\x47" * 188
@@ -906,10 +872,9 @@ class TestDownloadErrorCallback:
         assert completed[0].output_dir == tmp_path
 
     def test_worker_does_not_adopt_a_part_with_sibling_fragments(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, tmp_path
     ):
         """Test a fragmented recording keeps its .part and the old completion path."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader, completed, _failed = self._stopped_downloader(
             tmp_path, mock_ydl, output_extension=".ts"
         )
@@ -919,7 +884,7 @@ class TestDownloadErrorCallback:
         sibling = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live_1.ts"
         sibling.write_bytes(b"fragment")
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         # Which pieces are complete is not knowable here, so the part is left
         # exactly as it was and only the finished fragments go to the merge.
@@ -927,11 +892,8 @@ class TestDownloadErrorCallback:
         assert not output_path.exists()
         assert len(completed) == 1
 
-    def test_worker_does_not_adopt_an_empty_partial_download(
-        self, mock_yt_dlp, tmp_path
-    ):
+    def test_worker_does_not_adopt_an_empty_partial_download(self, mock_ydl, tmp_path):
         """Test a zero-byte part is not turned into an empty merge input."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader, completed, failed = self._stopped_downloader(
             tmp_path, mock_ydl, output_extension=".ts"
         )
@@ -939,22 +901,21 @@ class TestDownloadErrorCallback:
         part_path = Path(f"{output_path}.part")
         part_path.write_bytes(b"")
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         assert part_path.exists()
         assert not output_path.exists()
         assert completed == []
         assert len(failed) == 1
 
-    def test_worker_does_not_adopt_a_partial_mp4_download(self, mock_yt_dlp, tmp_path):
+    def test_worker_does_not_adopt_a_partial_mp4_download(self, mock_ydl, tmp_path):
         """Test a truncated mp4, which has no moov atom yet, is never adopted."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader, completed, failed = self._stopped_downloader(tmp_path, mock_ydl)
         output_path = tmp_path / "20260728_200507_#TestCreator 2026-07-28 Live.mp4"
         part_path = Path(f"{output_path}.part")
         part_path.write_bytes(b"truncated mp4 without a moov atom")
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         assert part_path.exists()
         assert not output_path.exists()
@@ -962,10 +923,9 @@ class TestDownloadErrorCallback:
         assert len(failed) == 1
 
     def test_worker_keeps_the_part_when_adoption_cannot_rename_it(
-        self, mock_yt_dlp, tmp_path, monkeypatch
+        self, mock_ydl, tmp_path, monkeypatch
     ):
         """Test a failed rename falls back to reporting the recording as failed."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader, completed, failed = self._stopped_downloader(
             tmp_path, mock_ydl, output_extension=".ts"
         )
@@ -978,7 +938,7 @@ class TestDownloadErrorCallback:
 
         monkeypatch.setattr(Path, "rename", deny_rename)
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         # The session still has to reach a terminal state, or its raw lock is
         # held until the process restarts.
@@ -986,9 +946,10 @@ class TestDownloadErrorCallback:
         assert completed == []
         assert len(failed) == 1
 
-    def test_worker_logs_partial_output_details_on_failure(self, mock_yt_dlp, tmp_path):
+    def test_worker_logs_partial_output_details_on_failure(
+        self, mock_ydl, mock_sleep, tmp_path
+    ):
         """Test failure logs: short WARNING/ERROR + full dump only at DEBUG."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:stream1",
@@ -999,19 +960,14 @@ class TestDownloadErrorCallback:
         output_path = archive_dir / "test.ts"
         part_path = Path(f"{output_path}.part")
         part_path.write_bytes(b"abcdef")
-        downloader._download_start_time = datetime.now()
         downloader._current_output_path = output_path
         # Retryable so we exercise both short WARNING retries and final ERROR.
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
             "ERROR: Unable to download webpage: HTTP Error 500: Internal Server Error"
         )
 
-        with patch("core.downloader.time.sleep"), patch.object(
-            downloader, "log"
-        ) as mock_log:
-            downloader._download_worker(
-                "http://example.com/stream.m3u8", {}, output_path
-            )
+        with patch.object(downloader, "log") as mock_log:
+            _run_worker(downloader, output_path)
 
         warning_msgs = [str(call.args[0]) for call in mock_log.warning.call_args_list]
         error_msgs = [str(call.args[0]) for call in mock_log.error.call_args_list]
@@ -1070,20 +1026,18 @@ class TestDownloadErrorCallback:
         short = StreamDownloader._extract_short_error_reason("Some other error")
         assert short == "Some other error"
 
-    def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
+    def test_worker_emits_failure_event_on_non_m3u8_error(self, mock_ydl, tmp_path):
         """Test non-blocked download errors emit a raw failure event."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:2026-03-06T12:00:00",
-            on_download_failure=lambda event: events.append(event),
+            on_download_failure=events.append,
         )
         output_path = tmp_path / "test.ts"
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         assert downloader._current_output_path is None
         assert len(events) == 1
@@ -1092,21 +1046,19 @@ class TestDownloadErrorCallback:
         assert events[0].error_message == "Some other error"
 
     def test_worker_emits_failure_event_on_unexpected_exception(
-        self, mock_yt_dlp, tmp_path
+        self, mock_ydl, tmp_path
     ):
         """Test unexpected download exceptions emit a raw failure event."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
         events = []
         downloader = StreamDownloader(
             "TestCreator",
             session_key="creator1:2026-03-06T12:00:00",
-            on_download_failure=lambda event: events.append(event),
+            on_download_failure=events.append,
         )
         output_path = tmp_path / "test.ts"
-        downloader._download_start_time = datetime.now()
         mock_ydl.download.side_effect = RuntimeError("Unexpected error")
 
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
+        _run_worker(downloader, output_path)
 
         assert downloader._current_output_path is None
         assert len(events) == 1
