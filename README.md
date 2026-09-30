@@ -408,6 +408,35 @@ five-second drain deadline can lose messages, and a network timeout can produce
 a duplicate on retry. Failure details remain in local logs; messages include safe
 operator guidance instead of raw upstream errors, credentials, or stream URLs.
 
+#### Preview notification cards
+
+From the project root, run this manual tester to send eight simulated cards to
+the channel associated with `DISCORD_WEBHOOK_URL`:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/test_discord_cards.py
+```
+
+Or use `poetry run python scripts/test_discord_cards.py`. The script reads the
+project-root `.env`; an environment variable takes precedence. No RPlay account
+credentials are required. It deliberately ignores `DISCORD_WEBHOOK_EVENTS` so
+you can preview all eight types: live, restricted access, authentication
+failure, delayed retries, merge failure, merge completion, low space, and critical space.
+
+Cards use the production layout without test labels or sequence numbers.
+These are simulated notifications, not real events; use a suitable preview channel.
+Stream cards use a sample creator's public
+avatar with a realistic fictional stream title; times and disk values are
+simulated. Account authentication errors carry no creator or stream identity.
+No recording is started and
+no files are merged or removed. Each run sends another set of messages.
+
+- Add `--include-offline` to also preview stream ended (nine cards total).
+- Add `--dry-run` to print the payloads without reading credentials or sending.
+- The script reports confirmed HTTP deliveries, reuses the application's retry
+  and rate-limit handling, and stops with a nonzero exit code on failure. A network
+  timeout can still cause a duplicate; check the channel before rerunning.
+
 ### Recording metadata
 
 New normal merges store the original (unsanitized) `title`, creator display name
