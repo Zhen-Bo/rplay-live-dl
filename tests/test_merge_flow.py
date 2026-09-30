@@ -475,7 +475,7 @@ class TestMergeFlow:
         assert monitor._merge_process_pids == set()
         monitor.shutdown()
 
-    def test_reserve_final_output_path_uses_local_timezone_for_date(
+    def test_final_output_base_path_uses_local_timezone_for_date(
         self, tmp_path, monkeypatch, taipei_timezone
     ):
         """Test the mp4 filename date uses local time, not raw UTC (tz regression guard)."""
@@ -485,7 +485,7 @@ class TestMergeFlow:
         # 2026-03-06 23:50 UTC is 2026-03-07 07:50 in Asia/Taipei (UTC+8).
         stream_start_time = datetime(2026, 3, 6, 23, 50, 0, tzinfo=timezone.utc)
 
-        output_path = monitor._reserve_final_output_path(
+        output_path = monitor._build_final_output_base_path(
             creator_name="Creator",
             title="Title",
             stream_start_time=stream_start_time,

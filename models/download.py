@@ -31,8 +31,6 @@ class DownloadSession:
     output_dir: Path
     session_prefix: str
     recording_started_at: Optional[datetime] = None
-    final_output_path: Optional[Path] = None
-    last_error: Optional[str] = None
 
 
 @dataclass(frozen=True)

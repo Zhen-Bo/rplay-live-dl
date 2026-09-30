@@ -335,12 +335,8 @@ class TestSessionAwareMonitoring:
             output_dir=tmp_path / "creator2",
             session_prefix="20260306_120500_",
         )
-        monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1"
-        )
-        monitor._creator_states["creator2"] = CreatorStreamState(
-            last_stream_oid="stream-2"
-        )
+        monitor._creator_states["creator1"] = CreatorStreamState()
+        monitor._creator_states["creator2"] = CreatorStreamState()
 
         monitor._cleanup_offline_creator_states({"creator2"})
 
@@ -1073,66 +1069,6 @@ class TestAuthErrorDedup:
         assert monitor._auth_error_notified is True
 
 
-class TestGetActiveDownloads:
-    """Tests for get_active_downloads method."""
-
-    def test_empty_list_when_no_downloads(self):
-        """Test returns empty list when no downloaders."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        assert monitor.get_active_downloads() == []
-
-    def test_returns_active_creator_names(self, tmp_path):
-        """Test returns list of creator names with active raw sessions."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        monitor.sessions["active:2026-03-06T12:00:00"] = DownloadSession(
-            session_key="active:2026-03-06T12:00:00",
-            creator_oid="active",
-            creator_name="ActiveCreator",
-            title="Test Stream",
-            stream_start_time=datetime(2026, 3, 6, 12, 0, 0),
-            state=SessionState.RAW_RUNNING,
-            output_dir=tmp_path,
-            session_prefix="20260306_120000_",
-        )
-        monitor.sessions["inactive:2026-03-06T11:00:00"] = DownloadSession(
-            session_key="inactive:2026-03-06T11:00:00",
-            creator_oid="inactive",
-            creator_name="InactiveCreator",
-            title="Old Stream",
-            stream_start_time=datetime(2026, 3, 6, 11, 0, 0),
-            state=SessionState.MERGING,
-            output_dir=tmp_path,
-            session_prefix="20260306_110000_",
-        )
-
-        result = monitor.get_active_downloads()
-        assert result == ["ActiveCreator"]
-
-    def test_returns_multiple_active(self, tmp_path):
-        """Test returns multiple active creator names from raw-running sessions."""
-        mock_api = MagicMock(spec=RPlayAPI)
-        monitor = LiveStreamMonitor(api_client=mock_api)
-        for i in range(3):
-            monitor.sessions[f"oid{i}:2026-03-06T12:0{i}:00"] = DownloadSession(
-                session_key=f"oid{i}:2026-03-06T12:0{i}:00",
-                creator_oid=f"oid{i}",
-                creator_name=f"Creator{i}",
-                title="Test Stream",
-                stream_start_time=datetime(2026, 3, 6, 12, i, 0),
-                state=SessionState.RAW_RUNNING,
-                output_dir=tmp_path,
-                session_prefix=f"2026030612{i:02d}00_",
-            )
-
-        result = monitor.get_active_downloads()
-        assert len(result) == 3
-        assert "Creator0" in result
-        assert "Creator1" in result
-        assert "Creator2" in result
-
-
 class TestCreatorStateTracking:
     """Tests for creator stream state tracking functionality."""
 
@@ -1146,14 +1082,12 @@ class TestCreatorStateTracking:
         monitor._update_creator_stream_state(mock_stream)
 
         assert "creator1" in monitor._creator_states
-        assert monitor._creator_states["creator1"].last_stream_oid == "stream-1"
         assert monitor._creator_states["creator1"].is_current_stream_blocked is False
 
     def test_update_creator_stream_state_updates_existing(self, mock_api):
         """Test that updating state modifies existing entry."""
         monitor = LiveStreamMonitor(api_client=mock_api)
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
         mock_stream = MagicMock()
@@ -1162,14 +1096,12 @@ class TestCreatorStateTracking:
 
         monitor._update_creator_stream_state(mock_stream)
 
-        assert monitor._creator_states["creator1"].last_stream_oid == "stream-2"
         assert monitor._creator_states["creator1"].is_current_stream_blocked is False
 
     def test_clear_creator_stream_state(self, mock_api):
         """Test clearing state for a creator."""
         monitor = LiveStreamMonitor(api_client=mock_api)
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
@@ -1192,7 +1124,6 @@ class TestCreatorStateTracking:
             creator_oid="creator1",
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
         monitor.sessions["creator1:session"] = DownloadSession(
@@ -1280,7 +1211,6 @@ class TestM3u8ValidationIntegration:
         monitor = LiveStreamMonitor(api_client=mock_api)
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
-            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
@@ -1300,7 +1230,6 @@ class TestM3u8ValidationIntegration:
         monitor = LiveStreamMonitor(api_client=mock_api)
         # Pre-populate state
         monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
@@ -1326,9 +1255,7 @@ class TestSessionDownloadBlockedHandling:
             output_dir=tmp_path,
             session_prefix="20260126_120000_",
         )
-        monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1",
-        )
+        monitor._creator_states["creator1"] = CreatorStreamState()
 
         with patch.object(monitor.logger, "warning") as mock_warning:
             blocked_event = RawDownloadBlocked(
@@ -1371,7 +1298,6 @@ class TestSessionDownloadBlockedHandling:
         )
         monitor._creator_states["creator1"] = CreatorStreamState(
             last_stream_start_time=datetime(2026, 1, 26, 12, 0, 0),
-            last_stream_oid="stream-1",
             is_current_stream_blocked=True,
         )
 
@@ -1404,9 +1330,7 @@ class TestPlaylistHttpAuthRouting:
             output_dir=tmp_path,
             session_prefix="20260126_120000_",
         )
-        monitor._creator_states["creator1"] = CreatorStreamState(
-            last_stream_oid="stream-1",
-        )
+        monitor._creator_states["creator1"] = CreatorStreamState()
         return monitor
 
     def test_playlist_401_auth_failed_marks_unhealthy(self, mock_api, tmp_path):

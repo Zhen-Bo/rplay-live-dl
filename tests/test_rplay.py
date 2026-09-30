@@ -231,7 +231,6 @@ class TestCreatorStreamState:
     def test_default_initialization(self):
         """Test CreatorStreamState default values."""
         state = CreatorStreamState()
-        assert state.last_stream_oid is None
         assert state.is_current_stream_blocked is False
 
     def test_mark_blocked(self):

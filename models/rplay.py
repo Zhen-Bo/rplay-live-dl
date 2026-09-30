@@ -23,19 +23,13 @@ class CreatorStreamState:
 
     Attributes:
         last_stream_start_time: The start time of the last observed handled session
-        last_stream_oid: The last observed stream oid for debug visibility only
         is_current_stream_blocked: Whether the current session is marked as inaccessible
     """
 
     last_stream_start_time: Optional[datetime] = field(default=None)
-    last_stream_oid: Optional[str] = field(default=None)
     is_current_stream_blocked: bool = field(default=False)
 
-    def update_stream_start_time(
-        self,
-        start_time: datetime,
-        stream_oid: Optional[str] = None,
-    ) -> None:
+    def update_stream_start_time(self, start_time: datetime) -> None:
         """
         Update the handled stream start time for the creator.
 
@@ -43,11 +37,8 @@ class CreatorStreamState:
 
         Args:
             start_time: The start time of the handled stream session
-            stream_oid: Optional latest stream oid for debug visibility
         """
         self.last_stream_start_time = start_time
-        if stream_oid is not None:
-            self.last_stream_oid = stream_oid
         self.is_current_stream_blocked = False
 
     def mark_blocked(self) -> None:

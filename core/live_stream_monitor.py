@@ -715,15 +715,6 @@ class LiveStreamMonitor:
                 return session.creator_name
         return creator_oid
 
-    def get_active_downloads(self) -> List[str]:
-        """Get list of creators with active raw download sessions."""
-        with self._state_lock:
-            return [
-                session.creator_name
-                for session in self.sessions.values()
-                if session.state == SessionState.RAW_RUNNING
-            ]
-
     @property
     def is_healthy(self) -> bool:
         """Check if the last monitoring check was successful."""
@@ -737,7 +728,6 @@ class LiveStreamMonitor:
                 self._creator_states[stream.creator_oid] = CreatorStreamState()
             self._creator_states[stream.creator_oid].update_stream_start_time(
                 stream.stream_start_time,
-                stream.oid,
             )
 
     def _clear_creator_stream_state(self, creator_oid: str) -> None:
@@ -930,13 +920,10 @@ class LiveStreamMonitor:
                 log_method = self.logger.info
                 log_message = f"🎬 Merge started for {session.creator_name}: {session.session_key}"
             elif isinstance(event, MergeCompleted):
-                session.final_output_path = event.output_path
-                session.last_error = None
                 session.state = SessionState.DONE
                 log_method = self.logger.info
                 log_message = f"✅ Merge completed for {session.creator_name}: {event.output_path}"
             elif isinstance(event, MergeFailed):
-                session.last_error = event.error_message
                 session.state = SessionState.MERGE_FAILED
                 log_method = self.logger.warning
                 log_message = (
@@ -983,7 +970,6 @@ class LiveStreamMonitor:
                 # ponytail: late (>join budget) completions stay orphaned;
                 # startup recovery lane will merge them.
                 session.state = SessionState.MERGE_FAILED
-                session.last_error = "merge submission closed by shutdown"
                 late_creator_name = session.creator_name
                 late_output_dir = session.output_dir
             else:
@@ -1138,7 +1124,6 @@ class LiveStreamMonitor:
             if session is None:
                 return
 
-            session.last_error = event.error_message
             session.state = SessionState.BLOCKED
             active_session_key = self._active_raw_session_by_creator.get(
                 session.creator_oid
@@ -1286,21 +1271,6 @@ class LiveStreamMonitor:
             self.logger.warning(
                 f"Could not remove partial merge output {output_path.name}: {exc}"
             )
-
-    def _reserve_final_output_path(
-        self,
-        creator_name: str,
-        title: str,
-        stream_start_time: datetime,
-    ) -> Path:
-        """Reserve the next available final mp4 output path."""
-        return StreamDownloader.get_unique_path(
-            self._build_final_output_base_path(
-                creator_name=creator_name,
-                title=title,
-                stream_start_time=stream_start_time,
-            )
-        )
 
     def _build_final_output_base_path(
         self,
