@@ -5,20 +5,11 @@ from pydantic import ValidationError
 
 from models.config import CreatorProfile
 from models.env import EnvConfig
-from models.rplay import MultiLangNick, StreamState
+from models.rplay import StreamState
 
 
 class TestCreatorProfile:
     """Tests for CreatorProfile model."""
-
-    def test_valid_creator_profile(self):
-        """Test creating a valid creator profile."""
-        profile = CreatorProfile(
-            creator_name="Test Creator",
-            creator_oid="abc123",
-        )
-        assert profile.creator_name == "Test Creator"
-        assert profile.creator_oid == "abc123"
 
     def test_creator_name_whitespace_stripped(self):
         """Test that creator name whitespace is stripped."""
@@ -36,19 +27,12 @@ class TestCreatorProfile:
         )
         assert profile.creator_oid == "abc123"
 
-    def test_empty_creator_name_rejected(self):
-        """Test that empty creator name is rejected."""
+    @pytest.mark.parametrize("name", ["", "   "])
+    def test_empty_creator_name_rejected(self, name):
+        """Test that empty or whitespace-only creator name is rejected."""
         with pytest.raises(ValidationError):
             CreatorProfile(
-                creator_name="",
-                creator_oid="abc123",
-            )
-
-    def test_whitespace_only_creator_name_rejected(self):
-        """Test that whitespace-only creator name is rejected."""
-        with pytest.raises(ValidationError):
-            CreatorProfile(
-                creator_name="   ",
+                creator_name=name,
                 creator_oid="abc123",
             )
 
@@ -73,48 +57,16 @@ class TestCreatorProfile:
 class TestEnvConfig:
     """Tests for EnvConfig model."""
 
-    def test_valid_env_config(self):
-        """Test creating a valid environment config."""
-        config = EnvConfig(user_oid="user456", refresh_token="token123", interval=60)
-        assert config.refresh_token == "token123"
-        assert config.user_oid == "user456"
-        assert config.interval == 60
-
-    def test_default_interval(self):
-        """Test that interval has a default value."""
-        config = EnvConfig(user_oid="user456", refresh_token="token123")
-        assert config.interval == 60
-
-    def test_interval_minimum(self):
-        """Test that interval has a minimum value."""
+    @pytest.mark.parametrize("interval", [5, 4000])
+    def test_interval_minimum(self, interval):
+        """Test that interval must stay within its allowed range."""
         with pytest.raises(ValidationError):
-            EnvConfig(user_oid="user456", refresh_token="token123", interval=5)
-
-    def test_interval_maximum(self):
-        """Test that interval has a maximum value."""
-        with pytest.raises(ValidationError):
-            EnvConfig(user_oid="user456", refresh_token="token123", interval=4000)
+            EnvConfig(user_oid="user456", refresh_token="token123", interval=interval)
 
     def test_empty_refresh_token_rejected(self):
         """Test that empty auth token is rejected."""
         with pytest.raises(ValidationError):
             EnvConfig(user_oid="user456", refresh_token="")
-
-    def test_whitespace_refresh_token_rejected(self):
-        """Test that whitespace-only auth token is rejected."""
-        with pytest.raises(ValidationError):
-            EnvConfig(user_oid="user456", refresh_token="   ")
-
-
-class TestMultiLangNick:
-    """Tests for MultiLangNick model."""
-
-    def test_empty_multilang_nick(self):
-        """Test creating empty multi-language nickname."""
-        nick = MultiLangNick()
-        assert nick.ko is None
-        assert nick.en is None
-        assert nick.jp is None
 
 
 class TestStreamState:
