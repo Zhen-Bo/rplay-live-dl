@@ -1,9 +1,4 @@
-"""
-Environment configuration model.
-
-Defines the Pydantic Settings model for environment-based configuration
-used by the rplay-live-dl application.
-"""
+"""Environment settings model for rplay-live-dl."""
 
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,26 +14,13 @@ from core.constants import (
     DEFAULT_TOKEN_REFRESH_LEEWAY_SECONDS,
 )
 
-# Validation vocabulary lives beside the only consumer (this model).
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUTHY_BOOL_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_BOOL_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 
 class EnvConfig(BaseSettings):
-    """
-    Environment configuration model using pydantic-settings.
-
-    Automatically loads values from environment variables and .env file.
-    All fields are validated using Pydantic for type safety and constraints.
-
-    Attributes:
-        user_oid: User's unique identifier on the RPlay platform
-        auth_token: Removed in v2.5.0, read only to explain the migration
-        refresh_token: Credential for acquiring and renewing access JWTs
-        token_refresh_leeway_seconds: Renewal threshold before key2 requests
-        interval: Monitoring check interval in seconds
-    """
+    """Settings loaded from environment variables and the .env file."""
 
     user_oid: str = Field(
         ...,
@@ -124,7 +106,6 @@ class EnvConfig(BaseSettings):
     @field_validator("user_oid")
     @classmethod
     def validate_user_oid(cls, v: str) -> str:
-        """Validate that user OID is not just whitespace."""
         if not v.strip():
             raise ValueError("USER_OID cannot be empty or whitespace")
         return v.strip()
@@ -132,7 +113,6 @@ class EnvConfig(BaseSettings):
     @field_validator("log_level", mode="after")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
-        """Reject unknown LOG_LEVEL values at startup."""
         normalized = v.upper()
         if normalized not in _VALID_LOG_LEVELS:
             raise ValueError(
@@ -144,7 +124,6 @@ class EnvConfig(BaseSettings):
     @field_validator("log_ytdlp_internal", mode="before")
     @classmethod
     def validate_log_ytdlp_internal(cls, v: object) -> bool:
-        """Parse LOG_YTDLP_INTERNAL with an explicit accepted set."""
         if isinstance(v, bool):
             return v
         if v is None:

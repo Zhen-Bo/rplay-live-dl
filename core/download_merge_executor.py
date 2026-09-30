@@ -18,11 +18,9 @@ class DownloadMergeExecutor:
 
     def submit_merge(self, task: Callable[[], object]) -> Future:
         """
-        Submit a merge task for asynchronous execution.
+        Raise RuntimeError once drain or shutdown closed acceptance.
 
-        Raises:
-            RuntimeError: If acceptance was already closed by drain/shutdown.
-                Callers must treat this as "too late to merge", not as a crash.
+        Callers must treat this as "too late to merge", not as a crash.
         """
         with self._lock:
             if self._closed:
@@ -31,16 +29,12 @@ class DownloadMergeExecutor:
 
     def drain(self, timeout: Optional[float] = None) -> bool:
         """
-        Close acceptance, then wait for already-queued merges to finish.
+        Close acceptance, then wait for queued merges. Returns False on timeout.
 
-        The pool is FIFO with a single worker, so a no-op enqueued under the
-        same lock that closes acceptance is necessarily the last task in the
-        queue: once it runs, every merge submitted before it has finished.
-        That barrier is what makes the wait bounded — the previous pending-set
-        re-check could be extended indefinitely by late submissions.
-
-        Returns:
-            True when queued merges finished, False if the timeout ran out.
+        The pool is FIFO with one worker, so a no-op enqueued under the lock that
+        closes acceptance is the last task in the queue. Once it runs, every earlier
+        merge has finished. This keeps the wait bounded, unlike re-checking a pending
+        set that late submissions could extend forever.
         """
         with self._lock:
             self._closed = True
@@ -53,7 +47,6 @@ class DownloadMergeExecutor:
             return False
 
     def shutdown(self, wait: bool = False, cancel_futures: bool = False) -> None:
-        """Stop accepting new work and shut down the executor."""
         with self._lock:
             self._closed = True
         self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)

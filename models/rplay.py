@@ -1,9 +1,4 @@
-"""
-RPlay API response models.
-
-Defines Pydantic models for data structures returned by the RPlay API,
-including live stream information and related entities.
-"""
+"""Models for data returned by the RPlay API."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,94 +10,37 @@ from pydantic import BaseModel, Field
 
 @dataclass
 class CreatorStreamState:
-    """
-    Tracks the state of a creator's current streaming session.
-
-    Used to track the currently handled stream start time for one creator
-    and to mark streams as blocked (likely paid content).
-
-    Attributes:
-        last_stream_start_time: The start time of the last observed handled session
-        is_current_stream_blocked: Whether the current session is marked as inaccessible
-    """
+    """Handled stream start time and blocked flag (likely paid content) for one creator."""
 
     last_stream_start_time: Optional[datetime] = field(default=None)
     is_current_stream_blocked: bool = field(default=False)
 
     def update_stream_start_time(self, start_time: datetime) -> None:
-        """
-        Update the handled stream start time for the creator.
-
-        Also clears the blocked flag since a new handled session should be retried.
-
-        Args:
-            start_time: The start time of the handled stream session
-        """
+        """Set the handled start time and clear the blocked flag so the new session is retried."""
         self.last_stream_start_time = start_time
         self.is_current_stream_blocked = False
 
     def mark_blocked(self) -> None:
-        """Mark the current stream session as blocked (likely paid content)."""
         self.is_current_stream_blocked = True
 
 
 class StreamState(str, Enum):
-    """
-    Enumeration of possible stream states.
-
-    Indicates the current state/platform of the stream.
-    """
-
-    LIVE = "live"  # Native RPlay platform streaming
-    TWITCH = "twitch"  # Twitch platform streaming
-    YOUTUBE = "youtube"  # YouTube platform streaming
+    LIVE = "live"
+    TWITCH = "twitch"
+    YOUTUBE = "youtube"
 
     def __str__(self) -> str:
-        """Return the string value of the enum."""
         return self.value
 
 
 class MultiLangNick(BaseModel):
-    """
-    Multi-language nickname model.
-
-    Stores creator nicknames in different languages for
-    internationalization support.
-
-    Attributes:
-        ko: Korean nickname
-        en: English nickname
-        jp: Japanese nickname
-    """
-
     ko: Optional[str] = Field(default=None, description="Korean nickname")
     en: Optional[str] = Field(default=None, description="English nickname")
     jp: Optional[str] = Field(default=None, description="Japanese nickname")
 
 
 class LiveStream(BaseModel):
-    """
-    Core model representing a live streaming session.
-
-    Contains all essential information about an active stream including
-    creator details, stream metadata, and platform-specific information.
-
-    Attributes:
-        id_: Internal MongoDB identifier
-        oid: Unique stream identifier
-        creator_oid: Unique identifier for the creator
-        creator_nickname: Display name of the creator
-        creator_multi_lang_nick: Creator's nicknames in different languages
-        title: Stream title
-        description: Optional stream description
-        hashtags: List of stream-related tags
-        is_adult_content: Flag for mature content
-        viewer_count: Current number of viewers
-        multi_platform_key: Creator identifier on external platforms
-        channel_language: Two-letter language code (ISO 639-1)
-        stream_start_time: UTC timestamp when stream started
-        stream_state: Current streaming platform/state
-    """
+    """Live stream as returned by the API. stream_start_time is UTC."""
 
     id_: str = Field(alias="_id")
     oid: str
@@ -128,11 +66,9 @@ class LiveStream(BaseModel):
     }
 
     def __str__(self) -> str:
-        """Return string representation of the live stream."""
         return f"LiveStream({self.creator_nickname}: {self.title!r})"
 
     def __repr__(self) -> str:
-        """Return detailed representation of the live stream."""
         return (
             f"LiveStream(creator={self.creator_nickname!r}, "
             f"title={self.title!r}, state={self.stream_state.value})"

@@ -1,8 +1,4 @@
-"""
-rplay-live-dl - Automated RPlay live stream downloader.
-
-Entry point for the application.
-"""
+"""Entry point for rplay-live-dl."""
 
 import logging
 import sys
@@ -32,18 +28,10 @@ __version__ = _read_version()
 
 
 def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
-    """
-    List files left behind by interrupted recordings.
-
-    Nothing else in the codebase ever looks at these again, so without this
-    they accumulate silently. yt-dlp's HLS downloader can leave *.part,
-    *.ytdl and *.part-Frag* behind on a kill; unmerged session .ts files stay
-    when a merge fails or the process dies first.
-    """
-    # Runs after recovery, so what it lists is what recovery could not fix:
-    # sessions it skipped or failed to merge, the .ts.part files it refused to
-    # adopt, plus the .part-FragN and .ytdl artifacts it never touches, which
-    # may be torn mid-write and would merge into broken video.
+    """List leftovers of interrupted recordings, which nothing else revisits."""
+    # Runs after recovery, so it lists only what recovery could not fix. That
+    # includes .part-FragN and .ytdl artifacts, which may be torn mid-write and
+    # would merge into broken video.
     archive = Path.cwd() / StreamDownloader.ARCHIVE_DIR
     if not archive.is_dir():
         return
@@ -67,11 +55,9 @@ def _warn_about_orphaned_downloads(logger: logging.Logger) -> None:
 
 
 def main() -> None:
-    """Main entry point for the application."""
     load_dotenv()
 
-    # Validate env before configuring logging so invalid values fail fast
-    # without a half-configured logger or silent fallback.
+    # Validate env before configuring logging so invalid values fail fast.
     try:
         env = load_env()
     except EnvConfigError as e:
@@ -88,7 +74,6 @@ def main() -> None:
     logger = setup_logger("Main")
     logger.info("Environment configuration loaded successfully")
 
-    # Cleanup old log files on startup
     try:
         removed = cleanup_old_logs()
         if removed > 0:
@@ -101,7 +86,7 @@ def main() -> None:
     try:
         recover_orphaned_sessions(logger)
     except Exception as e:
-        # Recovery is best-effort housekeeping; it must never block startup.
+        # Recovery is best-effort housekeeping and must never block startup.
         # Every input it touches is kept on failure, so the next run retries.
         logger.warning(f"Failed to recover orphaned recordings: {e}")
 
@@ -111,7 +96,7 @@ def main() -> None:
     try:
         api_base_url = read_app_config(DEFAULT_CONFIG_PATH).api_base_url
     except ConfigError as exc:
-        # ponytail: scheduler owns hard config failures; probe with default URL.
+        # The scheduler owns hard config failures, so probe with the default URL.
         logger.warning(
             f"Could not load config for credential check "
             f"(using default API URL): {exc}"
@@ -135,7 +120,7 @@ def main() -> None:
             )
             sys.exit(1)
         except RPlayAPIError as exc:
-            # RPlayConnectionError is an RPlayAPIError; monitor owns retries.
+            # RPlayConnectionError is an RPlayAPIError, the monitor owns retries.
             logger.warning(
                 f"Could not verify credentials due to API error "
                 f"(continuing; will retry while running): {exc}"

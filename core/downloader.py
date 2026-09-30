@@ -1,9 +1,4 @@
-﻿"""
-Stream downloader module.
-
-Provides functionality to download live streams using yt-dlp,
-with support for concurrent downloads and automatic file management.
-"""
+﻿"""Live stream downloader built on yt-dlp."""
 
 import logging
 import os
@@ -48,7 +43,7 @@ __all__ = [
     "StreamDownloader",
 ]
 
-# Playlist URLs embed key2; mask before any yt-dlp message reaches the logger.
+# Playlist URLs embed key2. Mask before any yt-dlp message reaches the logger.
 _KEY2_QUERY_RE = re.compile(r"key2=[^&\s\"']+")
 # yt-dlp appends this suffix while downloading raw output.
 _DOWNLOAD_FILENAME_MAX_BYTES = MAX_FILENAME_COMPONENT_BYTES - len(
@@ -92,34 +87,17 @@ class _YtDlpLoggerBridge:
 
 
 class StreamDownloader:
-    """
-    Handles downloading of live streams using yt-dlp.
+    """Downloads one creator's live streams with yt-dlp."""
 
-    This class manages downloading streams for a specific creator, including:
-    - Setting up logging for download operations
-    - Managing download threads
-    - Handling file paths and naming
-    - Executing the actual download process
-
-    Attributes:
-        creator_name: Name of the content creator
-        logger: Logger instance for this downloader
-        download_thread: Reference to the active download thread
-    """
-
-    # Default archive directory
     ARCHIVE_DIR = "archive"
 
-    # yt-dlp configuration
     DEFAULT_FORMAT = "bestvideo+bestaudio/best"
 
-    # Maximum number of duplicate files before raising an error
     MAX_DUPLICATE_FILES = 1000
 
-    # Error message patterns indicating non-retriable access failure.
-    # Verified against the live service: no-access (paid) streams return 404 from
-    # the moment they go live, so 404 right after stream start means blocked, not
-    # CDN warmup. Do not "fix" this by retrying 404 longer.
+    # Verified against the live service: paid streams return 404 from the moment
+    # they go live, so an early 404 means blocked, not CDN warmup. Do not retry
+    # 404 longer.
     ACCESS_ERROR_PATTERNS = [
         "HTTP Error 403",
         "HTTP Error 404",
@@ -141,15 +119,7 @@ class StreamDownloader:
         on_download_complete: Optional[Callable[[RawDownloadCompleted], None]] = None,
         on_download_failure: Optional[Callable[[RawDownloadFailed], None]] = None,
     ) -> None:
-        """
-        Initialize a new stream downloader for a creator.
-
-        Args:
-            creator_name: Name of the content creator
-            on_download_error: Optional callback invoked with error message
-                when download fails due to M3U8 access issues (e.g., paid content).
-                Called from the download thread.
-        """
+        """on_download_error is called from the download thread."""
         self.creator_name = creator_name
         self.logger = setup_logger("Downloader")
         self.log = bind(self.logger, creator_name)
@@ -172,40 +142,28 @@ class StreamDownloader:
         )
 
     def download(self, stream_url: str, live_title: str) -> None:
-        """
-        Initiate a new download operation in a separate thread.
-
-        Args:
-            stream_url: URL of the stream m3u8 to download
-            live_title: Title of the live stream for the output filename
-        """
-        # Sanitize filename using pathvalidate
+        """Start downloading in a background thread."""
         safe_title = sanitize_filename(live_title, replacement_text="_")
         if not safe_title:
             safe_title = "untitled"
 
-        # Construct output path
         output_path = self._build_output_path(safe_title)
 
-        # Ensure unique file path and create directories
         output_path = self.get_unique_path(
             output_path,
             max_bytes=_DOWNLOAD_FILENAME_MAX_BYTES,
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Store current download info
         self._current_output_path = output_path
         self._download_start_time = datetime.now()
 
-        # Configure yt-dlp options
         ydl_opts = self._build_ydl_options(output_path)
 
         self.log.debug(
             f"session_key={self.session_key or 'none'}, output_path={output_path}",
         )
 
-        # Start download in a separate thread
         self.download_thread = threading.Thread(
             target=self._download_worker,
             args=(stream_url, ydl_opts, output_path),
@@ -214,13 +172,9 @@ class StreamDownloader:
         )
         self.download_thread.start()
 
-        # Logged only once the thread is actually running. This is now the sole
-        # confirmation that a recording began, so it must not be emitted while
-        # Thread.start() can still raise.
-        #
-        # The title already appeared on the monitor's "is live" line; repeating it
-        # here (and again in the output filename) is what made one event span
-        # three lines. The session prefix is what ties this log to a file on disk.
+        # Sole confirmation that a recording began, so log it only after
+        # Thread.start() succeeds. The title is omitted because the monitor already
+        # logged it. The session prefix ties this log to a file on disk.
         session_prefix = (self.filename_prefix or "").rstrip("_")
         self.log.info(
             (
@@ -231,35 +185,19 @@ class StreamDownloader:
         )
 
     def is_alive(self) -> bool:
-        """
-        Check if the current download operation is still active.
-
-        Returns:
-            True if download is in progress, False otherwise
-        """
         return self.download_thread is not None and self.download_thread.is_alive()
 
     def request_stop(self) -> None:
         """
-        Ask this recording to wind down instead of retrying.
+        Wind down instead of retrying.
 
-        Shutdown reaps the recording ffmpeg out from under yt-dlp, which looks
-        exactly like a transient failure. Without this flag the task would burn
-        its whole retry budget re-running a download nobody is waiting for, and
-        its terminal event would arrive after the merge executor had closed.
+        Shutdown kills the recording ffmpeg, which looks like a transient failure.
+        Without this flag the task burns its retry budget and its terminal event
+        arrives after the merge executor has closed.
         """
         self._stop_requested.set()
 
     def _build_output_path(self, safe_title: str) -> Path:
-        """
-        Construct the output file path.
-
-        Args:
-            safe_title: Sanitized stream title
-
-        Returns:
-            Path object for the output file
-        """
         date_str = datetime.today().strftime("%Y-%m-%d")
         filename = f"{self.filename_prefix}#{self.creator_name} {date_str} {safe_title}{self.output_extension}"
 
@@ -269,15 +207,6 @@ class StreamDownloader:
         return Path.cwd() / self.ARCHIVE_DIR / self.creator_name / filename
 
     def _build_ydl_options(self, output_path: Path) -> Dict[str, Any]:
-        """
-        Build yt-dlp options dictionary.
-
-        Args:
-            output_path: Path for the output file
-
-        Returns:
-            Dictionary of yt-dlp options
-        """
         options = {
             "format": self.DEFAULT_FORMAT,
             "outtmpl": str(output_path),
@@ -287,13 +216,13 @@ class StreamDownloader:
             "quiet": True,
             "no_progress": True,
             "no_warnings": True,
-            # Inert for live HLS (FFmpegFD fetches); only apply on native paths.
+            # Inert for live HLS (FFmpegFD fetches). Only apply on native paths.
             "retries": DEFAULT_DOWNLOAD_RETRIES,
             "fragment_retries": DEFAULT_FRAGMENT_RETRIES,
             "socket_timeout": DEFAULT_DOWNLOAD_SOCKET_TIMEOUT,
             "continuedl": True,
             # The real mechanism for live: ffmpeg input args. -reconnect_at_eof is
-            # omitted on purpose — HLS segment reads hit EOF by design.
+            # omitted on purpose because HLS segment reads hit EOF by design.
             "external_downloader_args": {
                 "ffmpeg_i": [
                     "-rw_timeout",
@@ -326,17 +255,9 @@ class StreamDownloader:
         max_bytes: int = MAX_FILENAME_COMPONENT_BYTES,
     ) -> Path:
         """
-        Generate a unique file path by appending a counter if file exists.
+        Return base_path, or the first free `_N` variant of it.
 
-        Args:
-            base_path: Initial desired file path
-            max_bytes: Maximum UTF-8 byte length for the filename component
-
-        Returns:
-            Unique file path that doesn't exist
-
-        Raises:
-            RuntimeError: If more than MAX_DUPLICATE_FILES duplicates exist
+        Raises RuntimeError past MAX_DUPLICATE_FILES.
         """
         base_path = fit_filename_component_bytes(base_path, max_bytes=max_bytes)
         # ``Path.exists()`` follows symlinks and returns False for a dangling
@@ -356,13 +277,11 @@ class StreamDownloader:
             if not os.path.lexists(new_path):
                 return new_path
             counter += 1
-            # Safety limit to prevent infinite loop
             if counter > cls.MAX_DUPLICATE_FILES:
                 raise RuntimeError(f"Too many duplicate files for {base_path.stem}")
 
     @staticmethod
     def _has_sibling_fragment_outputs(output_path: Path) -> bool:
-        """Return True when yt-dlp left numbered sibling fragments for this output."""
         fragment_pattern = f"{output_path.stem}_*{output_path.suffix}"
         return any(output_path.parent.glob(fragment_pattern))
 
@@ -392,7 +311,7 @@ class StreamDownloader:
 
     @staticmethod
     def _extract_short_error_reason(error_text: str) -> str:
-        """Prefer an HTTP Error token; else first line, truncated to ~120 chars."""
+        """Prefer an HTTP Error token, else first line, truncated to ~120 chars."""
         match = re.search(r"HTTP Error \d+[^;,)]*", error_text)
         if match:
             return match.group(0).strip()
@@ -402,7 +321,6 @@ class StreamDownloader:
         return first_line or "unknown error"
 
     def _inspect_output_state(self, output_path: Path) -> Dict[str, Any]:
-        """Collect output/part/fragment facts once for dual-level log formatting."""
         part_path = Path(f"{output_path}.part")
         output_exists = output_path.exists()
         part_exists = part_path.exists()
@@ -448,7 +366,6 @@ class StreamDownloader:
         error_message: str,
         output_path: Optional[Path],
     ) -> None:
-        """Emit the legacy full dump at DEBUG only (session_key + paths)."""
         if output_path is None:
             details = "output_path=unknown"
         else:
@@ -464,27 +381,15 @@ class StreamDownloader:
         ydl_opts: Dict[str, Any],
         output_path: Path,
     ) -> None:
-        """
-        Worker function that performs the actual download operation.
-
-        This runs in a separate thread to avoid blocking the main thread.
-
-        Args:
-            stream_url: URL of the stream to download
-            ydl_opts: Options for yt-dlp downloader
-            output_path: Path where the stream will be saved
-        """
         try:
             self._download_stream_with_retries(stream_url, ydl_opts, output_path)
 
-            # Calculate download duration
             if self._download_start_time:
                 duration = datetime.now() - self._download_start_time
-                duration_str = str(duration).split(".")[0]  # Remove microseconds
+                duration_str = str(duration).split(".")[0]
             else:
                 duration_str = "unknown"
 
-            # Check file size
             if output_path.exists():
                 file_size = output_path.stat().st_size
                 size_str = format_file_size(file_size)
@@ -517,10 +422,9 @@ class StreamDownloader:
         except yt_dlp.utils.DownloadError as e:
             error_message = str(e)
             if self._stop_requested.is_set():
-                # Shutdown pulled the recording ffmpeg out from under yt-dlp, so
-                # this "failure" is expected. Classifying it as blocked or
-                # retryable would drop the session and orphan whatever raw
-                # output already reached disk.
+                # Shutdown killed the recording ffmpeg, so this failure is expected.
+                # Classifying it as blocked or retryable would drop the session and
+                # orphan the raw output already on disk.
                 session_prefix = (self.filename_prefix or "").rstrip("_")
                 if output_path.exists() or self._has_sibling_fragment_outputs(
                     output_path
@@ -532,9 +436,8 @@ class StreamDownloader:
                     self._notify_download_complete(output_path)
                     return
 
-                # The recording itself may be sitting in the .part yt-dlp
-                # abandoned, and adopting it keeps the merge inside shutdown's
-                # existing budget instead of waiting for a restart.
+                # The recording may sit in the .part yt-dlp abandoned. Adopting it
+                # keeps the merge inside shutdown's budget.
                 if self._adopt_part_output(output_path):
                     self.log.info(
                         f"⏹️ Recording stopped for shutdown (session {session_prefix}); "
@@ -557,9 +460,8 @@ class StreamDownloader:
                 self._notify_download_failure(error_message)
                 return
 
-            # ponytail: .error, not .exception — this handler mostly sees classified
-            # 401/403/404 access failures where the yt-dlp message says it all; the
-            # truly-unexpected path below keeps the traceback.
+            # .error, not .exception: this handler mostly sees classified 401/403/404
+            # failures. The unexpected path below keeps the traceback.
             attempts = max(1, self._last_download_attempt)
             short_reason = self._extract_short_error_reason(error_message)
             compact = self._build_compact_output_state_summary(output_path)
@@ -597,36 +499,25 @@ class StreamDownloader:
             self._download_start_time = None
 
     def _is_m3u8_access_error(self, error_message: str) -> bool:
-        """
-        Check if the error message indicates an M3U8 access failure.
-
-        Args:
-            error_message: Error message from yt-dlp
-
-        Returns:
-            True if error indicates M3U8 access issues (e.g., paid content)
-        """
+        """True for 403/404 errors, which mean blocked access (e.g. paid content)."""
         return any(
             pattern.lower() in error_message.lower()
             for pattern in self.ACCESS_ERROR_PATTERNS
         )
 
     def _is_auth_error(self, error_message: str) -> bool:
-        """Check if the error message indicates an authentication failure."""
         return any(
             pattern.lower() in error_message.lower()
             for pattern in self.AUTH_ERROR_PATTERNS
         )
 
     def _is_retryable_access_error(self, error_message: str) -> bool:
-        """Check if an access error should retry before the stream is blocked."""
         return any(
             pattern.lower() in error_message.lower()
             for pattern in self.RETRYABLE_ACCESS_ERROR_PATTERNS
         )
 
     def _build_download_retrying(self) -> Retrying:
-        """Build a tenacity retry controller for full-task yt-dlp retries."""
         return Retrying(
             reraise=True,
             stop=stop_after_attempt(max(1, self.DOWNLOAD_TASK_RETRY_ATTEMPTS)),
@@ -643,7 +534,6 @@ class StreamDownloader:
         return retry_if_exception_type(_RetryableDownloadTaskError)(retry_state)
 
     def _log_before_retry(self, retry_state) -> None:
-        """Log one retry attempt before sleeping."""
         exception = retry_state.outcome.exception()
         wait_seconds = 0.0
         if retry_state.next_action is not None:
@@ -667,7 +557,6 @@ class StreamDownloader:
         ydl_opts: Dict[str, Any],
         output_path: Path,
     ) -> None:
-        """Run yt-dlp and retry the full task for transient download failures."""
         attempt_number = 0
         self._last_download_attempt = 0
 
@@ -677,13 +566,12 @@ class StreamDownloader:
                     attempt_number = attempt.retry_state.attempt_number
                     self._last_download_attempt = attempt_number
                     if self._stop_requested.is_set():
-                        # Set while the previous backoff was sleeping; a fresh
-                        # yt-dlp run here would only be killed again.
+                        # Set during the previous backoff sleep. A fresh yt-dlp run
+                        # would only be killed again.
                         raise yt_dlp.utils.DownloadError(
                             "recording stopped for shutdown"
                         )
-                    # The first attempt is already implied by "Recording started".
-                    # Only a retry is worth a line of its own.
+                    # The first attempt is implied by "Recording started".
                     if attempt_number > 1:
                         self.log.info(
                             f"🔁 Attempt {attempt_number}/{self.DOWNLOAD_TASK_RETRY_ATTEMPTS}",
@@ -696,8 +584,7 @@ class StreamDownloader:
                             f"{self._build_output_state_details(output_path)}",
                         )
                     try:
-                        # yt-dlp accepts dynamic options and our logger bridge;
-                        # its stubs require a narrower TypedDict/logger protocol.
+                        # yt-dlp accepts these, but its stubs are narrower.
                         with yt_dlp.YoutubeDL(
                             ydl_opts,  # pyright: ignore[reportArgumentType]
                         ) as ydl:
@@ -721,15 +608,7 @@ class StreamDownloader:
             )
 
     def _notify_download_error(self, error_message: str) -> None:
-        """
-        Notify via callback if the download error indicates M3U8 access failure.
-
-        Only invokes the callback for M3U8-related errors (e.g., paid content
-        returning 404 on media playlists).
-
-        Args:
-            error_message: Error message from yt-dlp
-        """
+        """Invoke the callback only for M3U8 access errors."""
         if self._on_download_error and self._is_m3u8_access_error(error_message):
             try:
                 self._on_download_error(error_message)
@@ -737,7 +616,6 @@ class StreamDownloader:
                 self.log.exception(f"Error in download error callback: {e}")
 
     def _notify_auth_error(self, error_message: str) -> None:
-        """Notify listeners that credentials appear invalid for this download."""
         if not self._on_download_auth_error or not self._is_auth_error(error_message):
             return
 
@@ -756,7 +634,6 @@ class StreamDownloader:
             self.log.exception(f"Error in download auth callback: {e}")
 
     def _notify_download_complete(self, output_path: Path) -> None:
-        """Notify listeners that a raw download finished successfully."""
         if not self._on_download_complete or not self.session_key:
             return
 
@@ -771,7 +648,6 @@ class StreamDownloader:
             self.log.exception(f"Error in download complete callback: {e}")
 
     def _notify_download_failure(self, error_message: str) -> None:
-        """Notify listeners that a raw download failed for a non-blocked reason."""
         if not self._on_download_failure or not self.session_key:
             return
 

@@ -1,9 +1,4 @@
-﻿"""
-Configuration module for rplay-live-dl.
-
-Provides functionality to read and parse YAML configuration files
-containing creator profiles for monitoring.
-"""
+﻿"""Reads the YAML config with the monitored creator profiles."""
 
 import logging
 from pathlib import Path
@@ -35,7 +30,6 @@ LEGACY_CONFIG_PATH = "./config.yaml"
 
 
 def _get_logger() -> logging.Logger:
-    """Get or create the module logger."""
     global _logger
     if _logger is None:
         _logger = setup_logger("Config")
@@ -43,18 +37,10 @@ def _get_logger() -> logging.Logger:
 
 
 class ConfigError(Exception):
-    """
-    Custom exception for configuration-related errors.
-
-    Raised when the configuration file cannot be read, parsed,
-    or contains invalid data.
-    """
-
     pass
 
 
 def validate_startup_config_path(config_path: str) -> None:
-    """Validate startup config path and surface legacy-path migration errors early."""
     path = Path(config_path)
     if path.exists():
         return
@@ -72,31 +58,14 @@ def validate_startup_config_path(config_path: str) -> None:
 
 
 def read_app_config(config_path: str) -> AppConfig:
-    """
-    Read and parse the YAML configuration file to extract application config.
-
-    The configuration file may include:
-    - apiBaseUrl: Base URL for the RPlay API
-    - creators: The monitored creators list
-
-    Args:
-        config_path: Path to the YAML configuration file
-
-    Returns:
-        AppConfig: Validated application configuration
-
-    Raises:
-        ConfigError: If the file cannot be read or parsed
-    """
+    """Raises ConfigError if the file cannot be read or parsed."""
     path = Path(config_path)
 
-    # Check if file exists
     if not path.exists():
         error_msg = f"Configuration file not found: {config_path}"
         _get_logger().error(error_msg)
         raise ConfigError(error_msg)
 
-    # Check if file is readable
     if not path.is_file():
         error_msg = f"Configuration path is not a file: {config_path}"
         _get_logger().error(error_msg)
@@ -106,12 +75,10 @@ def read_app_config(config_path: str) -> AppConfig:
         with open(path, "r", encoding="utf-8") as file:
             data = yaml.safe_load(file)
 
-            # Handle empty file
             if data is None:
                 _get_logger().warning("Configuration file is empty")
                 data = {}
 
-            # Validate structure
             if not isinstance(data, dict):
                 error_msg = "Configuration file must contain a YAML dictionary"
                 _get_logger().error(error_msg)
@@ -146,7 +113,6 @@ def read_app_config(config_path: str) -> AppConfig:
 
 
 def _resolve_api_base_url(yaml_data: Dict[str, Any]) -> str:
-    """Return the configured API base URL, defaulting when missing."""
     raw_value = yaml_data.get("apiBaseUrl")
     if raw_value is None:
         return DEFAULT_RPLAY_API_BASE_URL
@@ -159,35 +125,19 @@ def _resolve_api_base_url(yaml_data: Dict[str, Any]) -> str:
 
 
 def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:
-    """
-    Parse and validate creator profiles from YAML data.
-
-    Args:
-        yaml_data: Dictionary containing the parsed YAML data
-
-    Returns:
-        List of validated CreatorProfile objects
-
-    Note:
-        Invalid entries are logged but skipped to allow partial processing.
-        This allows the application to continue monitoring valid creators
-        even if some entries are malformed.
-    """
+    """Invalid entries are logged and skipped so valid creators keep being monitored."""
     creators: List[CreatorProfile] = []
     creators_data = yaml_data.get("creators", [])
 
-    # Handle case where creators is not a list
     if not isinstance(creators_data, list):
         _get_logger().warning("'creators' key must contain a list")
         return []
 
     for index, item in enumerate(creators_data):
-        # Skip None entries
         if item is None:
             _get_logger().warning(f"Skipping empty entry at index {index}")
             continue
 
-        # Validate item is a dictionary
         if not isinstance(item, dict):
             _get_logger().warning(
                 f"Skipping invalid entry at index {index}: not a dictionary"
@@ -195,11 +145,9 @@ def _parse_creators(yaml_data: Dict[str, Any]) -> List[CreatorProfile]:
             continue
 
         try:
-            # Get values with explicit None handling
             name = item.get("name")
             creator_id = item.get("id")
 
-            # Check for required fields
             if not name:
                 _get_logger().warning(
                     f"Skipping entry at index {index}: missing 'name'"

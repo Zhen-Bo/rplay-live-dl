@@ -1,9 +1,4 @@
-"""
-Heartbeat health probe for Docker HEALTHCHECK.
-
-The monitor touches a heartbeat file once per poll cycle. This module checks
-that the file exists and its mtime is within 3 × INTERVAL seconds.
-"""
+"""Docker HEALTHCHECK probe: heartbeat file mtime must be within 3 x INTERVAL seconds."""
 
 from __future__ import annotations
 
@@ -25,13 +20,12 @@ _FUTURE_MTIME_TOLERANCE_SECONDS = 0.001
 
 
 def touch_heartbeat() -> None:
-    """Create or update the heartbeat file mtime."""
     Path(HEARTBEAT_FILE).touch()
 
 
 def main() -> int:
     """CLI entry: exit 0 if healthy, non-zero with a one-line reason otherwise."""
-    # ponytail: raw getenv only; wrong value skews the threshold, not app config
+    # Raw getenv on purpose: a wrong value only skews the threshold, not app config
     raw = os.getenv("INTERVAL", str(DEFAULT_INTERVAL))
     try:
         interval = int(raw)
