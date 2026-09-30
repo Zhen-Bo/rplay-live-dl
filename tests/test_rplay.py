@@ -20,6 +20,25 @@ def _skip_token_renewal(monkeypatch):
     monkeypatch.setattr(RPlayAPI, "_ensure_valid_token", lambda self: None)
 
 
+@pytest.fixture
+def api():
+    return RPlayAPI(
+        base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
+    )
+
+
+def ok_response(body):
+    """A successful response whose JSON body is `body`."""
+    response = MagicMock()
+    response.json.return_value = body
+    return response
+
+
+def stub_get(api, **kwargs):
+    """Replace the HTTP GET the client makes. Pass return_value or side_effect."""
+    return patch.object(api._session, "get", **kwargs)
+
+
 class TestGetLivestreamStatus:
     """Tests for get_livestream_status method."""
 
@@ -29,23 +48,14 @@ class TestGetLivestreamStatus:
             base_url="https://api.example.com/", user_oid="test", refresh_token="test"
         )
 
-        mock_response = MagicMock()
-        mock_response.json.return_value = []
-        mock_response.raise_for_status = MagicMock()
-
-        with patch.object(api._session, "get", return_value=mock_response) as mock_get:
+        with stub_get(api, return_value=ok_response([])) as mock_get:
             api.get_livestream_status()
 
         assert mock_get.call_args.args[0] == "https://api.example.com/live/livestreams"
 
-    def test_successful_request(self):
+    def test_successful_request(self, api):
         """Test successful livestream status retrieval."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = [
+        body = [
             {
                 "_id": "id1",
                 "oid": "oid1",
@@ -56,46 +66,31 @@ class TestGetLivestreamStatus:
                 "streamState": "live",
             }
         ]
-        mock_response.raise_for_status = MagicMock()
 
-        with patch.object(api._session, "get", return_value=mock_response):
+        with stub_get(api, return_value=ok_response(body)):
             streams = api.get_livestream_status()
 
         assert len(streams) == 1
         assert streams[0].creator_nickname == "Test Creator"
 
-    def test_timeout_raises_connection_error(self):
+    def test_timeout_raises_connection_error(self, api):
         """Test that timeout raises RPlayConnectionError."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
-        with patch.object(api._session, "get", side_effect=Timeout()):
+        with stub_get(api, side_effect=Timeout()):
             with pytest.raises(RPlayConnectionError, match="timed out"):
                 api.get_livestream_status()
 
-    def test_connection_error_raises_connection_error(self):
+    def test_connection_error_raises_connection_error(self, api):
         """Test that connection errors raise RPlayConnectionError."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
-        with patch.object(
-            api._session, "get", side_effect=ConnectionError("Network unreachable")
-        ):
+        with stub_get(api, side_effect=ConnectionError("Network unreachable")):
             with pytest.raises(RPlayConnectionError, match="Connection failed"):
                 api.get_livestream_status()
 
-    def test_http_error_raises_api_error(self):
+    def test_http_error_raises_api_error(self, api):
         """Test that HTTP errors raise RPlayAPIError."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = HTTPError("500 Server Error")
 
-        with patch.object(api._session, "get", return_value=mock_response):
+        with stub_get(api, return_value=mock_response):
             with pytest.raises(RPlayAPIError, match="HTTP error"):
                 api.get_livestream_status()
 
@@ -103,10 +98,7 @@ class TestGetLivestreamStatus:
 class TestGetStreamUrl:
     """Tests for get_stream_url method."""
 
-    def test_url_encoding(self):
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
+    def test_url_encoding(self, api):
         url = api.get_stream_url("creator123", stream_key="key+with/special=chars")
         assert "key%2Bwith%2Fspecial%3Dchars" in url
         assert "creatorOid=creator123" in url
@@ -116,16 +108,12 @@ class TestGetStreamUrl:
 class TestValidateCredentials:
     """Tests for the public credential-validation seam."""
 
-    def test_auth_failure_raises_auth_error(self):
+    def test_auth_failure_raises_auth_error(self, api):
         """Test 401 from key2 raises RPlayAuthError without API-layer ERROR log."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
         mock_response = MagicMock()
         mock_response.status_code = 401
 
-        with patch.object(api._session, "get", return_value=mock_response):
+        with stub_get(api, return_value=mock_response):
             with patch.object(api.logger, "error") as mock_error:
                 with pytest.raises(RPlayAuthError, match="Authentication failed"):
                     api.validate_credentials()
@@ -136,17 +124,9 @@ class TestValidateCredentials:
 class TestGetStreamKey:
     """Tests for _get_stream_key method."""
 
-    def test_successful_key_retrieval(self):
+    def test_successful_key_retrieval(self, api):
         """Test successful stream key retrieval."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"authKey": "my_stream_key"}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch.object(api._session, "get", return_value=mock_response):
+        with stub_get(api, return_value=ok_response({"authKey": "my_stream_key"})):
             key = api._get_stream_key()
 
         assert key == "my_stream_key"
@@ -154,68 +134,44 @@ class TestGetStreamKey:
     @pytest.mark.parametrize(
         "body", [{"authKey": None}, {"authKey": ""}, {"other": "data"}]
     )
-    def test_null_empty_or_missing_auth_key_raises_auth_error(self, body):
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = body
-        mock_response.raise_for_status = MagicMock()
-
-        with patch.object(api._session, "get", return_value=mock_response):
+    def test_null_empty_or_missing_auth_key_raises_auth_error(self, api, body):
+        with stub_get(api, return_value=ok_response(body)):
             with pytest.raises(RPlayAuthError, match="Invalid authentication"):
                 api._get_stream_key()
 
     @pytest.mark.parametrize("status", [401, 403])
-    def test_auth_status_raises_auth_error(self, status):
+    def test_auth_status_raises_auth_error(self, api, status):
         """Test that 401 and 403 responses raise RPlayAuthError."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
         mock_response = MagicMock()
         mock_response.status_code = status
         http_error = HTTPError(f"{status} error")
         http_error.response = mock_response
         mock_response.raise_for_status.side_effect = http_error
 
-        with patch.object(api._session, "get", return_value=mock_response):
+        with stub_get(api, return_value=mock_response):
             with pytest.raises(RPlayAuthError, match="Authentication failed"):
                 api._get_stream_key()
 
-    def test_timeout_raises_connection_error(self):
+    def test_timeout_raises_connection_error(self, api):
         """Test that timeout raises RPlayConnectionError."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
-        with patch.object(api._session, "get", side_effect=Timeout()):
+        with stub_get(api, side_effect=Timeout()):
             with pytest.raises(RPlayConnectionError, match="timed out"):
                 api._get_stream_key()
 
-    def test_json_decode_error_raises_api_error(self):
+    def test_json_decode_error_raises_api_error(self, api):
         """Test malformed JSON body raises RPlayAPIError, not the raw decode error."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-
         mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
         mock_response.json.side_effect = JSONDecodeError("Expecting value", "doc", 0)
 
-        with patch.object(api._session, "get", return_value=mock_response):
+        with stub_get(api, return_value=mock_response):
             with pytest.raises(RPlayAPIError, match="Unexpected error"):
                 api._get_stream_key()
 
-    def test_unexpected_exception_does_not_leak_secret(self, caplog):
+    def test_unexpected_exception_does_not_leak_secret(self, api, caplog):
         """Exception messages may embed Authorization; must not reach logs or RPlayAPIError."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
         secret = "Bearer sekrit-token"
 
-        with patch.object(api._session, "get", side_effect=RuntimeError(secret)):
+        with stub_get(api, side_effect=RuntimeError(secret)):
             with caplog.at_level("ERROR"):
                 with pytest.raises(RPlayAPIError) as exc_info:
                     api._get_stream_key()
@@ -243,23 +199,15 @@ class TestCreatorStreamState:
 class TestTransientRetry:
     """Tests for retrying transient failures on the surviving API calls."""
 
-    def test_get_livestream_status_retries_transient_connection_errors(self):
+    def test_get_livestream_status_retries_transient_connection_errors(self, api):
         """Test transient API connection failures are retried before succeeding."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-        success_response = MagicMock()
-        success_response.raise_for_status = MagicMock()
-        success_response.json.return_value = []
-
         with (
-            patch.object(
-                api._session,
-                "get",
+            stub_get(
+                api,
                 side_effect=[
                     ConnectionError("boom"),
                     ConnectionError("boom"),
-                    success_response,
+                    ok_response([]),
                 ],
             ) as mock_get,
             patch("time.sleep") as mock_sleep,
@@ -270,23 +218,15 @@ class TestTransientRetry:
         assert mock_get.call_count == 3
         assert mock_sleep.call_count == 2
 
-    def test_get_stream_key_retries_transient_connection_errors(self):
+    def test_get_stream_key_retries_transient_connection_errors(self, api):
         """Test transient key-fetch failures are retried before succeeding."""
-        api = RPlayAPI(
-            base_url="https://api.rplay.live", user_oid="test", refresh_token="test"
-        )
-        success_response = MagicMock()
-        success_response.raise_for_status = MagicMock()
-        success_response.json.return_value = {"authKey": "my_stream_key"}
-
         with (
-            patch.object(
-                api._session,
-                "get",
+            stub_get(
+                api,
                 side_effect=[
                     ConnectionError("boom"),
                     ConnectionError("boom"),
-                    success_response,
+                    ok_response({"authKey": "my_stream_key"}),
                 ],
             ) as mock_get,
             patch("time.sleep") as mock_sleep,
