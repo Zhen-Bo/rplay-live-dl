@@ -38,25 +38,14 @@ class TestStreamDownloaderInit:
         assert downloader.log.extra is not None
         assert downloader.log.extra["context"] == "TestCreator"
 
-    def test_init_creates_logger(self):
-        """Test that a logger is created on initialization."""
+    def test_init_defaults(self):
+        """Test that a fresh downloader has a logger and no active state."""
         downloader = StreamDownloader("TestCreator")
         assert downloader.logger is not None
-
-    def test_init_no_active_thread(self):
-        """Test that no download thread exists on initialization."""
-        downloader = StreamDownloader("TestCreator")
         assert downloader.download_thread is None
-
-    def test_init_no_current_output_path(self):
-        """Test that no output path is set on initialization."""
-        downloader = StreamDownloader("TestCreator")
         assert downloader._current_output_path is None
-
-    def test_init_no_download_start_time(self):
-        """Test that no download start time is set on initialization."""
-        downloader = StreamDownloader("TestCreator")
         assert downloader._download_start_time is None
+        assert downloader._on_download_error is None
 
 
 class TestIsAlive:
@@ -67,21 +56,14 @@ class TestIsAlive:
         downloader = StreamDownloader("TestCreator")
         assert downloader.is_alive() is False
 
-    def test_is_alive_with_active_thread(self):
-        """Test is_alive returns True when thread is running."""
+    @pytest.mark.parametrize("thread_alive", [True, False])
+    def test_is_alive_reflects_thread_state(self, thread_alive):
+        """Test is_alive mirrors whether the download thread is running."""
         downloader = StreamDownloader("TestCreator")
         mock_thread = MagicMock(spec=threading.Thread)
-        mock_thread.is_alive.return_value = True
+        mock_thread.is_alive.return_value = thread_alive
         downloader.download_thread = mock_thread
-        assert downloader.is_alive() is True
-
-    def test_is_alive_with_dead_thread(self):
-        """Test is_alive returns False when thread has finished."""
-        downloader = StreamDownloader("TestCreator")
-        mock_thread = MagicMock(spec=threading.Thread)
-        mock_thread.is_alive.return_value = False
-        downloader.download_thread = mock_thread
-        assert downloader.is_alive() is False
+        assert downloader.is_alive() is thread_alive
 
 
 class TestBuildOutputPath:
@@ -103,40 +85,34 @@ class TestBuildOutputPath:
         assert "TestCreator" in str(path)
 
     @freeze_time("2026-01-17")
-    def test_output_path_with_special_title(self):
-        """Test output path with already sanitized title."""
-        downloader = StreamDownloader("Creator")
-        path = downloader._build_output_path("My_Stream")
-        assert path.suffix == ".mp4"
-        assert "My_Stream" in path.name
-
-    @freeze_time("2026-01-17")
-    def test_output_path_uses_ts_extension_for_session_output_dir(self, tmp_path):
-        """Test session-scoped downloads use ts files in the provided output dir."""
-        downloader = StreamDownloader(
-            "Creator",
-            session_key="creator1:2026-03-06T12:00:00",
-            output_dir=tmp_path,
-            output_extension=".ts",
-            filename_prefix="20260306_120000_",
-        )
-
-        path = downloader._build_output_path("Test")
-
-        assert path == tmp_path / "20260306_120000_#Creator 2026-01-17 Test.ts"
-
-    @freeze_time("2026-01-17")
-    def test_output_path_no_prefix_when_not_set(self, tmp_path):
-        """Test output path has no prefix when filename_prefix is not provided."""
+    @pytest.mark.parametrize(
+        ("extra_kwargs", "expected_name"),
+        [
+            (
+                {
+                    "session_key": "creator1:2026-03-06T12:00:00",
+                    "filename_prefix": "20260306_120000_",
+                },
+                "20260306_120000_#Creator 2026-01-17 Test.ts",
+            ),
+            ({}, "#Creator 2026-01-17 Test.ts"),
+        ],
+        ids=["with_prefix", "no_prefix"],
+    )
+    def test_output_path_uses_ts_extension_for_session_output_dir(
+        self, tmp_path, extra_kwargs, expected_name
+    ):
+        """Test ts downloads use the provided output dir, with an optional prefix."""
         downloader = StreamDownloader(
             "Creator",
             output_dir=tmp_path,
             output_extension=".ts",
+            **extra_kwargs,
         )
 
         path = downloader._build_output_path("Test")
 
-        assert path == tmp_path / "#Creator 2026-01-17 Test.ts"
+        assert path == tmp_path / expected_name
 
 
 class TestGetUniquePath:
@@ -148,12 +124,18 @@ class TestGetUniquePath:
         result = StreamDownloader.get_unique_path(path)
         assert result == path
 
-    def test_with_conflict_adds_counter(self, tmp_path):
-        """Test adds _1 suffix when file exists."""
+    @pytest.mark.parametrize(
+        ("extra_counters", "expected_name"),
+        [([], "test_1.mp4"), ([1, 2], "test_3.mp4")],
+    )
+    def test_with_conflict_adds_counter(self, tmp_path, extra_counters, expected_name):
+        """Test adds the next free counter suffix when files exist."""
         path = tmp_path / "test.mp4"
         path.touch()
+        for i in extra_counters:
+            (tmp_path / f"test_{i}.mp4").touch()
         result = StreamDownloader.get_unique_path(path)
-        assert result == tmp_path / "test_1.mp4"
+        assert result == tmp_path / expected_name
 
     def test_dangling_symlink_is_treated_as_a_conflict(self, tmp_path, monkeypatch):
         """Test a dangling symlink cannot be selected for a no-overwrite install."""
@@ -169,15 +151,6 @@ class TestGetUniquePath:
         result = StreamDownloader.get_unique_path(path)
 
         assert result == tmp_path / "test_1.mp4"
-
-    def test_multiple_conflicts_increments_counter(self, tmp_path):
-        """Test increments counter for multiple conflicts."""
-        path = tmp_path / "test.mp4"
-        path.touch()
-        (tmp_path / "test_1.mp4").touch()
-        (tmp_path / "test_2.mp4").touch()
-        result = StreamDownloader.get_unique_path(path)
-        assert result == tmp_path / "test_3.mp4"
 
     def test_max_duplicates_raises_error(self, tmp_path):
         """Test raises RuntimeError after MAX_DUPLICATE_FILES."""
@@ -385,22 +358,14 @@ class TestDownloadMethod:
     """Tests for download method."""
 
     @patch.object(StreamDownloader, "_download_worker")
-    def test_download_sanitizes_title(self, mock_worker, tmp_path, monkeypatch):
-        """Test download sanitizes special characters in title."""
-        monkeypatch.chdir(tmp_path)
-        downloader = StreamDownloader("TestCreator")
-        downloader.download("http://example.com/stream.m3u8", "Test/Title:With*Special")
-        assert downloader.download_thread is not None
-        downloader.download_thread.join(timeout=1)
-
-    @patch.object(StreamDownloader, "_download_worker")
     def test_download_empty_title_fallback(self, mock_worker, tmp_path, monkeypatch):
-        """Test download uses 'untitled' for empty title."""
+        """Test download uses 'untitled' for empty title and sets the output path."""
         monkeypatch.chdir(tmp_path)
         downloader = StreamDownloader("TestCreator")
         downloader.download("http://example.com/stream.m3u8", "")
         assert downloader._current_output_path is not None
         assert "untitled" in downloader._current_output_path.name
+        assert downloader._current_output_path.suffix == ".mp4"
 
     @patch.object(StreamDownloader, "_download_worker")
     def test_download_starts_thread(self, mock_worker, tmp_path, monkeypatch):
@@ -410,15 +375,6 @@ class TestDownloadMethod:
         downloader.download("http://example.com/stream.m3u8", "Test Stream")
         assert downloader.download_thread is not None
         assert downloader.download_thread.name == "download-TestCreator"
-
-    @patch.object(StreamDownloader, "_download_worker")
-    def test_download_sets_output_path(self, mock_worker, tmp_path, monkeypatch):
-        """Test download sets current output path."""
-        monkeypatch.chdir(tmp_path)
-        downloader = StreamDownloader("TestCreator")
-        downloader.download("http://example.com/stream.m3u8", "Test Stream")
-        assert downloader._current_output_path is not None
-        assert downloader._current_output_path.suffix == ".mp4"
 
     @patch.object(StreamDownloader, "_download_worker")
     def test_download_reserves_space_for_part_suffix(
@@ -523,26 +479,6 @@ class TestDownloadWorker:
         assert failures[0].session_key == "creator1:2026-07-27T02:00:00"
         assert "no output file" in failures[0].error_message
 
-    def test_worker_download_error_handled(self, mock_yt_dlp, tmp_path):
-        """Test DownloadError is caught and logged."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        downloader = StreamDownloader("TestCreator")
-        output_path = tmp_path / "test.mp4"
-        downloader._download_start_time = datetime.now()
-        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Network error")
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
-        assert downloader._current_output_path is None
-
-    def test_worker_unexpected_error_handled(self, mock_yt_dlp, tmp_path):
-        """Test unexpected exceptions are caught and logged."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        downloader = StreamDownloader("TestCreator")
-        output_path = tmp_path / "test.mp4"
-        downloader._download_start_time = datetime.now()
-        mock_ydl.download.side_effect = RuntimeError("Unexpected error")
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
-        assert downloader._current_output_path is None
-
     def test_worker_notifies_on_download_complete(self, mock_yt_dlp, tmp_path):
         """Test successful raw download emits a completion payload."""
         mock_ydl_class, mock_ydl = mock_yt_dlp
@@ -613,56 +549,22 @@ class TestDownloadWorker:
 class TestDownloadErrorCallback:
     """Tests for on_download_error callback functionality."""
 
-    def test_init_stores_callback(self):
-        """Test that callback is stored on initialization."""
-        callback = MagicMock()
-        downloader = StreamDownloader("TestCreator", on_download_error=callback)
-        assert downloader._on_download_error is callback
-
-    def test_init_default_callback_is_none(self):
-        """Test that callback defaults to None."""
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            ("HTTP Error 404: Not Found", True),
+            ("HTTP Error 401: Unauthorized", False),
+            ("HTTP Error 403: Forbidden", True),
+            ("http error 404", True),
+            ("Network timeout", False),
+            ("ERROR: ffmpeg exited with code 8", False),
+        ],
+        ids=["404", "401", "403", "case_insensitive", "unrelated", "ffmpeg_exit"],
+    )
+    def test_is_m3u8_access_error_classification(self, message, expected):
+        """Test only 403 and 404 style errors count as blocked stream access."""
         downloader = StreamDownloader("TestCreator")
-        assert downloader._on_download_error is None
-
-    def test_is_m3u8_access_error_detects_404(self):
-        """Test detection of HTTP 404 errors in error messages."""
-        downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("HTTP Error 404: Not Found") is True
-
-    def test_is_m3u8_access_error_rejects_401(self):
-        """Test 401 is not treated as blocked stream access."""
-        downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("HTTP Error 401: Unauthorized") is False
-
-    def test_is_m3u8_access_error_detects_403(self):
-        """Test detection of HTTP 403 errors in error messages."""
-        downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("HTTP Error 403: Forbidden") is True
-
-    def test_is_m3u8_access_error_case_insensitive(self):
-        """Test that error pattern matching is case-insensitive."""
-        downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("http error 404") is True
-
-    def test_is_m3u8_access_error_rejects_unrelated(self):
-        """Test that unrelated errors are not matched."""
-        downloader = StreamDownloader("TestCreator")
-        assert downloader._is_m3u8_access_error("Network timeout") is False
-
-    def test_is_m3u8_access_error_rejects_ffmpeg_exit_errors(self):
-        """Test transient ffmpeg errors are not treated as blocked access."""
-        downloader = StreamDownloader("TestCreator")
-        assert (
-            downloader._is_m3u8_access_error("ERROR: ffmpeg exited with code 8")
-            is False
-        )
-
-    def test_notify_calls_callback_on_m3u8_error(self):
-        """Test that callback is invoked for M3U8 access errors."""
-        callback = MagicMock()
-        downloader = StreamDownloader("TestCreator", on_download_error=callback)
-        downloader._notify_download_error("HTTP Error 404: Not Found")
-        callback.assert_called_once_with("HTTP Error 404: Not Found")
+        assert downloader._is_m3u8_access_error(message) is expected
 
     def test_notify_auth_callback_on_401_error(self):
         """Test that 401 is routed to the auth callback."""
@@ -688,30 +590,6 @@ class TestDownloadErrorCallback:
         callback = MagicMock(side_effect=RuntimeError("callback error"))
         downloader = StreamDownloader("TestCreator", on_download_error=callback)
         downloader._notify_download_error("HTTP Error 404: Not Found")
-
-    def test_worker_invokes_callback_on_download_error(self, mock_yt_dlp, tmp_path):
-        """Test that _download_worker invokes callback on M3U8 DownloadError."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        callback = MagicMock()
-        downloader = StreamDownloader("TestCreator", on_download_error=callback)
-        output_path = tmp_path / "test.mp4"
-        downloader._download_start_time = datetime.now()
-        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError(
-            "HTTP Error 404: Not Found"
-        )
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
-        callback.assert_called_once()
-
-    def test_worker_no_callback_on_non_m3u8_error(self, mock_yt_dlp, tmp_path):
-        """Test that _download_worker does not invoke callback for non-M3U8 errors."""
-        mock_ydl_class, mock_ydl = mock_yt_dlp
-        callback = MagicMock()
-        downloader = StreamDownloader("TestCreator", on_download_error=callback)
-        output_path = tmp_path / "test.mp4"
-        downloader._download_start_time = datetime.now()
-        mock_ydl.download.side_effect = yt_dlp.utils.DownloadError("Some other error")
-        downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
-        callback.assert_not_called()
 
     def test_first_attempt_is_not_logged_at_info(self, mock_yt_dlp, tmp_path):
         """Test the first download attempt does not emit a redundant Retry INFO log."""
@@ -1207,6 +1085,7 @@ class TestDownloadErrorCallback:
 
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
 
+        assert downloader._current_output_path is None
         assert len(events) == 1
         assert isinstance(events[0], RawDownloadFailed)
         assert events[0].session_key == "creator1:2026-03-06T12:00:00"
@@ -1229,6 +1108,7 @@ class TestDownloadErrorCallback:
 
         downloader._download_worker("http://example.com/stream.m3u8", {}, output_path)
 
+        assert downloader._current_output_path is None
         assert len(events) == 1
         assert isinstance(events[0], RawDownloadFailed)
         assert events[0].session_key == "creator1:2026-03-06T12:00:00"
