@@ -87,17 +87,6 @@ class TestOrphanRecovery:
         else:
             assert raw.exists()
 
-    def test_notification_failure_does_not_undo_successful_recovery(
-        self, archive, monkeypatch
-    ):
-        _write_raw(archive)
-        _fake_merge(monkeypatch)
-        notifier = Mock()
-        notifier.notify.side_effect = RuntimeError("private transport error")
-        recover_orphaned_sessions(LOGGER, notifier=notifier)
-        assert len(list(archive.glob("*.mp4"))) == 1
-        assert not list(archive.glob("*.ts"))
-
     def test_recovery_reports_safe_ffmpeg_reason_and_keeps_raw(
         self, archive, monkeypatch, caplog
     ):

@@ -12,11 +12,11 @@ from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.downloader import StreamDownloader
 from core.env import EnvConfig, EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
-from core.orphan_recovery import recover_orphaned_sessions
 from core.notifications import DiscordNotifier
-from models.notification import Notification
+from core.orphan_recovery import recover_orphaned_sessions
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError
 from core.scheduler import run_scheduler
+from models.notification import Notification, NotificationKind
 
 
 def _read_version() -> str:
@@ -75,10 +75,10 @@ def main() -> None:
     configure_logging(env)
     logger = setup_logger("Main")
     logger.info("Environment configuration loaded successfully")
+    # configure_logging registered the webhook and tokens with the shared redactor.
     notifier = DiscordNotifier(
         env.discord_webhook_url.get_secret_value(),
-        events=env.discord_webhook_events.split(","),
-        secrets=(env.refresh_token, env.auth_token),
+        events=env.discord_events,
         logger=logger,
     )
     try:
@@ -137,7 +137,7 @@ def _run_application(
         except RPlayAuthError as exc:
             notifier.notify(
                 Notification(
-                    "auth_failed",
+                    NotificationKind.AUTH_FAILED,
                     detail="This happened during startup credential validation.",
                 )
             )

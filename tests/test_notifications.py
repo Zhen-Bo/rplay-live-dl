@@ -29,14 +29,16 @@ from models.rplay import StreamState
 URL = "https://discord.com/api/webhooks/123456/test-token"
 
 
-def test_embed_redacts_secrets_disables_mentions_and_bounds_emoji():
+def test_embed_redacts_secrets_disables_mentions_and_bounds_emoji(monkeypatch):
+    # Cards share the logger's redactor; configure_logging registers real secrets.
+    monkeypatch.setattr("core.logger._configured_sensitive_values", ("private-value",))
     event = Notification(
         "live",
         creator="@everyone **spoofed heading** <@123456>",
         title="private-value key2=hidden https://example.test/?token=secret "
         + "😀" * 2000,
     )
-    payload = format_discord_message(event, secrets=("private-value",))
+    payload = format_discord_message(event)
     assert payload["allowed_mentions"] == {"parse": []}
     assert not payload.get("flags", 0) & 4
     assert "content" not in payload
@@ -151,6 +153,11 @@ def test_disk_cards_show_remaining_space_and_only_relevant_level(kind, label, va
         {"name": label, "value": value, "inline": False},
     ]
     assert "Unnecessary" not in json.dumps(card)
+
+
+def test_unknown_event_kind_is_rejected_when_created():
+    with pytest.raises(ValueError):
+        Notification("disk_recovered")
 
 
 def test_ended_stream_distinguishes_stream_end_from_recording_completion():
@@ -308,6 +315,33 @@ def test_disabled_notifier_starts_no_thread():
     filtered = DiscordNotifier(URL, events=[""])
     assert filtered._thread is None
     filtered.close()
+
+
+def test_notify_never_raises_into_recording_paths(monkeypatch, caplog):
+    def broken_format(event):
+        raise RuntimeError("private formatter failure")
+
+    monkeypatch.setattr("core.notifications.format_discord_message", broken_format)
+    notifier = DiscordNotifier(URL, events=["live"])
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert not notifier.notify(Notification("live"))
+    finally:
+        notifier.close()
+    assert "private formatter failure" not in caplog.text
+    assert "Could not queue Discord notification" in caplog.text
+
+
+def test_accepts_reflects_selected_events_and_disabled_webhook():
+    notifier = DiscordNotifier(URL, events=["offline"])
+    try:
+        assert notifier.accepts("offline")
+        assert not notifier.accepts("live")
+        notifier._disabled.set()
+        assert not notifier.accepts("offline")
+    finally:
+        notifier.close()
+    assert not DiscordNotifier().accepts("offline")
 
 
 def test_queue_is_nonblocking_bounded_and_deduplicated(monkeypatch):
@@ -619,6 +653,19 @@ def test_blocked_merge_and_auth_events_have_safe_details(monitor, tmp_path):
         "auth_failed",
     ]
     assert all("secret.invalid" not in event.detail for event in events)
+
+
+def test_offline_state_is_dropped_when_offline_events_are_disabled(
+    monitor, monkeypatch
+):
+    monkeypatch.setattr(monitor, "_process_live_stream", Mock())
+    monitor.notifier.accepts.side_effect = lambda kind: kind != "offline"
+    monitor._process_live_streams([observed_stream()])
+    monitor._process_live_streams([])
+    monitor._process_live_streams([])
+    assert not monitor._observed_streams
+    kinds = [call.args[0].kind for call in monitor.notifier.notify.call_args_list]
+    assert "offline" not in kinds
 
 
 def test_merge_completion_notifies_once_after_success_with_filename_only(

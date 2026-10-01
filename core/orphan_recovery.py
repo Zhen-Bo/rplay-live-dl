@@ -16,12 +16,12 @@ from core.constants import (
 from core.disk_space import ensure_merge_space
 from core.downloader import StreamDownloader
 from core.notifications import DiscordNotifier
-from models.notification import Notification
 from core.utils import (
     fit_filename_component_bytes,
     format_merge_failure,
     merge_ts_files_to_mp4,
 )
+from models.notification import Notification, NotificationKind
 
 __all__ = [
     "install_merge_output_without_overwrite",
@@ -47,6 +47,7 @@ def recover_orphaned_sessions(
     A second concurrent instance on the same volume is unsupported.
     """
     archive = Path.cwd() / StreamDownloader.ARCHIVE_DIR
+    notifier = notifier or DiscordNotifier()
 
     # Adoption runs first so a claimed part joins the grouping below. Only the
     # exact *.ts.part suffix qualifies: .part-FragN and .ytdl may be torn
@@ -105,9 +106,9 @@ def _recover_one_session(
     session_prefix: str,
     ts_files: List[Path],
     *,
-    reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
-    space_multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
-    notifier: Optional[DiscordNotifier] = None,
+    reserve_gb: float,
+    space_multiplier: float,
+    notifier: DiscordNotifier,
 ) -> None:
     """Merge one session's raw .ts files, deleting them only once the mp4 is proven."""
     session_id = session_prefix.rstrip("_")
@@ -167,20 +168,13 @@ def _recover_one_session(
             logger, temp_path, output_dir / f"{final_stem}.mp4"
         )
     except Exception as exc:
-        if notifier is not None:
-            try:
-                notifier.notify(
-                    Notification(
-                        "merge_failed",
-                        creator=output_dir.name,
-                        detail="This happened during startup recovery.",
-                    ),
-                    key=f"recovery:{output_dir.name}:{session_prefix}",
-                )
-            except Exception:
-                logger.warning(
-                    "Could not queue recovery notification; raw inputs retained"
-                )
+        _notify_recovery(
+            notifier,
+            NotificationKind.MERGE_FAILED,
+            output_dir,
+            session_prefix,
+            detail="This happened during startup recovery.",
+        )
         # Drop the partial output and keep every input so the next startup
         # can retry unchanged.
         _discard_partial_output(logger, temp_path)
@@ -204,20 +198,27 @@ def _recover_one_session(
         f"🛟 Recovered interrupted recording (session {session_id}): "
         f"merged {len(ts_files)} raw file(s) into {output_path}"
     )
-    if notifier is not None:
-        try:
-            notifier.notify(
-                Notification(
-                    "merge_completed",
-                    creator=output_dir.name,
-                    output_file=output_path.name,
-                ),
-                key=f"recovery:{output_dir.name}:{session_prefix}",
-            )
-        except Exception:
-            logger.warning(
-                "Could not queue merge completion notification; MP4 retained"
-            )
+    _notify_recovery(
+        notifier,
+        NotificationKind.MERGE_COMPLETED,
+        output_dir,
+        session_prefix,
+        output_file=output_path.name,
+    )
+
+
+def _notify_recovery(
+    notifier: DiscordNotifier,
+    kind: NotificationKind,
+    output_dir: Path,
+    session_prefix: str,
+    **fields: str,
+) -> None:
+    """Recovered sessions only know their creator folder, not the stream identity."""
+    notifier.notify(
+        Notification(kind, creator=output_dir.name, **fields),
+        key=f"recovery:{output_dir.name}:{session_prefix}",
+    )
 
 
 def install_merge_output_without_overwrite(

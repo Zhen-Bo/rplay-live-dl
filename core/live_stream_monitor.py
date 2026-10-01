@@ -31,27 +31,27 @@ from models.download import (
     RawDownloadFailed,
     SessionState,
 )
+from models.notification import Notification, NotificationKind
 from models.rplay import CreatorStreamState, LiveStream, StreamState
-from models.notification import Notification
 
 from .config import DEFAULT_CONFIG_PATH, ConfigError
 from .config import read_app_config as read_config
-from .download_merge_executor import DownloadMergeExecutor
-from .downloader import StreamDownloader
-from .health import touch_heartbeat
 from .disk_space import (
     DiskSpaceMonitor,
     InsufficientMergeSpaceError,
     ensure_merge_space,
 )
-from .recording_metadata import recording_metadata, utc_timestamp
-from .notifications import DiscordNotifier
+from .download_merge_executor import DownloadMergeExecutor
+from .downloader import StreamDownloader
+from .health import touch_heartbeat
 from .logger import bind, clip, setup_logger
+from .notifications import DiscordNotifier
 from .orphan_recovery import install_merge_output_without_overwrite
+from .recording_metadata import recording_metadata, utc_timestamp
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from .utils import (
-    format_merge_failure,
     fit_filename_component_bytes,
+    format_merge_failure,
     merge_ts_files_to_mp4,
     terminate_child_processes,
 )
@@ -152,7 +152,8 @@ class LiveStreamMonitor:
         self.disk_monitor = disk_monitor or DiskSpaceMonitor()
         self.merge_reserve_gb = merge_reserve_gb
         self.merge_space_multiplier = merge_space_multiplier
-        self.notifier = notifier
+        # A disabled notifier stands in for "no webhook", so callers never branch.
+        self.notifier = notifier or DiscordNotifier()
         self._observed_streams: Dict[str, _ObservedStream] = {}
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
@@ -325,9 +326,10 @@ class LiveStreamMonitor:
             Path.cwd() / StreamDownloader.ARCHIVE_DIR, self.logger
         )
         if alert is not None and alert.level != "recovered":
-            self._notify(
+            # Reminder cadence is owned by DiskSpaceMonitor, so no cooldown here.
+            self.notifier.notify(
                 Notification(
-                    kind=f"disk_{alert.level}",
+                    kind=NotificationKind(f"disk_{alert.level}"),
                     free_bytes=alert.free_bytes,
                     warning_bytes=self.disk_monitor.warning,
                     critical_bytes=self.disk_monitor.critical,
@@ -393,17 +395,6 @@ class LiveStreamMonitor:
         with self._state_lock:
             self._last_check_success = False
 
-    def _notify(
-        self, event: Notification, *, key: str = "", cooldown: float = 3600
-    ) -> bool:
-        if self.notifier is None:
-            return False
-        try:
-            return self.notifier.notify(event, key=key, cooldown=cooldown)
-        except Exception:
-            self.logger.warning("Could not queue notification; recording continues")
-            return False
-
     def _process_live_streams(self, live_streams: List[LiveStream]) -> int:
         self._observed_streams = {
             creator: state
@@ -425,7 +416,7 @@ class LiveStreamMonitor:
             monitored_live += 1
             seen.add(stream.creator_oid)
             notice = Notification(
-                "live",
+                NotificationKind.LIVE,
                 creator=self.monitored_creators[stream.creator_oid].creator_name,
                 creator_oid=stream.creator_oid,
                 title=stream.title,
@@ -441,31 +432,29 @@ class LiveStreamMonitor:
                 state.notice = notice
             state.missing_polls = 0
             if not state.live_notified:
-                state.live_notified = self._notify(
-                    notice,
-                    key=stream.creator_oid,
-                    cooldown=0,
-                )
+                # No cooldown: _ObservedStream already tracks this exact stream.
+                state.live_notified = self.notifier.notify(notice, cooldown=0)
             self._process_live_stream(stream)
 
         # This runs only after a complete successful status fetch and processing.
         # API errors and removal from the monitor list are not stream-end evidence.
+        offline_enabled = self.notifier.accepts(NotificationKind.OFFLINE)
         for creator_oid, state in list(self._observed_streams.items()):
             if creator_oid in seen:
                 continue
             state.missing_polls = min(
                 self.OFFLINE_CONFIRMATION_POLLS, state.missing_polls + 1
             )
-            if state.missing_polls >= self.OFFLINE_CONFIRMATION_POLLS:
-                if self._notify_stream_ended(state):
-                    del self._observed_streams[creator_oid]
+            if state.missing_polls < self.OFFLINE_CONFIRMATION_POLLS:
+                continue
+            # Keep the state only to retry a notice that could not be queued.
+            if not offline_enabled or self._notify_stream_ended(state):
+                del self._observed_streams[creator_oid]
         return monitored_live
 
     def _notify_stream_ended(self, state: _ObservedStream) -> bool:
-        notice = replace(state.notice, kind="offline")
-        return self._notify(
-            notice, key=f"{notice.creator_oid}:{notice.started_at}", cooldown=0
-        )
+        notice = replace(state.notice, kind=NotificationKind.OFFLINE)
+        return self.notifier.notify(notice, cooldown=0)
 
     def _process_live_stream(self, stream: LiveStream) -> None:
         with self._state_lock:
@@ -957,9 +946,9 @@ class LiveStreamMonitor:
                 log_message = f"🎬 Merge started for {session.creator_name}: {session.session_key}"
             elif isinstance(event, MergeCompleted):
                 if session.state != SessionState.DONE:
-                    self._notify(
+                    self.notifier.notify(
                         Notification(
-                            "merge_completed",
+                            NotificationKind.MERGE_COMPLETED,
                             creator=session.creator_name,
                             creator_oid=session.creator_oid,
                             title=session.title,
@@ -972,9 +961,9 @@ class LiveStreamMonitor:
                 log_message = f"✅ Merge completed for {session.creator_name}: {event.output_path}"
             elif isinstance(event, MergeFailed):
                 if session.state != SessionState.MERGE_FAILED:
-                    self._notify(
+                    self.notifier.notify(
                         Notification(
-                            "merge_failed",
+                            NotificationKind.MERGE_FAILED,
                             creator=session.creator_name,
                             creator_oid=session.creator_oid,
                             title=session.title,
@@ -1070,7 +1059,7 @@ class LiveStreamMonitor:
     def _log_auth_error(self, message: str) -> None:
         """Log auth errors once per failure streak; repeats go to DEBUG."""
         if not self._auth_error_notified:
-            self._notify(Notification("auth_failed"))
+            self.notifier.notify(Notification(NotificationKind.AUTH_FAILED))
         log = self.logger.debug if self._auth_error_notified else self.logger.error
         self._auth_error_notified = True
         log(message)
@@ -1121,9 +1110,9 @@ class LiveStreamMonitor:
 
         retried_now = self._record_download_failure(session.creator_oid)
         if not retried_now:
-            self._notify(
+            self.notifier.notify(
                 Notification(
-                    "download_failed",
+                    NotificationKind.DOWNLOAD_FAILED,
                     creator=session.creator_name,
                     creator_oid=session.creator_oid,
                     title=session.title,
@@ -1209,9 +1198,9 @@ class LiveStreamMonitor:
             state.mark_blocked()
 
         if not was_blocked:
-            self._notify(
+            self.notifier.notify(
                 Notification(
-                    "blocked",
+                    NotificationKind.BLOCKED,
                     creator=creator_name,
                     creator_oid=creator_oid,
                     title=session.title,

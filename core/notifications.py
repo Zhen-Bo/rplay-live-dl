@@ -5,6 +5,7 @@ import math
 import re
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -12,78 +13,73 @@ from typing import Iterable, Optional
 
 import requests
 
-from core.logger import redact_sensitive_text
 from core.constants import RPLAY_PROFILE_PHOTO_BASE_URL, RPLAY_SITE_URL
+from core.logger import redact_sensitive_text
+from models.notification import Notification, NotificationKind
 
-from models.notification import EVENT_KINDS, Notification
+
+@dataclass(frozen=True)
+class _CardCopy:
+    title: str
+    color: int
+    description: str = ""
+    action: str = ""
+
 
 _CARD_COPY = {
-    "live": {
-        "title": "Live now",
-        "description": "",
-        "color": 0xE11D48,
-        "action": "",
-    },
-    "offline": {
-        "title": "Stream ended",
-        "description": "Recording finalization may still be in progress.",
-        "color": 0x64748B,
-        "action": "",
-    },
-    "blocked": {
-        "title": "Stream access restricted",
-        "description": "",
-        "color": 0xF59E0B,
-        "action": "Check subscription or viewing permissions. No automatic retry for this stream.",
-    },
-    "auth_failed": {
-        "title": "🔑 Authentication failed",
-        "description": "",
-        "color": 0xEF4444,
-        "action": "Update `REFRESH_TOKEN`, check `USER_OID`, and restart with the updated settings.",
-    },
-    "download_failed": {
-        "title": "Recording retries delayed",
-        "description": "",
-        "color": 0x3B82F6,
-        "action": "Retrying automatically while live. Check logs if failures continue.",
-    },
-    "merge_failed": {
-        "title": "Recording merge incomplete",
-        "description": "Available raw fragments are kept.",
-        "color": 0xA855F7,
-        "action": "Check logs, fix the cause, then restart to retry.",
-    },
-    "disk_warning": {
-        "title": "Disk space low",
-        "description": "",
-        "color": 0xEAB308,
-        "action": "Free up space soon.",
-    },
-    "disk_critical": {
-        "title": "Disk space critically low",
-        "description": "",
-        "color": 0xDC2626,
-        "action": "Free up space now. Recordings are not stopped automatically; writes may fail.",
-    },
-    "merge_completed": {
-        "title": "Merge complete",
-        "description": "Recording saved as MP4.",
-        "color": 0x14B8A6,
-        "action": "",
-    },
+    NotificationKind.LIVE: _CardCopy("Live now", 0xE11D48),
+    NotificationKind.OFFLINE: _CardCopy(
+        "Stream ended",
+        0x64748B,
+        description="Recording finalization may still be in progress.",
+    ),
+    NotificationKind.BLOCKED: _CardCopy(
+        "Stream access restricted",
+        0xF59E0B,
+        action="Check subscription or viewing permissions. No automatic retry for this stream.",
+    ),
+    NotificationKind.AUTH_FAILED: _CardCopy(
+        "🔑 Authentication failed",
+        0xEF4444,
+        action="Update `REFRESH_TOKEN`, check `USER_OID`, and restart with the updated settings.",
+    ),
+    NotificationKind.DOWNLOAD_FAILED: _CardCopy(
+        "Recording retries delayed",
+        0x3B82F6,
+        action="Retrying automatically while live. Check logs if failures continue.",
+    ),
+    NotificationKind.MERGE_FAILED: _CardCopy(
+        "Recording merge incomplete",
+        0xA855F7,
+        description="Available raw fragments are kept.",
+        action="Check logs, fix the cause, then restart to retry.",
+    ),
+    NotificationKind.MERGE_COMPLETED: _CardCopy(
+        "Merge complete", 0x14B8A6, description="Recording saved as MP4."
+    ),
+    NotificationKind.DISK_WARNING: _CardCopy(
+        "Disk space low", 0xEAB308, action="Free up space soon."
+    ),
+    NotificationKind.DISK_CRITICAL: _CardCopy(
+        "Disk space critically low",
+        0xDC2626,
+        action="Free up space now. Recordings are not stopped automatically; writes may fail.",
+    ),
 }
+_DISK_THRESHOLD_LABELS = {
+    NotificationKind.DISK_WARNING: "⚠️ Warning level",
+    NotificationKind.DISK_CRITICAL: "🚨 Critical level",
+}
+_STREAM_LINK_KINDS = frozenset({NotificationKind.LIVE, NotificationKind.BLOCKED})
 
 
-def _safe_embed_value(text: str, secrets: tuple[str, ...], limit: int) -> str:
-    for secret in secrets:
-        text = text.replace(secret, "[REDACTED]")
+def _safe_embed_value(text: str, limit: int) -> str:
     text = redact_sensitive_text(text)
     text = re.sub(r"https?://[^\s]+", "[URL REDACTED]", text, flags=re.IGNORECASE)
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
     # Creator names and stream titles are data, not Markdown or mention markup.
     text = re.sub(r"([\\`*_~|<>\[\]])", lambda match: "\\" + match.group(0), text)
-    text = text.replace("@", "@\u200b").strip()
+    text = text.replace("@", "@​").strip()
     encoded = text.encode("utf-16-le", errors="replace")
     if len(encoded) <= limit * 2:
         return text
@@ -93,58 +89,65 @@ def _safe_embed_value(text: str, secrets: tuple[str, ...], limit: int) -> str:
     )
 
 
-def _stream_started_value(value: str, secrets: tuple[str, ...]) -> str:
+def _stream_started_value(value: str) -> str:
     try:
         started = datetime.fromisoformat(value)
         if started.tzinfo is not None:
             return f"<t:{int(started.timestamp())}:f>"
     except (ValueError, OverflowError, OSError):
         pass
-    return _safe_embed_value(value, secrets, 128)
+    return _safe_embed_value(value, 128)
 
 
-def format_discord_message(event: Notification, secrets: Iterable[str] = ()) -> dict:
-    """One rich embed per event; copy and layout can change without touching delivery."""
-    card_copy = _CARD_COPY[event.kind]
-    secret_values = tuple(
-        sorted({value for value in secrets if value}, key=len, reverse=True)
-    )
+def _gib(value: int) -> str:
+    return f"{value / 1024**3:,.2f} GiB"
+
+
+def _disk_fields(event: Notification) -> list:
+    label = _DISK_THRESHOLD_LABELS.get(event.kind)
+    if label is None:
+        return []
     fields = []
-    started = _stream_started_value(event.started_at, secret_values)
-    if started and event.kind == "live":
-        fields.append({"name": "🕒 Started", "value": started, "inline": True})
-    if event.kind.startswith("disk_") and event.free_bytes is not None:
+    if event.free_bytes is not None:
         fields.append(
             {
                 "name": "💾 Free space",
-                "value": f"**{event.free_bytes / 1024**3:,.2f} GiB**",
+                "value": f"**{_gib(event.free_bytes)}**",
                 "inline": False,
             }
         )
-    threshold = {
-        "disk_warning": ("⚠️ Warning level", event.warning_bytes),
-        "disk_critical": ("🚨 Critical level", event.critical_bytes),
-    }.get(event.kind)
-    if threshold is not None and threshold[1] is not None:
-        fields.append(
-            {
-                "name": threshold[0],
-                "value": f"{threshold[1] / 1024**3:,.2f} GiB",
-                "inline": False,
-            }
-        )
-    stream_title = _safe_embed_value(event.title, secret_values, 1024)
-    if event.kind == "merge_completed" and event.output_file:
+    threshold = (
+        event.warning_bytes
+        if event.kind == NotificationKind.DISK_WARNING
+        else event.critical_bytes
+    )
+    if threshold is not None:
+        fields.append({"name": label, "value": _gib(threshold), "inline": False})
+    return fields
+
+
+def format_discord_message(event: Notification) -> dict:
+    """One rich embed per event; copy and layout can change without touching delivery."""
+    card_copy = _CARD_COPY[event.kind]
+    fields = []
+    if event.kind == NotificationKind.LIVE:
+        started = _stream_started_value(event.started_at)
+        if started:
+            fields.append({"name": "🕒 Started", "value": started, "inline": True})
+    fields.extend(_disk_fields(event))
+    if event.kind == NotificationKind.MERGE_COMPLETED and event.output_file:
         fields.append(
             {
                 "name": "File",
-                "value": _safe_embed_value(event.output_file, secret_values, 1024),
+                "value": _safe_embed_value(event.output_file, 1024),
                 "inline": False,
             }
         )
+
     guidance = " ".join(
-        text for text in (card_copy["description"], card_copy["action"]) if text
+        text for text in (card_copy.description, card_copy.action) if text
     ).replace(". ", ".\n")
+    stream_title = _safe_embed_value(event.title, 1024)
     description = "\n\n".join(
         text
         for text in (
@@ -153,15 +156,13 @@ def format_discord_message(event: Notification, secrets: Iterable[str] = ()) -> 
         )
         if text
     )
-    embed = {
-        "title": card_copy["title"],
-        "color": card_copy["color"],
-    }
+
+    embed: dict = {"title": card_copy.title, "color": card_copy.color}
     if description:
         embed["description"] = description
     if fields:
         embed["fields"] = fields
-    creator = _safe_embed_value(event.creator, secret_values, 256)
+    creator = _safe_embed_value(event.creator, 256)
     if creator:
         embed["author"] = {"name": creator}
     # Observed public creator routes only; never accept arbitrary or signed URLs.
@@ -174,9 +175,8 @@ def format_discord_message(event: Notification, secrets: Iterable[str] = ()) -> 
         embed["thumbnail"] = {"url": avatar_url}
         if creator:
             embed["author"]["icon_url"] = avatar_url
-        if event.kind in {"live", "blocked"}:
-            stream_url = f"{RPLAY_SITE_URL}/live/{creator_oid}"
-            embed["url"] = stream_url
+        if event.kind in _STREAM_LINK_KINDS:
+            embed["url"] = f"{RPLAY_SITE_URL}/live/{creator_oid}"
     # Do not set SUPPRESS_EMBEDS (4): it would hide these cards.
     # Bounded fields above keep even worst-case cards well below 6000 characters.
     return {"embeds": [embed], "allowed_mentions": {"parse": []}}
@@ -187,14 +187,14 @@ class DiscordNotifier:
         self,
         url: str = "",
         *,
-        events: Iterable[str] = EVENT_KINDS,
-        secrets: Iterable[str] = (),
+        events: Iterable[str] = NotificationKind,
         logger: Optional[logging.Logger] = None,
         queue_size: int = 100,
     ) -> None:
+        """An empty URL or event selection gives a disabled notifier that never sends."""
         self._url = url
-        self._events = frozenset(events) & EVENT_KINDS
-        self._secrets = tuple(secrets) + (url, url.rsplit("/", 1)[-1] if url else "")
+        selected = set(events)
+        self._events = frozenset(kind for kind in NotificationKind if kind in selected)
         self.logger = logger or logging.getLogger("Notifications")
         self._queue: Queue = Queue(maxsize=queue_size)
         self._lock = Lock()
@@ -211,15 +211,27 @@ class DiscordNotifier:
             )
             self._thread.start()
 
+    def accepts(self, kind: NotificationKind) -> bool:
+        """Whether this kind can be delivered at all, ignoring queue capacity."""
+        return (
+            self._thread is not None
+            and not self._disabled.is_set()
+            and kind in self._events
+        )
+
     def notify(
         self, event: Notification, *, key: str = "", cooldown: float = 3600
     ) -> bool:
-        if (
-            self._thread is None
-            or self._disabled.is_set()
-            or event.kind not in self._events
-        ):
+        """Queue one event. Never raises, so recording paths can call it directly."""
+        if not self.accepts(event.kind):
             return False
+        try:
+            return self._enqueue(event, key, cooldown)
+        except Exception:
+            self.logger.warning("Could not queue Discord notification; message dropped")
+            return False
+
+    def _enqueue(self, event: Notification, key: str, cooldown: float) -> bool:
         with self._lock:
             if self._closing:
                 return False
@@ -230,7 +242,7 @@ class DiscordNotifier:
                 and now - self._recent.get(identity, float("-inf")) < cooldown
             ):
                 return False
-            payload = format_discord_message(event, self._secrets)
+            payload = format_discord_message(event)
             try:
                 self._queue.put_nowait(payload)
             except Full:

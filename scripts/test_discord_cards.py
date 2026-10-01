@@ -16,48 +16,40 @@ sys.path.insert(0, str(ROOT))
 
 from core.notifications import DiscordNotifier, format_discord_message
 from models.env import EnvConfig
-from models.notification import Notification
+from models.notification import Notification, NotificationKind
 
-KINDS = (
-    "live",
-    "blocked",
-    "auth_failed",
-    "download_failed",
-    "merge_failed",
-    "merge_completed",
-    "disk_warning",
-    "disk_critical",
-)
+_SAMPLE_FREE_GIB = {
+    NotificationKind.DISK_WARNING: 24.68,
+    NotificationKind.DISK_CRITICAL: 7.42,
+}
 
 
 def build_cards(include_offline=False):
-    kinds = list(KINDS)
-    if include_offline:
-        kinds.insert(1, "offline")
+    kinds = [
+        kind
+        for kind in NotificationKind
+        if include_offline or kind != NotificationKind.OFFLINE
+    ]
     started_at = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
     cards = []
     for kind in kinds:
         values = {}
-        if kind.startswith("disk_"):
-            free_gib = {
-                "disk_warning": 24.68,
-                "disk_critical": 7.42,
-            }
+        if kind in _SAMPLE_FREE_GIB:
             values.update(
-                free_bytes=int(free_gib[kind] * 1024**3),
+                free_bytes=int(_SAMPLE_FREE_GIB[kind] * 1024**3),
                 warning_bytes=30 * 1024**3,
                 critical_bytes=10 * 1024**3,
                 recovery_bytes=32 * 1024**3,
             )
-        elif kind != "auth_failed":
+        elif kind != NotificationKind.AUTH_FAILED:
             values.update(
                 creator="ranaelchan",
                 creator_oid="6a80fe356d0004cc8f262b41",
                 title="Late-night chat | Music and catching up",
             )
-            if kind == "live":
+            if kind == NotificationKind.LIVE:
                 values["started_at"] = started_at
-            if kind == "merge_completed":
+            if kind == NotificationKind.MERGE_COMPLETED:
                 values["output_file"] = "ranaelchan_2026-09-30_210000.mp4"
         payload = format_discord_message(Notification(kind=kind, **values))
         cards.append((kind, payload))

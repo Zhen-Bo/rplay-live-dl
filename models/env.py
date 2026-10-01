@@ -21,11 +21,17 @@ from core.constants import (
     DEFAULT_MIN_FREE_DISK_GB,
     DEFAULT_TOKEN_REFRESH_LEEWAY_SECONDS,
 )
-from models.notification import DEFAULT_EVENTS, EVENT_KINDS
+from models.notification import DEFAULT_EVENTS, NotificationKind
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUTHY_BOOL_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_BOOL_VALUES = frozenset({"0", "false", "no", "off", ""})
+DISCORD_WEBHOOK_URL_PATTERN = re.compile(
+    r"https://(?:discord\.com|discordapp\.com)"
+    r"/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9._-]+/?"
+)
+# Retired event: older .env files must still start successfully.
+_RETIRED_EVENTS = frozenset({"disk_recovered"})
 
 
 class EnvConfig(BaseSettings):
@@ -114,10 +120,7 @@ class EnvConfig(BaseSettings):
     @classmethod
     def validate_discord_url(cls, value: SecretStr) -> SecretStr:
         url = value.get_secret_value().strip()
-        if url and not re.fullmatch(
-            r"https://(?:discord\.com|discordapp\.com)/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9._-]+/?",
-            url,
-        ):
+        if url and not DISCORD_WEBHOOK_URL_PATTERN.fullmatch(url):
             raise ValueError(
                 "DISCORD_WEBHOOK_URL must be an HTTPS Discord webhook URL without query parameters"
             )
@@ -127,11 +130,19 @@ class EnvConfig(BaseSettings):
     @classmethod
     def validate_discord_events(cls, value: str) -> str:
         events = [item.strip() for item in value.split(",") if item.strip()]
-        # Retired notification: older .env files must still start successfully.
-        events = [item for item in events if item != "disk_recovered"]
-        if set(events) - EVENT_KINDS:
+        events = [item for item in events if item not in _RETIRED_EVENTS]
+        supported = set(NotificationKind)
+        if any(item not in supported for item in events):
             raise ValueError("DISCORD_WEBHOOK_EVENTS contains an unsupported event")
         return ",".join(dict.fromkeys(events))
+
+    @property
+    def discord_events(self) -> frozenset[NotificationKind]:
+        return frozenset(
+            NotificationKind(item)
+            for item in self.discord_webhook_events.split(",")
+            if item
+        )
 
     @model_validator(mode="after")
     def validate_disk_thresholds(self):
