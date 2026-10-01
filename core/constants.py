@@ -35,6 +35,17 @@ DEFAULT_LOG_YTDLP_INTERNAL = False
 # Minimum free disk space (GiB) before starting a recording; 0 disables
 DEFAULT_MIN_FREE_DISK_GB = 5.0
 
+# Archive capacity alerts (GiB); alerts never stop an active recording
+DEFAULT_DISK_WARNING_GB = 30.0
+DEFAULT_DISK_CRITICAL_GB = 10.0
+DEFAULT_DISK_RECOVERY_MARGIN_GB = 2.0
+DEFAULT_DISK_REMINDER_SECONDS = 3600
+
+# Merge preflight: free space must cover input bytes x multiplier + reserve GiB.
+# 2.2 budgets the temporary output plus the copy fallback.
+DEFAULT_MERGE_MIN_FREE_DISK_GB = 1.0
+DEFAULT_MERGE_SPACE_MULTIPLIER = 2.2
+
 # Ceiling for one ffmpeg concat merge, shared by the live executor and orphan recovery
 DEFAULT_MERGE_TIMEOUT_SECONDS = 7200
 
@@ -62,6 +73,12 @@ __all__ = [
     "DEFAULT_LOG_RETENTION_DAYS",
     "DEFAULT_LOG_YTDLP_INTERNAL",
     "DEFAULT_MIN_FREE_DISK_GB",
+    "DEFAULT_DISK_WARNING_GB",
+    "DEFAULT_DISK_CRITICAL_GB",
+    "DEFAULT_DISK_RECOVERY_MARGIN_GB",
+    "DEFAULT_DISK_REMINDER_SECONDS",
+    "DEFAULT_MERGE_MIN_FREE_DISK_GB",
+    "DEFAULT_MERGE_SPACE_MULTIPLIER",
     "DEFAULT_MERGE_TIMEOUT_SECONDS",
     "DEFAULT_INTERVAL",
 ]

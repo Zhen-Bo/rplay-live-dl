@@ -8,7 +8,11 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS
+from core.constants import (
+    DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    DEFAULT_MERGE_SPACE_MULTIPLIER,
+    DEFAULT_MERGE_TIMEOUT_SECONDS,
+)
 from core.downloader import StreamDownloader
 from core.notifications import DiscordNotifier
 from models.notification import Notification
@@ -31,8 +35,8 @@ _SESSION_PREFIX_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_")
 def recover_orphaned_sessions(
     logger: logging.Logger,
     *,
-    reserve_gb: float = 1,
-    space_multiplier: float = 2.2,
+    reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    space_multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
     notifier: Optional[DiscordNotifier] = None,
 ) -> None:
     """
@@ -100,8 +104,8 @@ def _recover_one_session(
     session_prefix: str,
     ts_files: List[Path],
     *,
-    reserve_gb: float = 1,
-    space_multiplier: float = 2.2,
+    reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    space_multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
     notifier: Optional[DiscordNotifier] = None,
 ) -> None:
     """Merge one session's raw .ts files, deleting them only once the mp4 is proven."""

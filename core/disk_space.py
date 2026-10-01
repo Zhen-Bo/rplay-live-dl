@@ -8,6 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from core.constants import (
+    DEFAULT_DISK_CRITICAL_GB,
+    DEFAULT_DISK_RECOVERY_MARGIN_GB,
+    DEFAULT_DISK_REMINDER_SECONDS,
+    DEFAULT_DISK_WARNING_GB,
+    DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    DEFAULT_MERGE_SPACE_MULTIPLIER,
+)
+
 GIB = 1024**3
 
 
@@ -27,10 +36,10 @@ class DiskSpaceMonitor:
 
     def __init__(
         self,
-        warning_gb: float = 30,
-        critical_gb: float = 10,
-        recovery_margin_gb: float = 2,
-        reminder_seconds: int = 3600,
+        warning_gb: float = DEFAULT_DISK_WARNING_GB,
+        critical_gb: float = DEFAULT_DISK_CRITICAL_GB,
+        recovery_margin_gb: float = DEFAULT_DISK_RECOVERY_MARGIN_GB,
+        reminder_seconds: int = DEFAULT_DISK_REMINDER_SECONDS,
     ) -> None:
         self.warning = int(warning_gb * GIB)
         self.critical = int(critical_gb * GIB)
@@ -85,8 +94,8 @@ class DiskSpaceMonitor:
 def ensure_merge_space(
     ts_files: List[Path],
     output_path: Path,
-    reserve_gb: float = 1,
-    multiplier: float = 2.2,
+    reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
 ) -> None:
     """Budget temp output plus copy fallback; this is an estimate, not a reservation."""
     input_bytes = sum(path.stat().st_size for path in ts_files)

@@ -4,18 +4,24 @@ import re
 
 from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from models.notification import DEFAULT_EVENTS, EVENT_KINDS
 
 from core.constants import (
+    DEFAULT_DISK_CRITICAL_GB,
+    DEFAULT_DISK_RECOVERY_MARGIN_GB,
+    DEFAULT_DISK_REMINDER_SECONDS,
+    DEFAULT_DISK_WARNING_GB,
     DEFAULT_INTERVAL,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_LOG_MAX_SIZE_MB,
     DEFAULT_LOG_RETENTION_DAYS,
     DEFAULT_LOG_YTDLP_INTERNAL,
+    DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    DEFAULT_MERGE_SPACE_MULTIPLIER,
     DEFAULT_MIN_FREE_DISK_GB,
     DEFAULT_TOKEN_REFRESH_LEEWAY_SECONDS,
 )
+from models.notification import DEFAULT_EVENTS, EVENT_KINDS
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUTHY_BOOL_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -85,12 +91,22 @@ class EnvConfig(BaseSettings):
         allow_inf_nan=False,
     )
 
-    disk_warning_gb: float = Field(default=30, gt=0, allow_inf_nan=False)
-    disk_critical_gb: float = Field(default=10, gt=0, allow_inf_nan=False)
-    disk_recovery_margin_gb: float = Field(default=2, ge=0, allow_inf_nan=False)
-    disk_reminder_seconds: int = Field(default=3600, ge=60)
-    merge_min_free_disk_gb: float = Field(default=1, ge=0, allow_inf_nan=False)
-    merge_space_multiplier: float = Field(default=2.2, ge=2, allow_inf_nan=False)
+    disk_warning_gb: float = Field(
+        default=DEFAULT_DISK_WARNING_GB, gt=0, allow_inf_nan=False
+    )
+    disk_critical_gb: float = Field(
+        default=DEFAULT_DISK_CRITICAL_GB, gt=0, allow_inf_nan=False
+    )
+    disk_recovery_margin_gb: float = Field(
+        default=DEFAULT_DISK_RECOVERY_MARGIN_GB, ge=0, allow_inf_nan=False
+    )
+    disk_reminder_seconds: int = Field(default=DEFAULT_DISK_REMINDER_SECONDS, ge=60)
+    merge_min_free_disk_gb: float = Field(
+        default=DEFAULT_MERGE_MIN_FREE_DISK_GB, ge=0, allow_inf_nan=False
+    )
+    merge_space_multiplier: float = Field(
+        default=DEFAULT_MERGE_SPACE_MULTIPLIER, ge=2, allow_inf_nan=False
+    )
     discord_webhook_url: SecretStr = Field(default=SecretStr(""), repr=False)
     discord_webhook_events: str = Field(default=DEFAULT_EVENTS)
 

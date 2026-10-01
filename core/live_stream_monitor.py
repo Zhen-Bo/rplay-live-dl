@@ -12,6 +12,10 @@ from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
 
+from core.constants import (
+    DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    DEFAULT_MERGE_SPACE_MULTIPLIER,
+)
 from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS as _MERGE_TIMEOUT_SECONDS
 from core.constants import DEFAULT_MIN_FREE_DISK_GB
 from models.config import CreatorProfile
@@ -132,8 +136,8 @@ class LiveStreamMonitor:
         merge_timeout_seconds: float = DEFAULT_MERGE_TIMEOUT_SECONDS,
         min_free_disk_gb: float = DEFAULT_MIN_FREE_DISK_GB,
         disk_monitor: Optional[DiskSpaceMonitor] = None,
-        merge_reserve_gb: float = 1,
-        merge_space_multiplier: float = 2.2,
+        merge_reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
+        merge_space_multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
         notifier: Optional[DiscordNotifier] = None,
     ) -> None:
         """min_free_disk_gb of 0 disables the disk check."""
