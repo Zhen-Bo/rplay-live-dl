@@ -66,6 +66,12 @@ _CARD_COPY = {
         action="Free up space now. Recordings are not stopped automatically; writes may fail.",
     ),
 }
+# Short context lines for Notification.detail. Cards never show raw error text.
+INSUFFICIENT_SPACE_DETAIL = "Not enough free disk space to merge."
+STARTUP_RECOVERY_DETAIL = "Found during startup recovery."
+RECOVERED_DETAIL = "Recovered from an interrupted recording."
+STARTUP_AUTH_DETAIL = "Detected at startup. Monitoring did not start."
+
 _DISK_THRESHOLD_LABELS = {
     NotificationKind.DISK_WARNING: "⚠️ Warning level",
     NotificationKind.DISK_CRITICAL: "🚨 Critical level",
@@ -144,8 +150,15 @@ def format_discord_message(event: Notification) -> dict:
             }
         )
 
+    # Context first (what happened), then the fixed status and next step.
     guidance = " ".join(
-        text for text in (card_copy.description, card_copy.action) if text
+        text
+        for text in (
+            _safe_embed_value(event.detail, 256),
+            card_copy.description,
+            card_copy.action,
+        )
+        if text
     ).replace(". ", ".\n")
     stream_title = _safe_embed_value(event.title, 1024)
     description = "\n\n".join(

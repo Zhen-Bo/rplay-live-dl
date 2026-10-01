@@ -28,11 +28,11 @@ class Notification:
     creator: str = ""
     title: str = ""
     started_at: str = ""
+    # Short, code-authored context only. Never pass raw errors or upstream text.
     detail: str = ""
     free_bytes: Optional[int] = None
     warning_bytes: Optional[int] = None
     critical_bytes: Optional[int] = None
-    recovery_bytes: Optional[int] = None
     creator_oid: str = ""
     output_file: str = ""
 

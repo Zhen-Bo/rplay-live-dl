@@ -11,7 +11,11 @@ import responses
 
 from core.disk_space import DiskAlert
 from core.live_stream_monitor import LiveStreamMonitor
-from core.notifications import DiscordNotifier, format_discord_message
+from core.notifications import (
+    INSUFFICIENT_SPACE_DETAIL,
+    DiscordNotifier,
+    format_discord_message,
+)
 from core.rplay import RPlayAPIError
 from models.config import CreatorProfile
 from models.download import (
@@ -79,7 +83,6 @@ def test_all_event_cards_fit_discord_limits_with_long_input(kind, color):
             free_bytes=3 * 1024**3,
             warning_bytes=30 * 1024**3,
             critical_bytes=10 * 1024**3,
-            recovery_bytes=32 * 1024**3,
         )
     )
     card = payload["embeds"][0]
@@ -143,8 +146,6 @@ def test_disk_cards_show_remaining_space_and_only_relevant_level(kind, label, va
             free_bytes=3 * 1024**3,
             warning_bytes=30 * 1024**3,
             critical_bytes=10 * 1024**3,
-            recovery_bytes=32 * 1024**3,
-            detail="Unnecessary diagnostic context",
             started_at="2026-09-30T12:00:00Z",
         )
     )["embeds"][0]
@@ -152,7 +153,23 @@ def test_disk_cards_show_remaining_space_and_only_relevant_level(kind, label, va
         {"name": "💾 Free space", "value": "**3.00 GiB**", "inline": False},
         {"name": label, "value": value, "inline": False},
     ]
-    assert "Unnecessary" not in json.dumps(card)
+
+
+def test_context_detail_leads_the_guidance_on_its_own_line():
+    card = format_discord_message(
+        Notification(
+            "merge_failed",
+            creator="Creator",
+            title="Stream title",
+            detail=INSUFFICIENT_SPACE_DETAIL,
+        )
+    )["embeds"][0]
+    assert card["description"] == (
+        "**🎬 Stream title**\n**Stream title**\n\n"
+        "Not enough free disk space to merge.\n"
+        "Available raw fragments are kept.\n"
+        "Check logs, fix the cause, then restart to retry."
+    )
 
 
 def test_unknown_event_kind_is_rejected_when_created():
@@ -167,7 +184,6 @@ def test_ended_stream_distinguishes_stream_end_from_recording_completion():
             creator="Creator",
             title="Stream title",
             started_at="2026-09-30T12:00:00Z",
-            detail="Simulated test only",
         )
     )["embeds"][0]
     assert (
@@ -384,7 +400,7 @@ def test_rate_limit_waits_then_sends_safe_payload(monkeypatch):
     notifier, waits = transport(monkeypatch)
     responses.post(URL, status=429, json={"retry_after": 2.5})
     responses.post(URL, status=200, json={"id": "message"})
-    payload = format_discord_message(Notification("disk_critical", detail="3 GiB free"))
+    payload = format_discord_message(Notification("disk_critical", free_bytes=3))
     with requests.Session() as session:
         assert notifier._deliver(session, payload)
     assert waits == [0, 2.5]
@@ -468,7 +484,7 @@ def test_shutdown_cancels_rate_limit_wait(monkeypatch):
 def test_background_worker_sends_and_drains_on_close():
     responses.post(URL, status=200, json={"id": "message"})
     notifier = DiscordNotifier(URL)
-    assert notifier.notify(Notification("disk_warning", detail="20 GiB free"))
+    assert notifier.notify(Notification("disk_warning", free_bytes=20))
     notifier.close()
     assert not notifier._thread.is_alive()
     assert len(responses.calls) == 1
@@ -525,7 +541,6 @@ def test_disk_notification_still_runs_when_upstream_fails(
     assert notification.free_bytes == 3 * 1024**3
     assert notification.warning_bytes == 30 * 1024**3
     assert notification.critical_bytes == 10 * 1024**3
-    assert notification.recovery_bytes == 32 * 1024**3
     assert not monitor.is_healthy
 
 
@@ -653,6 +668,26 @@ def test_blocked_merge_and_auth_events_have_safe_details(monitor, tmp_path):
         "auth_failed",
     ]
     assert all("secret.invalid" not in event.detail for event in events)
+
+
+def test_insufficient_merge_space_adds_card_context(monitor, tmp_path):
+    session = DownloadSession(
+        session_key="s",
+        creator_oid="c",
+        creator_name="Creator",
+        title="Title",
+        stream_start_time=datetime(2026, 9, 30, tzinfo=timezone.utc),
+        state=SessionState.MERGING,
+        output_dir=tmp_path,
+        session_prefix="prefix",
+    )
+    monitor.sessions["s"] = session
+    monitor._handle_monitor_event(
+        MergeFailed("s", "Insufficient merge space", insufficient_space=True)
+    )
+    notice = monitor.notifier.notify.call_args.args[0]
+    assert notice.kind == "merge_failed"
+    assert notice.detail == INSUFFICIENT_SPACE_DETAIL
 
 
 def test_offline_state_is_dropped_when_offline_events_are_disabled(

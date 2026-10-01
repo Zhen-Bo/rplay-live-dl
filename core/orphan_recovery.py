@@ -13,9 +13,14 @@ from core.constants import (
     DEFAULT_MERGE_SPACE_MULTIPLIER,
     DEFAULT_MERGE_TIMEOUT_SECONDS,
 )
-from core.disk_space import ensure_merge_space
+from core.disk_space import InsufficientMergeSpaceError, ensure_merge_space
 from core.downloader import StreamDownloader
-from core.notifications import DiscordNotifier
+from core.notifications import (
+    INSUFFICIENT_SPACE_DETAIL,
+    RECOVERED_DETAIL,
+    STARTUP_RECOVERY_DETAIL,
+    DiscordNotifier,
+)
 from core.utils import (
     fit_filename_component_bytes,
     format_merge_failure,
@@ -168,12 +173,15 @@ def _recover_one_session(
             logger, temp_path, output_dir / f"{final_stem}.mp4"
         )
     except Exception as exc:
+        detail = STARTUP_RECOVERY_DETAIL
+        if isinstance(exc, InsufficientMergeSpaceError):
+            detail = f"{detail} {INSUFFICIENT_SPACE_DETAIL}"
         _notify_recovery(
             notifier,
             NotificationKind.MERGE_FAILED,
             output_dir,
             session_prefix,
-            detail="This happened during startup recovery.",
+            detail=detail,
         )
         # Drop the partial output and keep every input so the next startup
         # can retry unchanged.
@@ -203,6 +211,7 @@ def _recover_one_session(
         NotificationKind.MERGE_COMPLETED,
         output_dir,
         session_prefix,
+        detail=RECOVERED_DETAIL,
         output_file=output_path.name,
     )
 

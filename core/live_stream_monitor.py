@@ -45,7 +45,7 @@ from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
 from .logger import bind, clip, setup_logger
-from .notifications import DiscordNotifier
+from .notifications import INSUFFICIENT_SPACE_DETAIL, DiscordNotifier
 from .orphan_recovery import install_merge_output_without_overwrite
 from .recording_metadata import recording_metadata, utc_timestamp
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
@@ -333,7 +333,6 @@ class LiveStreamMonitor:
                     free_bytes=alert.free_bytes,
                     warning_bytes=self.disk_monitor.warning,
                     critical_bytes=self.disk_monitor.critical,
-                    recovery_bytes=self.disk_monitor.warning + self.disk_monitor.margin,
                 ),
                 cooldown=0,
             )
@@ -967,6 +966,11 @@ class LiveStreamMonitor:
                             creator=session.creator_name,
                             creator_oid=session.creator_oid,
                             title=session.title,
+                            detail=(
+                                INSUFFICIENT_SPACE_DETAIL
+                                if event.insufficient_space
+                                else ""
+                            ),
                         ),
                         key=event.session_key,
                     )

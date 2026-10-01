@@ -87,6 +87,16 @@ class TestOrphanRecovery:
         else:
             assert raw.exists()
 
+    def test_recovery_cards_say_they_came_from_startup_recovery(
+        self, archive, monkeypatch
+    ):
+        _write_raw(archive)
+        _fake_merge(monkeypatch)
+        notifier = Mock()
+        recover_orphaned_sessions(LOGGER, notifier=notifier)
+        notice = notifier.notify.call_args.args[0]
+        assert notice.detail == "Recovered from an interrupted recording."
+
     def test_recovery_reports_safe_ffmpeg_reason_and_keeps_raw(
         self, archive, monkeypatch, caplog
     ):

@@ -342,8 +342,11 @@ Both live and ended-stream cards use the creator's avatar. Disk
 cards stack emoji-labelled remaining free space above the current event's
 configured warning or critical level in GiB, rather than placing them side by side.
 Absent values are omitted, not shown
-as zero. Cards omit diagnostic context, unrelated threshold settings, repeated status
-explanations, and footer timestamps. Errors include concise recovery guidance
+as zero. Some cards open their guidance with one short line of context: merges
+skipped for lack of disk space, results of startup recovery, and authentication
+failures found at startup (monitoring did not start). This context is fixed text;
+cards never include raw error output. Cards omit unrelated threshold settings,
+repeated status explanations, and footer timestamps. Errors include concise recovery guidance
 directly in the body rather than a separate next-step field, with each sentence
 on its own line (decimals and filenames stay intact). Merge-completion cards
 include the saved filename, not the full local path. Live/ended cards

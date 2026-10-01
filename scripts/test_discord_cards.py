@@ -14,7 +14,11 @@ from pydantic import SecretStr
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core.notifications import DiscordNotifier, format_discord_message
+from core.notifications import (
+    INSUFFICIENT_SPACE_DETAIL,
+    DiscordNotifier,
+    format_discord_message,
+)
 from models.env import EnvConfig
 from models.notification import Notification, NotificationKind
 
@@ -39,7 +43,6 @@ def build_cards(include_offline=False):
                 free_bytes=int(_SAMPLE_FREE_GIB[kind] * 1024**3),
                 warning_bytes=30 * 1024**3,
                 critical_bytes=10 * 1024**3,
-                recovery_bytes=32 * 1024**3,
             )
         elif kind != NotificationKind.AUTH_FAILED:
             values.update(
@@ -49,6 +52,8 @@ def build_cards(include_offline=False):
             )
             if kind == NotificationKind.LIVE:
                 values["started_at"] = started_at
+            if kind == NotificationKind.MERGE_FAILED:
+                values["detail"] = INSUFFICIENT_SPACE_DETAIL
             if kind == NotificationKind.MERGE_COMPLETED:
                 values["output_file"] = "ranaelchan_2026-09-30_210000.mp4"
         payload = format_discord_message(Notification(kind=kind, **values))

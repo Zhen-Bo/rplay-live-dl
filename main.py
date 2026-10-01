@@ -12,7 +12,7 @@ from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.downloader import StreamDownloader
 from core.env import EnvConfig, EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
-from core.notifications import DiscordNotifier
+from core.notifications import STARTUP_AUTH_DETAIL, DiscordNotifier
 from core.orphan_recovery import recover_orphaned_sessions
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError
 from core.scheduler import run_scheduler
@@ -136,10 +136,7 @@ def _run_application(
             logger.info("API credentials validated successfully")
         except RPlayAuthError as exc:
             notifier.notify(
-                Notification(
-                    NotificationKind.AUTH_FAILED,
-                    detail="This happened during startup credential validation.",
-                )
+                Notification(NotificationKind.AUTH_FAILED, detail=STARTUP_AUTH_DETAIL)
             )
             logger.error(
                 f"Authentication failed: {exc}. "
