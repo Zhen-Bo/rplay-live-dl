@@ -235,7 +235,7 @@ Environment variables:
 | `LOG_YTDLP_INTERNAL` | no | `false` | truthy: `1`, `true`, `yes`, `on`; falsy: `0`, `false`, `no`, `off`, empty; other values abort startup | Enables noisy yt-dlp internal debug lines |
 | `LOG_MAX_SIZE_MB` | no | `5` | integer `1`-`100` | Maximum size of each log file before rotation |
 | `LOG_BACKUP_COUNT` | no | `5` | integer `1`-`50` | Number of rotated log files to keep |
-| `LOG_RETENTION_DAYS` | no | `30` | integer `1`-`365` | Age-based cleanup window for old logs |
+| `LOG_RETENTION_DAYS` | no | `30` | integer `1`-`365` | Startup cleanup of log files older than this many days |
 | `APP_GIT_SHA` | no | empty | free-form string | Startup version metadata shown in logs; usually injected by Docker/image builds |
 
 Notes:
@@ -281,6 +281,186 @@ Notes:
 - the monitor re-reads `config/config.yaml` on every poll, so updating `apiBaseUrl` in a running Docker deployment does not require a container restart
 - an invalid `apiBaseUrl` is treated as a config error and the current poll is skipped until the file is fixed
 - you can temporarily leave `creators: []` while validating a deployment
+
+### Disk capacity
+
+Archive free space is checked at each poll, even when the upstream request fails.
+`DISK_WARNING_GB=30` and `DISK_CRITICAL_GB=10` set the alert levels in GiB;
+critical must be below warning. Alerts do not stop active recordings or delete files.
+The existing `MIN_FREE_DISK_GB` gate still applies to new recordings.
+
+Transitions are logged immediately, with reminders every `DISK_REMINDER_SECONDS=3600`.
+Recovery requires `DISK_RECOVERY_MARGIN_GB=2` above the relevant threshold to avoid
+flapping. Alert state is in memory and resets on restart. Checks run at the poll
+cadence (`INTERVAL`), not continuously; a stalled poll delays the next check.
+
+Both normal merges and startup recovery check free space before launching FFmpeg:
+`sum(raw TS bytes) * MERGE_SPACE_MULTIPLIER + MERGE_MIN_FREE_DISK_GB * 1024^3`.
+Defaults are `1.1` (minimum `1`) and a `1` GiB reserve. The multiplier budgets the
+temporary MP4 that FFmpeg writes. The finished file is then installed with a
+hardlink, which needs no extra space. On filesystems without hardlinks (exFAT,
+some CIFS mounts) the file is copied instead; set `MERGE_SPACE_MULTIPLIER=2.2`
+there. If a copy still runs out of space, the partial copy is removed and the raw
+inputs are kept. This is an estimate, not a disk reservation: concurrent
+recordings or other applications can still consume space during the merge.
+An insufficient or unreadable space check skips that merge, logs one line with
+the reason, and preserves the raw inputs. Free space and restart to retry startup
+recovery; there is no automatic running merge retry. These environment settings
+require container recreation.
+
+### Discord notifications
+
+Set `DISCORD_WEBHOOK_URL` in your local `.env` to a Discord **incoming webhook**
+URL, then recreate the container (`docker compose up -d --force-recreate`).
+Leave it empty to disable notifications. Keep this URL private: it authorizes
+message sending. Never commit it or paste it into logs. Only HTTPS Discord webhook
+URLs are accepted (`discord.com`, `discordapp.com`, and their `canary.`/`ptb.`
+hosts); URL query parameters (including thread targets) are not supported.
+
+`DISCORD_WEBHOOK_EVENTS` is a comma-separated selection (all events below by
+default); an empty value disables all events. Each notification is one English
+Discord rich-embed card: a short title, status color, relevant fields, and a next
+step when action is useful. Main event titles have no emoji except
+`🔑 Authentication failed`; field headings use contextual icons. Each event has
+a distinct side color: live is rose, ended streams are slate gray, restricted
+access is amber, authentication failure is coral red, retries are blue, incomplete
+merges are violet, completed merges are teal, low capacity is yellow, and
+critical capacity is deep red.
+No bot or extra credentials are required.
+
+Creator and stream title appear when available; only live cards include the
+stream start time. Valid
+timezone-aware stream times use Discord's native timestamps, displayed in the
+reader's timezone and locale. The creator appears in an author row with a small
+avatar; a larger avatar thumbnail appears at the right. Main embed titles retain
+the event name, such as `Live now`, `Stream ended`, or `Merge complete`, without
+emoji (apart from the authentication exception). The actual stream title appears
+in bold in the body under the bold `🎬 Stream title` label.
+Only live and restricted-access cards link the main event title to the public
+stream page. Stream-name text and creator names are not hyperlinks. Ended-stream, retry,
+merge-failure, and merge-completion cards keep the avatars but no headline link.
+Both live and ended-stream cards use the creator's avatar. Disk
+cards stack emoji-labelled remaining free space above the current event's
+configured warning or critical level in GiB, rather than placing them side by side.
+Absent values are omitted, not shown
+as zero. Some cards open their guidance with one short line of context: merges
+skipped for lack of disk space, results of startup recovery, and authentication
+failures found at startup (monitoring did not start). This context is fixed text;
+cards never include raw error output. Cards omit unrelated threshold settings,
+repeated status explanations, and footer timestamps. Errors include concise recovery guidance
+directly in the body rather than a separate next-step field, with each sentence
+on its own line (decimals and filenames stay intact). Merge-completion cards
+include the saved filename, not the full local path. Live/ended cards
+report stream state, not recording or merge completion. Disk alerts still use
+the configured hysteresis; recovery does not restart skipped merges or prove
+recordings are healthy. Active recordings are not stopped by disk alerts.
+
+Avatar URLs use the public `pb3.rplay.live/profilePhoto/<creator ID>-small/`
+route observed on RPlay's creator cards. Only validated 24-digit hexadecimal
+creator IDs produce links; arbitrary image URLs and signed stream URLs are not
+accepted. Discord fetches the public image without RPlay credentials. If identity
+is unavailable (for example, old orphan recovery), the image is omitted. The
+recorder does not fetch a profile for every poll or scrape browser login data.
+
+Edit `_CARD_COPY` in `core/notifications.py` for English titles, descriptions,
+colors, and actions; edit `format_discord_message` there for layout. Event data
+lives in `models/notification.py`. Delivery, retries, and deduplication are unchanged.
+Dynamic fields are redacted, Markdown-escaped, and truncated to embed field limits;
+the bounded layout stays below Discord's 6,000-character aggregate limit. Mentions
+remain disabled. Authenticated URLs are never included; `SUPPRESS_EMBEDS` is not
+set, so it does not hide the cards.
+
+| Event | Trigger |
+| --- | --- |
+| `live` | A monitored RPlay stream is first observed, including already-live streams at startup; not proof recording started |
+| `offline` | A previously observed RPlay stream is absent from two successful status polls, or is replaced by a new stream start time; not proof recording/merge completed |
+| `blocked` | Download access is denied under the existing 403/404 retry policy; possibly paid/private, not a confirmed paid classification |
+| `auth_failed` | Startup or runtime RPlay credentials are rejected |
+| `download_failed` | Repeated raw download failures enter the existing retry cooldown |
+| `merge_failed` | Normal merge or startup recovery fails, including insufficient merge space; raw inputs retained |
+| `merge_completed` | Normal merge or startup recovery installs a validated, nonempty MP4; includes its filename |
+| `disk_warning` | Archive space enters warning level, de-escalates from critical, or reminder is due |
+| `disk_critical` | Archive space enters critical level or reminder is due |
+
+Disk recovery still clears the internal alert state and is logged, but sends no
+webhook. The retired `disk_recovered` event is ignored in older configurations.
+If you explicitly set `DISCORD_WEBHOOK_EVENTS`, add `merge_completed` to receive
+completion notices; otherwise it is enabled by default.
+
+For capacity alerts only:
+
+```dotenv
+DISCORD_WEBHOOK_EVENTS=disk_warning,disk_critical
+```
+
+Live detection is deduplicated by creator and stream start time, independent of
+title changes. Ended-stream notices retain the last observed title and identity.
+An API failure does not count as an offline poll; removing a creator from the
+monitor list does not send an ended notice. Detection is polling-based, not an
+exact end timestamp. A new start time closes the prior stream before its new
+live notice. This changes notifications only, not the recording shutdown policy.
+If you already set `DISCORD_WEBHOOK_EVENTS`, add `offline` to enable ended notices
+and recreate the container; existing environment files are not edited automatically.
+Other errors are deduplicated when queued (one hour per event/key);
+disk reminders follow `DISK_REMINDER_SECONDS` instead. All state is in memory and
+resets on restart. Startup can therefore notify again about ongoing streams.
+
+Delivery uses one background worker and a bounded 100-message queue, never HTTP
+on the recording thread. HTTP 429 waits for Discord's retry delay; connection
+errors and HTTP 5xx have at most three attempts total. HTTP 401/403/404 disables
+the webhook until restart. Other rejected messages are not retried. Update an
+invalid URL in `.env` and recreate the container. Queue overflow, delivery failure,
+and shutdown drops are logged without the webhook URL or response body.
+
+Notifications are best-effort, not durable: queue overflow or shutdown after the
+five-second drain deadline can lose messages, and a network timeout can produce
+a duplicate on retry. Failure details remain in local logs; messages include safe
+operator guidance instead of raw upstream errors, credentials, or stream URLs.
+
+#### Preview notification cards
+
+From the project root, run this manual tester to send eight simulated cards to
+the channel associated with `DISCORD_WEBHOOK_URL`:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/test_discord_cards.py
+```
+
+Or use `poetry run python scripts/test_discord_cards.py`. The script reads the
+project-root `.env`; an environment variable takes precedence. No RPlay account
+credentials are required. It deliberately ignores `DISCORD_WEBHOOK_EVENTS` so
+you can preview all eight types: live, restricted access, authentication
+failure, delayed retries, merge failure, merge completion, low space, and critical space.
+
+Cards use the production layout without test labels or sequence numbers.
+These are simulated notifications, not real events; use a suitable preview channel.
+Stream cards use a sample creator's public
+avatar with a realistic fictional stream title; times and disk values are
+simulated. Account authentication errors carry no creator or stream identity.
+No recording is started and
+no files are merged or removed. Each run sends another set of messages.
+
+- Add `--include-offline` to also preview stream ended (nine cards total).
+- Add `--dry-run` to print the payloads without reading credentials or sending.
+- The script reports confirmed HTTP deliveries, reuses the application's retry
+  and rate-limit handling, and stops with a nonzero exit code on failure. A network
+  timeout can still cause a duplicate; check the channel before rerunning.
+
+### Recording metadata
+
+New normal merges store the original (unsanitized) `title`, creator display name
+(`artist`), `rplay_creator_oid`, `rplay_stream_oid`, `rplay_stream_start_time`,
+and `rplay_recording_started_at` in the MP4 itself. Times use UTC ISO 8601, and
+`rplay_metadata_version=1` identifies the tag schema. This happens during the
+existing stream-copy merge, without a second encode, database, or sidecar index.
+The creator name follows your creator configuration; IDs come from the session.
+Credentials and authenticated stream URLs are never included.
+
+Startup recovery cannot reconstruct the original IDs or unsanitized title from
+old fragments. It writes only `rplay_metadata_version`, `rplay_recovered=true`,
+and `rplay_source_filename`; unknown values are omitted rather than guessed.
+Existing MP4s are not rewritten. Some players do not display custom MP4 tags;
+inspect them with `ffprobe -v error -show_entries format_tags -of json video.mp4`.
 
 ### Download and Merge Flow
 
@@ -328,6 +508,9 @@ The v2 runtime uses a session-aware download pipeline.
    - set `LOG_LEVEL=DEBUG` in `.env` to see stream-candidate evaluation and skip reasons
    - set `LOG_YTDLP_INTERNAL=true` only when you need raw yt-dlp internal chatter in addition to app logs
    - the default `INFO` level keeps routine output readable for long-running Docker deployments
+   - unchanged polls do not emit periodic heartbeat messages; use the heartbeat healthcheck for liveness, while recording status changes remain logged
+   - application console and file output mask configured credentials, common token fields, authorization headers, JWTs and Discord webhook tokens, including tracebacks; review logs before sharing because this is not a general personal-data filter
+   - failed FFmpeg merges report the exit code or timeout and a redacted stderr tail (last 10 lines, at most 2,000 characters plus a truncation marker); expected FFmpeg failures do not add a redundant Python traceback, while unexpected exceptions still do
 
 #### Final filename rules
 

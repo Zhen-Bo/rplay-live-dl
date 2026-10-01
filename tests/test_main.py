@@ -232,6 +232,16 @@ def test_main_auth_failure_exits_once_and_never_starts_scheduler(monkeypatch):
     api.close.assert_called_once_with()
 
 
+def test_startup_auth_notification_is_queued_and_closed_on_exit(monkeypatch):
+    _patch_main_startup(monkeypatch, api_side_effect=RPlayAuthError("rejected"))
+    notifier = MagicMock()
+    monkeypatch.setattr("main.DiscordNotifier", MagicMock(return_value=notifier))
+    with pytest.raises(SystemExit):
+        main()
+    assert notifier.notify.call_args.args[0].kind == "auth_failed"
+    notifier.close.assert_called_once_with()
+
+
 @pytest.mark.parametrize(
     "side_effect",
     [

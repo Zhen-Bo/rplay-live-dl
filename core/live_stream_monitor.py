@@ -2,7 +2,7 @@
 
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Queue
@@ -12,6 +12,10 @@ from typing import Callable, Dict, List, Optional, Set, Union
 
 from pathvalidate import sanitize_filename
 
+from core.constants import (
+    DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    DEFAULT_MERGE_SPACE_MULTIPLIER,
+)
 from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS as _MERGE_TIMEOUT_SECONDS
 from core.constants import DEFAULT_MIN_FREE_DISK_GB
 from models.config import CreatorProfile
@@ -27,18 +31,27 @@ from models.download import (
     RawDownloadFailed,
     SessionState,
 )
+from models.notification import Notification, NotificationKind
 from models.rplay import CreatorStreamState, LiveStream, StreamState
 
 from .config import DEFAULT_CONFIG_PATH, ConfigError
 from .config import read_app_config as read_config
+from .disk_space import (
+    DiskSpaceMonitor,
+    InsufficientMergeSpaceError,
+    ensure_merge_space,
+)
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
 from .logger import bind, clip, setup_logger
+from .notifications import INSUFFICIENT_SPACE_DETAIL, DiscordNotifier
 from .orphan_recovery import install_merge_output_without_overwrite
+from .recording_metadata import recording_metadata, utc_timestamp
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from .utils import (
     fit_filename_component_bytes,
+    format_merge_failure,
     merge_ts_files_to_mp4,
     terminate_child_processes,
 )
@@ -54,6 +67,13 @@ class _PollRequested:
     # Marks the extra poll queued after a download failure. The control loop
     # uses it to reopen retry deduplication; nobody waits on its done event.
     retry: bool = False
+
+
+@dataclass
+class _ObservedStream:
+    notice: Notification
+    live_notified: bool = False
+    missing_polls: int = 0
 
 
 @dataclass(frozen=True)
@@ -106,6 +126,7 @@ class LiveStreamMonitor:
     DOWNLOAD_RETRY_IMMEDIATE_BUDGET = 1
     DOWNLOAD_RETRY_COOLDOWN_BASE_SECONDS = 30.0
     DOWNLOAD_RETRY_COOLDOWN_MAX_SECONDS = 300.0
+    OFFLINE_CONFIRMATION_POLLS = 2
     TERMINAL_SESSION_STATES = {
         SessionState.BLOCKED,
         SessionState.DONE,
@@ -118,12 +139,22 @@ class LiveStreamMonitor:
         config_path: str = DEFAULT_CONFIG_PATH,
         merge_timeout_seconds: float = DEFAULT_MERGE_TIMEOUT_SECONDS,
         min_free_disk_gb: float = DEFAULT_MIN_FREE_DISK_GB,
+        disk_monitor: Optional[DiskSpaceMonitor] = None,
+        merge_reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
+        merge_space_multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
+        notifier: Optional[DiscordNotifier] = None,
     ) -> None:
         """min_free_disk_gb of 0 disables the disk check."""
         self.api_client = api_client
         self.config_path = config_path
         self.merge_timeout_seconds = merge_timeout_seconds
         self.min_free_disk_gb = min_free_disk_gb
+        self.disk_monitor = disk_monitor or DiskSpaceMonitor()
+        self.merge_reserve_gb = merge_reserve_gb
+        self.merge_space_multiplier = merge_space_multiplier
+        # A disabled notifier stands in for "no webhook", so callers never branch.
+        self.notifier = notifier or DiscordNotifier()
+        self._observed_streams: Dict[str, _ObservedStream] = {}
         self.monitored_creators: Dict[str, CreatorProfile] = {}
         self.sessions: Dict[str, DownloadSession] = {}
         self.latest_stream_oid_by_creator: Dict[str, str] = {}
@@ -159,7 +190,6 @@ class LiveStreamMonitor:
 
         self._last_check_success = True
         self._monitored_count = 0
-        self._check_count = 0
         self._last_status: Dict[str, int] = {"active_downloads": 0, "monitored_live": 0}
         self._auth_error_notified = False
         # Per cycle only, no TTL: key2 is user-scoped, not creator-scoped.
@@ -292,6 +322,20 @@ class LiveStreamMonitor:
         return False
 
     def _run_poll_cycle(self) -> None:
+        alert = self.disk_monitor.check(
+            Path.cwd() / StreamDownloader.ARCHIVE_DIR, self.logger
+        )
+        if alert is not None and alert.level != "recovered":
+            # Reminder cadence is owned by DiskSpaceMonitor, so no cooldown here.
+            self.notifier.notify(
+                Notification(
+                    kind=NotificationKind(f"disk_{alert.level}"),
+                    free_bytes=alert.free_bytes,
+                    warning_bytes=self.disk_monitor.warning,
+                    critical_bytes=self.disk_monitor.critical,
+                ),
+                cooldown=0,
+            )
         # Unconditional: never carry key2 across poll cycles (incl. A3 retry polls).
         self._cycle_stream_key = None
         self._cycle_key_fetch_auth_failed = False
@@ -309,7 +353,7 @@ class LiveStreamMonitor:
             monitored_live = self._process_live_streams(live_streams)
             live_creator_oids = {stream.creator_oid for stream in live_streams}
             self._cleanup_offline_creator_states(live_creator_oids)
-            self._log_status_summary(len(live_streams), monitored_live)
+            self._log_status_summary(monitored_live)
             # Match playlist-401 health: unrecovered key2 auth fails the cycle.
             if self._cycle_key_fetch_auth_failed:
                 self._mark_check_failed()
@@ -351,7 +395,13 @@ class LiveStreamMonitor:
             self._last_check_success = False
 
     def _process_live_streams(self, live_streams: List[LiveStream]) -> int:
+        self._observed_streams = {
+            creator: state
+            for creator, state in self._observed_streams.items()
+            if creator in self.monitored_creators
+        }
         monitored_live = 0
+        seen = set()
         for stream in live_streams:
             if stream.stream_state != StreamState.LIVE:
                 continue
@@ -363,9 +413,47 @@ class LiveStreamMonitor:
                 continue
 
             monitored_live += 1
+            seen.add(stream.creator_oid)
+            notice = Notification(
+                NotificationKind.LIVE,
+                creator=self.monitored_creators[stream.creator_oid].creator_name,
+                creator_oid=stream.creator_oid,
+                title=stream.title,
+                started_at=utc_timestamp(stream.stream_start_time),
+            )
+            state = self._observed_streams.get(stream.creator_oid)
+            if state is None or state.notice.started_at != notice.started_at:
+                if state is not None:
+                    self._notify_stream_ended(state)
+                state = _ObservedStream(notice)
+                self._observed_streams[stream.creator_oid] = state
+            else:
+                state.notice = notice
+            state.missing_polls = 0
+            if not state.live_notified:
+                # No cooldown: _ObservedStream already tracks this exact stream.
+                state.live_notified = self.notifier.notify(notice, cooldown=0)
             self._process_live_stream(stream)
 
+        # This runs only after a complete successful status fetch and processing.
+        # API errors and removal from the monitor list are not stream-end evidence.
+        offline_enabled = self.notifier.accepts(NotificationKind.OFFLINE)
+        for creator_oid, state in list(self._observed_streams.items()):
+            if creator_oid in seen:
+                continue
+            state.missing_polls = min(
+                self.OFFLINE_CONFIRMATION_POLLS, state.missing_polls + 1
+            )
+            if state.missing_polls < self.OFFLINE_CONFIRMATION_POLLS:
+                continue
+            # Keep the state only to retry a notice that could not be queued.
+            if not offline_enabled or self._notify_stream_ended(state):
+                del self._observed_streams[creator_oid]
         return monitored_live
+
+    def _notify_stream_ended(self, state: _ObservedStream) -> bool:
+        notice = replace(state.notice, kind=NotificationKind.OFFLINE)
+        return self.notifier.notify(notice, cooldown=0)
 
     def _process_live_stream(self, stream: LiveStream) -> None:
         with self._state_lock:
@@ -586,9 +674,8 @@ class LiveStreamMonitor:
             f"Error starting download for {creator_name}: {exc}", exc_info=exc
         )
 
-    def _log_status_summary(self, total_live: int, monitored_live: int) -> None:
+    def _log_status_summary(self, monitored_live: int) -> None:
         with self._state_lock:
-            self._check_count += 1
             active_downloads = sum(
                 1
                 for session in self.sessions.values()
@@ -600,7 +687,6 @@ class LiveStreamMonitor:
             }
             state_changed = current_status != self._last_status
             previous_active = self._last_status["active_downloads"]
-            periodic_heartbeat = self._check_count % 10 == 0
             monitored_count = self._monitored_count
             self._last_status = current_status
 
@@ -608,11 +694,6 @@ class LiveStreamMonitor:
             self.logger.info(
                 f"📊 Status: {active_downloads} active download(s), "
                 f"{monitored_live}/{monitored_count} monitored creator(s) live"
-            )
-        elif periodic_heartbeat and monitored_count > 0:
-            self.logger.debug(
-                f"📊 Checked {total_live} live stream(s), "
-                f"none of {monitored_count} monitored creator(s) are live"
             )
 
     def _update_downloaders(self) -> None:
@@ -776,6 +857,7 @@ class LiveStreamMonitor:
                 output_dir=output_dir,
                 session_prefix=session_prefix,
                 recording_started_at=recording_started_at,
+                stream_oid=stream.oid,
             )
             self._active_raw_session_by_creator[stream.creator_oid] = session_key
             return self.sessions[session_key]
@@ -862,10 +944,36 @@ class LiveStreamMonitor:
                 log_method = self.logger.info
                 log_message = f"🎬 Merge started for {session.creator_name}: {session.session_key}"
             elif isinstance(event, MergeCompleted):
+                if session.state != SessionState.DONE:
+                    self.notifier.notify(
+                        Notification(
+                            NotificationKind.MERGE_COMPLETED,
+                            creator=session.creator_name,
+                            creator_oid=session.creator_oid,
+                            title=session.title,
+                            output_file=event.output_path.name,
+                        ),
+                        key=event.session_key,
+                    )
                 session.state = SessionState.DONE
                 log_method = self.logger.info
                 log_message = f"✅ Merge completed for {session.creator_name}: {event.output_path}"
             elif isinstance(event, MergeFailed):
+                if session.state != SessionState.MERGE_FAILED:
+                    self.notifier.notify(
+                        Notification(
+                            NotificationKind.MERGE_FAILED,
+                            creator=session.creator_name,
+                            creator_oid=session.creator_oid,
+                            title=session.title,
+                            detail=(
+                                INSUFFICIENT_SPACE_DETAIL
+                                if event.insufficient_space
+                                else ""
+                            ),
+                        ),
+                        key=event.session_key,
+                    )
                 session.state = SessionState.MERGE_FAILED
                 log_method = self.logger.warning
                 log_message = (
@@ -899,6 +1007,9 @@ class LiveStreamMonitor:
                 stream_start_time=session.stream_start_time,
                 output_dir=session.output_dir,
                 session_prefix=session.session_prefix,
+                creator_oid=session.creator_oid,
+                stream_oid=session.stream_oid,
+                recording_started_at=session.recording_started_at,
             )
 
             try:
@@ -951,6 +1062,8 @@ class LiveStreamMonitor:
 
     def _log_auth_error(self, message: str) -> None:
         """Log auth errors once per failure streak; repeats go to DEBUG."""
+        if not self._auth_error_notified:
+            self.notifier.notify(Notification(NotificationKind.AUTH_FAILED))
         log = self.logger.debug if self._auth_error_notified else self.logger.error
         self._auth_error_notified = True
         log(message)
@@ -1000,6 +1113,16 @@ class LiveStreamMonitor:
             return
 
         retried_now = self._record_download_failure(session.creator_oid)
+        if not retried_now:
+            self.notifier.notify(
+                Notification(
+                    NotificationKind.DOWNLOAD_FAILED,
+                    creator=session.creator_name,
+                    creator_oid=session.creator_oid,
+                    title=session.title,
+                ),
+                key=f"{session.creator_oid}:{session.stream_start_time.isoformat()}",
+            )
 
         # Waiting for the next scheduled poll costs up to a whole INTERVAL (up
         # to 3600s) of a stream that is still running. Requested only after the
@@ -1079,6 +1202,15 @@ class LiveStreamMonitor:
             state.mark_blocked()
 
         if not was_blocked:
+            self.notifier.notify(
+                Notification(
+                    NotificationKind.BLOCKED,
+                    creator=creator_name,
+                    creator_oid=creator_oid,
+                    title=session.title,
+                ),
+                key=f"{creator_oid}:{session.stream_start_time.isoformat()}",
+            )
             self.logger.warning(
                 f"🔒 {creator_name}: Stream marked as inaccessible "
                 f"after download failure (likely paid content)"
@@ -1114,7 +1246,9 @@ class LiveStreamMonitor:
             )
             temp_path = self._build_merge_temp_path(base_output_path)
             self._clear_stale_merge_temp(temp_path)
-            self._run_ffmpeg_merge(ts_files, temp_path)
+            self._run_ffmpeg_merge(
+                ts_files, temp_path, metadata=recording_metadata(merge_job)
+            )
 
             # A successful ffmpeg exit is not enough to prove an artifact was
             # produced. Keep the raw inputs when a stub, muxer, or interrupted
@@ -1151,18 +1285,19 @@ class LiveStreamMonitor:
                 output_path=output_path,
             )
 
-        except subprocess.TimeoutExpired as exc:
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.CalledProcessError,
+            InsufficientMergeSpaceError,
+        ) as exc:
+            # Expected failures: one readable reason, no Python stack trace.
             self._discard_partial_merge_output(temp_path)
             if output_path is not None and output_path != temp_path:
                 self._discard_partial_merge_output(output_path)
-            timeout_value = (
-                int(exc.timeout)
-                if exc.timeout is not None
-                else self.merge_timeout_seconds
-            )
             return MergeFailed(
                 session_key=merge_job.session_key,
-                error_message=f"ffmpeg merge timeout after {timeout_value} seconds",
+                error_message=format_merge_failure(exc),
+                insufficient_space=isinstance(exc, InsufficientMergeSpaceError),
             )
         except Exception as exc:
             self._discard_partial_merge_output(temp_path)
@@ -1180,9 +1315,7 @@ class LiveStreamMonitor:
             is_file = output_path.is_file()
             size = output_path.stat().st_size if is_file else 0
         except OSError as exc:
-            raise RuntimeError(
-                f"{error_prefix} at {output_path.name}: {exc}"
-            ) from exc
+            raise RuntimeError(f"{error_prefix} at {output_path.name}: {exc}") from exc
 
         if not is_file or size == 0:
             raise RuntimeError(f"{error_prefix} at {output_path.name}")
@@ -1232,8 +1365,19 @@ class LiveStreamMonitor:
                 f"could not clear stale merge output {temp_path.name}: {exc}"
             ) from exc
 
-    def _run_ffmpeg_merge(self, ts_files: List[Path], output_path: Path) -> None:
-        merge_ts_files_to_mp4(ts_files, output_path, self._run_merge_subprocess)
+    def _run_ffmpeg_merge(
+        self,
+        ts_files: List[Path],
+        output_path: Path,
+        *,
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> None:
+        ensure_merge_space(
+            ts_files, output_path, self.merge_reserve_gb, self.merge_space_multiplier
+        )
+        merge_ts_files_to_mp4(
+            ts_files, output_path, self._run_merge_subprocess, metadata=metadata
+        )
 
     def _run_merge_subprocess(self, command: List[str]) -> None:
         """
@@ -1264,9 +1408,9 @@ class LiveStreamMonitor:
                     stdout, stderr = process.communicate(
                         timeout=self.merge_timeout_seconds
                     )
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
                     process.kill()
-                    process.communicate()
+                    exc.output, exc.stderr = process.communicate()
                     raise
                 if process.returncode != 0:
                     raise subprocess.CalledProcessError(

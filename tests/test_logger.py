@@ -77,6 +77,43 @@ def make_record(name="Test", msg="test message"):
 class TestSetupLogger:
     """Tests for setup_logger function."""
 
+    def test_console_and_file_redact_arguments_and_tracebacks(
+        self, logs_dir, make_logger, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            logger_module, "_configured_sensitive_values", (), raising=False
+        )
+        refresh = "AUDIT_REFRESH_NOT_A_REAL_CREDENTIAL"
+        url = "https://discord.com/api/webhooks/123456/AUDIT_WEBHOOK_NOT_REAL"
+        configure_logging(
+            EnvConfig(user_oid="audit", refresh_token=refresh, discord_webhook_url=url)
+        )
+        logger = make_logger("audit_redaction", level=logging.DEBUG)
+        key = "AUDIT_STREAM_KEY_NOT_REAL"
+        bearer = "AUDIT_BEARER_NOT_REAL"
+        logger.debug(
+            "context=session-123 key2=%s Authorization: Bearer %s url=%s",
+            key,
+            bearer,
+            url,
+        )
+        try:
+            raise RuntimeError(f"refresh rejected: {refresh}; key2={key}")
+        except RuntimeError:
+            logger.exception("Unexpected download failure")
+        outputs = [
+            capsys.readouterr().err,
+            (logs_dir / "audit_redaction.log").read_text(encoding="utf-8"),
+        ]
+        for output in outputs:
+            assert all(
+                secret not in output
+                for secret in (key, bearer, refresh, "AUDIT_WEBHOOK_NOT_REAL")
+            )
+            assert "session-123" in output
+            assert "Traceback" in output and "RuntimeError" in output
+            assert "REDACTED" in output
+
     def test_creates_logger(self, default_log_config):
         """Test that setup_logger creates a logger at the default level."""
         logger = setup_logger("test_logger_1", log_to_file=False)
@@ -192,6 +229,14 @@ class TestCleanupOldLogs:
 
 class TestAlignedFormatter:
     """Tests for AlignedFormatter class."""
+
+    def test_reformatting_already_masked_errors_is_stable(self, monkeypatch):
+        monkeypatch.setattr(logger_module, "_configured_sensitive_values", ())
+        text = logger_module.redact_sensitive_text(
+            "key2=AUDIT_FAKE_KEY; refreshToken='AUDIT_FAKE_REFRESH'"
+        )
+        assert "AUDIT_FAKE" not in text
+        assert logger_module.redact_sensitive_text(text) == text
 
     def test_centers_logger_name(self):
         """Test that formatter centers the logger name."""

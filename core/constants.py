@@ -1,6 +1,7 @@
 """Shared constants used across modules."""
 
 RPLAY_SITE_URL = "https://rplay.live"
+RPLAY_PROFILE_PHOTO_BASE_URL = "https://pb3.rplay.live/profilePhoto"
 DEFAULT_RPLAY_API_BASE_URL = "https://api.rplay.live"
 
 DEFAULT_USER_AGENT = (
@@ -34,6 +35,17 @@ DEFAULT_LOG_YTDLP_INTERNAL = False
 # Minimum free disk space (GiB) before starting a recording; 0 disables
 DEFAULT_MIN_FREE_DISK_GB = 5.0
 
+# Archive capacity alerts (GiB); alerts never stop an active recording
+DEFAULT_DISK_WARNING_GB = 30.0
+DEFAULT_DISK_CRITICAL_GB = 10.0
+DEFAULT_DISK_RECOVERY_MARGIN_GB = 2.0
+DEFAULT_DISK_REMINDER_SECONDS = 3600
+
+# Merge preflight: free space must cover input bytes x multiplier + reserve GiB.
+# 1.1 budgets the FFmpeg temp output; a failed copy fallback keeps raw inputs.
+DEFAULT_MERGE_MIN_FREE_DISK_GB = 1.0
+DEFAULT_MERGE_SPACE_MULTIPLIER = 1.1
+
 # Ceiling for one ffmpeg concat merge, shared by the live executor and orphan recovery
 DEFAULT_MERGE_TIMEOUT_SECONDS = 7200
 
@@ -42,6 +54,7 @@ DEFAULT_INTERVAL = 60
 
 __all__ = [
     "RPLAY_SITE_URL",
+    "RPLAY_PROFILE_PHOTO_BASE_URL",
     "DEFAULT_RPLAY_API_BASE_URL",
     "DEFAULT_USER_AGENT",
     "DEFAULT_HTTP_HEADERS",
@@ -60,6 +73,12 @@ __all__ = [
     "DEFAULT_LOG_RETENTION_DAYS",
     "DEFAULT_LOG_YTDLP_INTERNAL",
     "DEFAULT_MIN_FREE_DISK_GB",
+    "DEFAULT_DISK_WARNING_GB",
+    "DEFAULT_DISK_CRITICAL_GB",
+    "DEFAULT_DISK_RECOVERY_MARGIN_GB",
+    "DEFAULT_DISK_REMINDER_SECONDS",
+    "DEFAULT_MERGE_MIN_FREE_DISK_GB",
+    "DEFAULT_MERGE_SPACE_MULTIPLIER",
     "DEFAULT_MERGE_TIMEOUT_SECONDS",
     "DEFAULT_INTERVAL",
 ]

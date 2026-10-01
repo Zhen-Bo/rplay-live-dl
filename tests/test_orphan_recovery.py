@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -51,7 +52,7 @@ def _fake_merge(
     anything, ``writes=b""`` for one that produces an empty file.
     """
 
-    def fake_merge(ts_files, output_path, run_command):
+    def fake_merge(ts_files, output_path, run_command, **kwargs):
         if captured is not None:
             captured.append((list(ts_files), output_path))
         if writes is not None:
@@ -64,6 +65,52 @@ def _fake_merge(
 
 class TestOrphanRecovery:
     """Recovery of session .ts files left behind by an interrupted run."""
+
+    @pytest.mark.parametrize(
+        "writes,expected",
+        [(b"mp4", "merge_completed"), (b"", "merge_failed"), (None, "merge_failed")],
+    )
+    def test_notification_matches_validated_recovery_result(
+        self, archive, monkeypatch, writes, expected
+    ):
+        raw = _write_raw(archive)
+        _fake_merge(monkeypatch, writes=writes)
+        notifier = Mock()
+        recover_orphaned_sessions(LOGGER, notifier=notifier)
+        notifier.notify.assert_called_once()
+        notice = notifier.notify.call_args.args[0]
+        assert notice.kind == expected
+        if expected == "merge_completed":
+            assert (archive / notice.output_file).read_bytes() == b"mp4"
+            assert notice.creator == "Creator"
+            assert not raw.exists()
+        else:
+            assert raw.exists()
+
+    def test_recovery_cards_say_they_came_from_startup_recovery(
+        self, archive, monkeypatch
+    ):
+        _write_raw(archive)
+        _fake_merge(monkeypatch)
+        notifier = Mock()
+        recover_orphaned_sessions(LOGGER, notifier=notifier)
+        notice = notifier.notify.call_args.args[0]
+        assert notice.detail == "Recovered from an interrupted recording."
+
+    def test_recovery_reports_safe_ffmpeg_reason_and_keeps_raw(
+        self, archive, monkeypatch, caplog
+    ):
+        raw = _write_raw(archive)
+        _fake_merge(
+            monkeypatch,
+            error=subprocess.CalledProcessError(
+                1, ["ffmpeg"], stderr="Invalid data found; key2=AUDIT_FAKE_KEY"
+            ),
+        )
+        recover_orphaned_sessions(LOGGER)
+        assert raw.exists()
+        assert "Invalid data found" in caplog.text
+        assert "AUDIT_FAKE_KEY" not in caplog.text
 
     def test_session_fragments_merge_in_order_and_inputs_are_deleted(
         self, archive, monkeypatch
@@ -250,9 +297,7 @@ class TestOrphanRecovery:
                 claimed = True
             return real_open(path, flags, mode)
 
-        monkeypatch.setattr(
-            "core.orphan_recovery.os.open", claim_before_exclusive_open
-        )
+        monkeypatch.setattr("core.orphan_recovery.os.open", claim_before_exclusive_open)
 
         recover_orphaned_sessions(LOGGER)
 
@@ -290,7 +335,7 @@ class TestOrphanRecovery:
         ts_file = _write_raw(archive)
         final_path = archive / "#Creator 2026-03-06 123.mp4"
 
-        def merge_then_lose_the_name(ts_files, output_path, run_command):
+        def merge_then_lose_the_name(ts_files, output_path, run_command, **kwargs):
             output_path.write_bytes(b"mp4")
             # The name goes from free to taken while ffmpeg is still busy.
             final_path.write_bytes(b"claimed mid-merge")

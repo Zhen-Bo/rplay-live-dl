@@ -6,11 +6,27 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from core.constants import DEFAULT_MERGE_TIMEOUT_SECONDS
+from core.constants import (
+    DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    DEFAULT_MERGE_SPACE_MULTIPLIER,
+    DEFAULT_MERGE_TIMEOUT_SECONDS,
+)
+from core.disk_space import InsufficientMergeSpaceError, ensure_merge_space
 from core.downloader import StreamDownloader
-from core.utils import fit_filename_component_bytes, merge_ts_files_to_mp4
+from core.notifications import (
+    INSUFFICIENT_SPACE_DETAIL,
+    RECOVERED_DETAIL,
+    STARTUP_RECOVERY_DETAIL,
+    DiscordNotifier,
+)
+from core.utils import (
+    fit_filename_component_bytes,
+    format_merge_failure,
+    merge_ts_files_to_mp4,
+)
+from models.notification import Notification, NotificationKind
 
 __all__ = [
     "install_merge_output_without_overwrite",
@@ -22,7 +38,13 @@ __all__ = [
 _SESSION_PREFIX_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_")
 
 
-def recover_orphaned_sessions(logger: logging.Logger) -> None:
+def recover_orphaned_sessions(
+    logger: logging.Logger,
+    *,
+    reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    space_multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
+    notifier: Optional[DiscordNotifier] = None,
+) -> None:
     """
     Merge every recoverable orphaned session under the archive directory.
 
@@ -30,6 +52,7 @@ def recover_orphaned_sessions(logger: logging.Logger) -> None:
     A second concurrent instance on the same volume is unsupported.
     """
     archive = Path.cwd() / StreamDownloader.ARCHIVE_DIR
+    notifier = notifier or DiscordNotifier()
 
     # Adoption runs first so a claimed part joins the grouping below. Only the
     # exact *.ts.part suffix qualifies: .part-FragN and .ytdl may be torn
@@ -45,7 +68,15 @@ def recover_orphaned_sessions(logger: logging.Logger) -> None:
         sessions.setdefault((ts_file.parent, match.group(0)), []).append(ts_file)
 
     for (output_dir, session_prefix), ts_files in sorted(sessions.items()):
-        _recover_one_session(logger, output_dir, session_prefix, ts_files)
+        _recover_one_session(
+            logger,
+            output_dir,
+            session_prefix,
+            ts_files,
+            reserve_gb=reserve_gb,
+            space_multiplier=space_multiplier,
+            notifier=notifier,
+        )
 
 
 def _adopt_orphaned_part(logger: logging.Logger, part_file: Path) -> None:
@@ -79,6 +110,10 @@ def _recover_one_session(
     output_dir: Path,
     session_prefix: str,
     ts_files: List[Path],
+    *,
+    reserve_gb: float,
+    space_multiplier: float,
+    notifier: DiscordNotifier,
 ) -> None:
     """Merge one session's raw .ts files, deleting them only once the mp4 is proven."""
     session_id = session_prefix.rstrip("_")
@@ -97,9 +132,7 @@ def _recover_one_session(
     # partial mp4 under a final name. The marker is reserved before fitting so
     # long names stay within the filesystem's component byte limit.
     temp_seed = output_dir / f".{final_stem}.mp4"
-    temp_path = fit_filename_component_bytes(
-        temp_seed, appended_suffix=".recovering"
-    )
+    temp_path = fit_filename_component_bytes(temp_seed, appended_suffix=".recovering")
     try:
         try:
             # Stale bytes from a killed prior run must not pass the output
@@ -110,6 +143,7 @@ def _recover_one_session(
                 f"could not clear stale recovery output {temp_path.name}: {exc}"
             ) from exc
 
+        ensure_merge_space(ts_files, temp_path, reserve_gb, space_multiplier)
         merge_ts_files_to_mp4(
             ts_files,
             temp_path,
@@ -120,6 +154,11 @@ def _recover_one_session(
                 text=True,
                 timeout=DEFAULT_MERGE_TIMEOUT_SECONDS,
             ),
+            metadata={
+                "rplay_metadata_version": "1",
+                "rplay_recovered": "true",
+                "rplay_source_filename": ts_files[0].name,
+            },
         )
 
         # The inputs are deleted on the strength of this check, so an empty
@@ -134,11 +173,21 @@ def _recover_one_session(
             logger, temp_path, output_dir / f"{final_stem}.mp4"
         )
     except Exception as exc:
+        detail = STARTUP_RECOVERY_DETAIL
+        if isinstance(exc, InsufficientMergeSpaceError):
+            detail = f"{detail} {INSUFFICIENT_SPACE_DETAIL}"
+        _notify_recovery(
+            notifier,
+            NotificationKind.MERGE_FAILED,
+            output_dir,
+            session_prefix,
+            detail=detail,
+        )
         # Drop the partial output and keep every input so the next startup
         # can retry unchanged.
         _discard_partial_output(logger, temp_path)
         logger.warning(
-            f"⚠️ Orphan recovery merge failed for session {session_id}: {exc}. "
+            f"⚠️ Orphan recovery merge failed for session {session_id}: {format_merge_failure(exc)}. "
             f"Raw .ts files left in: {output_dir}"
         )
         return
@@ -156,6 +205,28 @@ def _recover_one_session(
     logger.info(
         f"🛟 Recovered interrupted recording (session {session_id}): "
         f"merged {len(ts_files)} raw file(s) into {output_path}"
+    )
+    _notify_recovery(
+        notifier,
+        NotificationKind.MERGE_COMPLETED,
+        output_dir,
+        session_prefix,
+        detail=RECOVERED_DETAIL,
+        output_file=output_path.name,
+    )
+
+
+def _notify_recovery(
+    notifier: DiscordNotifier,
+    kind: NotificationKind,
+    output_dir: Path,
+    session_prefix: str,
+    **fields: str,
+) -> None:
+    """Recovered sessions only know their creator folder, not the stream identity."""
+    notifier.notify(
+        Notification(kind, creator=output_dir.name, **fields),
+        key=f"recovery:{output_dir.name}:{session_prefix}",
     )
 
 
@@ -245,9 +316,7 @@ def _discard_partial_output(logger: logging.Logger, temp_path: Path) -> None:
     try:
         temp_path.unlink(missing_ok=True)
     except OSError as exc:
-        logger.warning(
-            f"Could not remove partial merge output {temp_path.name}: {exc}"
-        )
+        logger.warning(f"Could not remove partial merge output {temp_path.name}: {exc}")
 
 
 # Kept for callers that imported the original private name.

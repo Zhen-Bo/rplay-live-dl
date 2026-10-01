@@ -1,22 +1,37 @@
 """Environment settings model for rplay-live-dl."""
 
-from pydantic import Field, ValidationInfo, field_validator
+import re
+
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.constants import (
+    DEFAULT_DISK_CRITICAL_GB,
+    DEFAULT_DISK_RECOVERY_MARGIN_GB,
+    DEFAULT_DISK_REMINDER_SECONDS,
+    DEFAULT_DISK_WARNING_GB,
     DEFAULT_INTERVAL,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_LOG_MAX_SIZE_MB,
     DEFAULT_LOG_RETENTION_DAYS,
     DEFAULT_LOG_YTDLP_INTERNAL,
+    DEFAULT_MERGE_MIN_FREE_DISK_GB,
+    DEFAULT_MERGE_SPACE_MULTIPLIER,
     DEFAULT_MIN_FREE_DISK_GB,
     DEFAULT_TOKEN_REFRESH_LEEWAY_SECONDS,
 )
+from models.notification import DEFAULT_EVENTS, NotificationKind
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUTHY_BOOL_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_BOOL_VALUES = frozenset({"0", "false", "no", "off", ""})
+DISCORD_WEBHOOK_URL_PATTERN = re.compile(
+    r"https://(?:(?:canary|ptb)\.)?(?:discord\.com|discordapp\.com)"
+    r"/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9._-]+/?"
+)
+# Retired event: older .env files must still start successfully.
+_RETIRED_EVENTS = frozenset({"disk_recovered"})
 
 
 class EnvConfig(BaseSettings):
@@ -81,6 +96,59 @@ class EnvConfig(BaseSettings):
         ge=0,
         allow_inf_nan=False,
     )
+
+    disk_warning_gb: float = Field(
+        default=DEFAULT_DISK_WARNING_GB, gt=0, allow_inf_nan=False
+    )
+    disk_critical_gb: float = Field(
+        default=DEFAULT_DISK_CRITICAL_GB, gt=0, allow_inf_nan=False
+    )
+    disk_recovery_margin_gb: float = Field(
+        default=DEFAULT_DISK_RECOVERY_MARGIN_GB, ge=0, allow_inf_nan=False
+    )
+    disk_reminder_seconds: int = Field(default=DEFAULT_DISK_REMINDER_SECONDS, ge=60)
+    merge_min_free_disk_gb: float = Field(
+        default=DEFAULT_MERGE_MIN_FREE_DISK_GB, ge=0, allow_inf_nan=False
+    )
+    merge_space_multiplier: float = Field(
+        default=DEFAULT_MERGE_SPACE_MULTIPLIER, ge=1, allow_inf_nan=False
+    )
+    discord_webhook_url: SecretStr = Field(default=SecretStr(""), repr=False)
+    discord_webhook_events: str = Field(default=DEFAULT_EVENTS)
+
+    @field_validator("discord_webhook_url")
+    @classmethod
+    def validate_discord_url(cls, value: SecretStr) -> SecretStr:
+        url = value.get_secret_value().strip()
+        if url and not DISCORD_WEBHOOK_URL_PATTERN.fullmatch(url):
+            raise ValueError(
+                "DISCORD_WEBHOOK_URL must be an HTTPS Discord webhook URL without query parameters"
+            )
+        return SecretStr(url.rstrip("/"))
+
+    @field_validator("discord_webhook_events")
+    @classmethod
+    def validate_discord_events(cls, value: str) -> str:
+        events = [item.strip() for item in value.split(",") if item.strip()]
+        events = [item for item in events if item not in _RETIRED_EVENTS]
+        supported = set(NotificationKind)
+        if any(item not in supported for item in events):
+            raise ValueError("DISCORD_WEBHOOK_EVENTS contains an unsupported event")
+        return ",".join(dict.fromkeys(events))
+
+    @property
+    def discord_events(self) -> frozenset[NotificationKind]:
+        return frozenset(
+            NotificationKind(item)
+            for item in self.discord_webhook_events.split(",")
+            if item
+        )
+
+    @model_validator(mode="after")
+    def validate_disk_thresholds(self):
+        if self.disk_critical_gb >= self.disk_warning_gb:
+            raise ValueError("DISK_CRITICAL_GB must be less than DISK_WARNING_GB")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

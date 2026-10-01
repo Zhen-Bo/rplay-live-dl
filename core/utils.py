@@ -1,13 +1,17 @@
 """Shared helpers for rplay-live-dl."""
 
+import subprocess
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Mapping, Optional
 
 import psutil
+
+from core.logger import redact_sensitive_text
 
 __all__ = [
     "MAX_FILENAME_COMPONENT_BYTES",
     "format_file_size",
+    "format_merge_failure",
     "fit_filename_component_bytes",
     "merge_ts_files_to_mp4",
     "terminate_child_processes",
@@ -101,6 +105,8 @@ def merge_ts_files_to_mp4(
     ts_files: List[Path],
     output_path: Path,
     run_command: Callable[[List[str]], object],
+    *,
+    metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
     """
     Merge ts fragments into one mp4 with ffmpeg concat.
@@ -108,7 +114,8 @@ def merge_ts_files_to_mp4(
     The caller supplies ``run_command`` so the monitor can register the child
     pid under its state lock and shutdown can spare an active merge. It must
     raise ``CalledProcessError`` on non-zero exit and ``TimeoutExpired`` on timeout.
-    Callers own collision policy and validation of the result.
+    Callers own the free-space preflight, collision policy, and validation of
+    the result.
     """
     list_path = ts_files[0].parent / "merge-inputs.txt"
     list_content = "\n".join(
@@ -117,6 +124,14 @@ def merge_ts_files_to_mp4(
     list_path.write_text(list_content, encoding="utf-8")
 
     try:
+        metadata_args = []
+        if metadata:
+            metadata_args = ["-map_metadata", "-1", "-movflags", "+use_metadata_tags"]
+            for key, value in metadata.items():
+                # Arguments are not shell-interpolated; NUL cannot occur in argv.
+                metadata_args.extend(
+                    ["-metadata", f"{key}={value.replace(chr(0), '')}"]
+                )
         run_command(
             [
                 "ffmpeg",
@@ -129,11 +144,31 @@ def merge_ts_files_to_mp4(
                 str(list_path),
                 "-c",
                 "copy",
+                *metadata_args,
                 str(output_path),
             ]
         )
     finally:
         list_path.unlink(missing_ok=True)
+
+
+def format_merge_failure(error: Exception) -> str:
+    """One readable merge failure reason, not a whole FFmpeg transcript or stack."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        summary = f"ffmpeg merge timeout after {error.timeout:g} seconds"
+    elif isinstance(error, subprocess.CalledProcessError):
+        summary = f"ffmpeg merge exited with code {error.returncode}"
+    else:
+        return redact_sensitive_text(str(error))
+    stderr = error.stderr or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    # Redact before truncation so a cut token never slips past the masker.
+    stderr = redact_sensitive_text(stderr).strip()
+    tail = "\n".join(stderr.splitlines()[-10:])
+    if len(tail) > 2000:
+        tail = "[...truncated] " + tail[-2000:]
+    return f"{summary}; stderr tail:\n{tail}" if tail else summary
 
 
 def format_file_size(size_bytes: float) -> str:

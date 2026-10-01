@@ -5,6 +5,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -62,7 +63,7 @@ def _merge_job(output_dir, **overrides):
     return MergeJobSpec(**fields)
 
 
-def _write_mp4(ts_files, output_path):
+def _write_mp4(ts_files, output_path, **kwargs):
     """Stand in for ffmpeg by writing a small mp4."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(b"mp4")
@@ -70,6 +71,51 @@ def _write_mp4(ts_files, output_path):
 
 class TestMergeFlow:
     """Tests for merging raw ts outputs into final mp4 files."""
+
+    @pytest.mark.parametrize("timed_out", [False, True])
+    def test_ffmpeg_failure_retains_bounded_safe_stderr_without_extra_traceback(
+        self, monitor, output_dir, timed_out
+    ):
+        raw = output_dir / "20260306_120000_title.ts"
+        raw.write_bytes(b"raw")
+        detail = (
+            "OLD_NOISE\n" * 100
+            + "x" * 3000
+            + "\nNo space left on device; key2=AUDIT_FAKE_KEY"
+        )
+        failure = (
+            subprocess.TimeoutExpired(["ffmpeg"], 1, stderr=detail.encode())
+            if timed_out
+            else subprocess.CalledProcessError(1, ["ffmpeg"], stderr=detail)
+        )
+        with patch.object(
+            monitor, "_run_ffmpeg_merge", side_effect=failure
+        ), patch.object(monitor.logger, "exception") as traceback_log:
+            result = monitor._merge_session_to_mp4(_merge_job(output_dir))
+        assert isinstance(result, MergeFailed)
+        assert "No space left on device" in result.error_message
+        assert "AUDIT_FAKE_KEY" not in result.error_message
+        assert "OLD_NOISE" not in result.error_message
+        assert len(result.error_message) < 2200
+        assert raw.read_bytes() == b"raw"
+        traceback_log.assert_not_called()
+
+    def test_insufficient_space_is_one_line_failure_without_traceback(
+        self, monitor, output_dir, monkeypatch
+    ):
+        raw = output_dir / "20260306_120000_title.ts"
+        raw.write_bytes(b"raw")
+        monkeypatch.setattr(
+            "core.disk_space.shutil.disk_usage", lambda _: SimpleNamespace(free=0)
+        )
+        with patch.object(monitor.logger, "exception") as traceback_log:
+            result = monitor._merge_session_to_mp4(_merge_job(output_dir))
+        assert isinstance(result, MergeFailed)
+        assert result.insufficient_space
+        assert result.error_message.startswith("Insufficient merge space")
+        assert "\n" not in result.error_message
+        assert raw.read_bytes() == b"raw"
+        traceback_log.assert_not_called()
 
     def test_merge_uses_stream_start_time_for_mp4_name(
         self, tmp_path, monitor, output_dir
@@ -94,9 +140,7 @@ class TestMergeFlow:
         )
         assert not ts_file.exists()
 
-    def test_second_session_same_title_increments_mp4_suffix(
-        self, monitor, output_dir
-    ):
+    def test_second_session_same_title_increments_mp4_suffix(self, monitor, output_dir):
         """Test a second session with the same title gets a suffixed mp4 name."""
         (output_dir / "#Creator 2026-03-06 123.mp4").write_bytes(b"existing")
         prefix = "20260306_123000_"
@@ -126,7 +170,7 @@ class TestMergeFlow:
         final_path = output_dir / "#Creator 2026-03-06 123.mp4"
         captured = []
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             captured.append(output_path)
             output_path.write_bytes(b"ours")
             # Simulate another merge completing while this ffmpeg invocation
@@ -160,7 +204,7 @@ class TestMergeFlow:
         captured = []
         title = "標題" * 200
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             captured.append(output_path)
             output_path.write_bytes(b"mp4")
 
@@ -193,7 +237,7 @@ class TestMergeFlow:
         temp_path = monitor._build_merge_temp_path(base_path)
         temp_path.write_bytes(b"stale bytes from a killed merge")
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             # Simulate ffmpeg returning successfully without producing output.
             return None
 
@@ -226,7 +270,7 @@ class TestMergeFlow:
         ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             output_path.write_bytes(b"mp4")
 
         def fake_install(logger, temp_path, base_path):
@@ -253,9 +297,7 @@ class TestMergeFlow:
         assert ts_file.exists()
         assert not (output_dir / "#Creator 2026-03-06 123.mp4").exists()
 
-    def test_failed_merge_discards_partial_mp4_and_keeps_ts(
-        self, monitor, output_dir
-    ):
+    def test_failed_merge_discards_partial_mp4_and_keeps_ts(self, monitor, output_dir):
         """Test a failed merge removes partial mp4 output but keeps raw ts input."""
         prefix = "20260306_120000_"
         ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
@@ -263,7 +305,7 @@ class TestMergeFlow:
         partial_mp4 = output_dir / "#Creator 2026-03-06 123.mp4"
         captured = []
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             captured.append(output_path)
             output_path.write_bytes(b"partial")
             raise RuntimeError("boom")
@@ -296,7 +338,7 @@ class TestMergeFlow:
         ts_file = output_dir / f"{prefix}#Creator 2026-03-06 123.ts"
         ts_file.write_bytes(b"ts")
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             output_path.write_bytes(b"mp4")
 
         monitor._run_ffmpeg_merge = fake_merge
@@ -326,7 +368,7 @@ class TestMergeFlow:
         prefix = "20260306_120000_"
         (output_dir / f"{prefix}#Creator 2026-03-06 123.ts").write_bytes(b"ts")
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             raise subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=1)
 
         monitor._run_ffmpeg_merge = fake_merge
@@ -355,7 +397,7 @@ class TestMergeFlow:
 
         captured_files = []
 
-        def fake_merge(ts_files, output_path):
+        def fake_merge(ts_files, output_path, **kwargs):
             captured_files.extend(ts_files)
             _write_mp4(ts_files, output_path)
 

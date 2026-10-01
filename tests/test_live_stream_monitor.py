@@ -1233,10 +1233,10 @@ class TestHeartbeatLogOptimization:
         status_logs = [c for c in mock_info.call_args_list if "Status" in str(c)]
         assert len(status_logs) >= 1
 
-    def test_periodic_heartbeat_every_n_checks(
+    def test_unchanged_polls_do_not_repeat_heartbeat_logs(
         self, mock_read_config, mock_api, monitor
     ):
-        """Test that periodic heartbeat is logged every N checks even if state unchanged."""
+        """The health file owns liveness; unchanged polls need no log heartbeat."""
         mock_api.get_livestream_status.return_value = []
         mock_read_config.return_value = _creator1_config()
 
@@ -1245,10 +1245,24 @@ class TestHeartbeatLogOptimization:
             for _ in range(10):
                 monitor.check_live_streams_and_start_download()
 
-        # Should have at least one periodic heartbeat (debug level; quiet
-        # nights only show life when DEBUG logging is enabled)
         heartbeat_logs = [c for c in mock_debug.call_args_list if "Checked" in str(c)]
-        assert len(heartbeat_logs) >= 1
+        assert not heartbeat_logs
+
+    def test_unchanged_recording_does_not_log_a_false_offline_summary(self, monitor):
+        monitor.sessions = {"audit": SimpleNamespace(state=SessionState.RAW_RUNNING)}
+        monitor._last_status = {"active_downloads": 1, "monitored_live": 1}
+        monitor._monitored_count = 1
+        try:
+            with (
+                patch.object(monitor.logger, "debug") as debug,
+                patch.object(monitor.logger, "info") as info,
+            ):
+                for _ in range(10):
+                    monitor._log_status_summary(monitored_live=1)
+                debug.assert_not_called()
+                info.assert_not_called()
+        finally:
+            monitor.sessions.clear()
 
 
 class TestSessionLifecycleLogging:

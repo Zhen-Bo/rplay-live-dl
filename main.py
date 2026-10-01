@@ -10,11 +10,13 @@ from dotenv import load_dotenv
 from core.config import DEFAULT_CONFIG_PATH, ConfigError, read_app_config
 from core.constants import DEFAULT_RPLAY_API_BASE_URL
 from core.downloader import StreamDownloader
-from core.env import EnvConfigError, load_env
+from core.env import EnvConfig, EnvConfigError, load_env
 from core.logger import cleanup_old_logs, configure_logging, setup_logger
+from core.notifications import STARTUP_AUTH_DETAIL, DiscordNotifier
 from core.orphan_recovery import recover_orphaned_sessions
 from core.rplay import RPlayAPI, RPlayAPIError, RPlayAuthError
 from core.scheduler import run_scheduler
+from models.notification import Notification, NotificationKind
 
 
 def _read_version() -> str:
@@ -73,7 +75,21 @@ def main() -> None:
     configure_logging(env)
     logger = setup_logger("Main")
     logger.info("Environment configuration loaded successfully")
+    # configure_logging registered the webhook and tokens with the shared redactor.
+    notifier = DiscordNotifier(
+        env.discord_webhook_url.get_secret_value(),
+        events=env.discord_events,
+        logger=logger,
+    )
+    try:
+        _run_application(env, logger, notifier)
+    finally:
+        notifier.close()
 
+
+def _run_application(
+    env: EnvConfig, logger: logging.Logger, notifier: DiscordNotifier
+) -> None:
     try:
         removed = cleanup_old_logs()
         if removed > 0:
@@ -84,7 +100,12 @@ def main() -> None:
     # Before the scheduler polls: nothing else is writing the archive yet, so
     # merging here cannot race a fresh recording into the same directory.
     try:
-        recover_orphaned_sessions(logger)
+        recover_orphaned_sessions(
+            logger,
+            reserve_gb=env.merge_min_free_disk_gb,
+            space_multiplier=env.merge_space_multiplier,
+            notifier=notifier,
+        )
     except Exception as e:
         # Recovery is best-effort housekeeping and must never block startup.
         # Every input it touches is kept on failure, so the next run retries.
@@ -114,6 +135,9 @@ def main() -> None:
             api_client.validate_credentials()
             logger.info("API credentials validated successfully")
         except RPlayAuthError as exc:
+            notifier.notify(
+                Notification(NotificationKind.AUTH_FAILED, detail=STARTUP_AUTH_DETAIL)
+            )
             logger.error(
                 f"Authentication failed: {exc}. "
                 "Please update REFRESH_TOKEN and USER_OID in your .env file, then restart."
@@ -129,7 +153,11 @@ def main() -> None:
         # Share the validated client so monitoring retains its acquired JWT.
         try:
             run_scheduler(
-                env=env, logger=logger, version=__version__, api_client=api_client
+                env=env,
+                logger=logger,
+                version=__version__,
+                api_client=api_client,
+                notifier=notifier,
             )
         except Exception as e:
             logger.exception(f"Scheduler error: {e}")
