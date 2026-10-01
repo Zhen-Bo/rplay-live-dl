@@ -27,7 +27,7 @@ _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _TRUTHY_BOOL_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_BOOL_VALUES = frozenset({"0", "false", "no", "off", ""})
 DISCORD_WEBHOOK_URL_PATTERN = re.compile(
-    r"https://(?:discord\.com|discordapp\.com)"
+    r"https://(?:(?:canary|ptb)\.)?(?:discord\.com|discordapp\.com)"
     r"/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9._-]+/?"
 )
 # Retired event: older .env files must still start successfully.

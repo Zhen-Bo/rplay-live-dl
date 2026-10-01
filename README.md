@@ -314,7 +314,8 @@ Set `DISCORD_WEBHOOK_URL` in your local `.env` to a Discord **incoming webhook**
 URL, then recreate the container (`docker compose up -d --force-recreate`).
 Leave it empty to disable notifications. Keep this URL private: it authorizes
 message sending. Never commit it or paste it into logs. Only HTTPS Discord webhook
-URLs are accepted; URL query parameters (including thread targets) are not supported.
+URLs are accepted (`discord.com`, `discordapp.com`, and their `canary.`/`ptb.`
+hosts); URL query parameters (including thread targets) are not supported.
 
 `DISCORD_WEBHOOK_EVENTS` is a comma-separated selection (all events below by
 default); an empty value disables all events. Each notification is one English

@@ -268,6 +268,13 @@ def test_invalid_webhook_is_rejected_without_exposing_token(url):
     assert url not in str(exc.value)
 
 
+@pytest.mark.parametrize("host", ["canary.discord.com", "ptb.discord.com"])
+def test_discord_client_channel_hosts_are_accepted(host):
+    url = f"https://{host}/api/webhooks/123456/test-token"
+    env = EnvConfig(user_oid="u", refresh_token="t", discord_webhook_url=url)
+    assert env.discord_webhook_url.get_secret_value() == url
+
+
 def test_webhook_setting_is_secret_and_event_filter_is_validated():
     env = EnvConfig(user_oid="u", refresh_token="t", discord_webhook_url=URL)
     assert "test-token" not in repr(env)
