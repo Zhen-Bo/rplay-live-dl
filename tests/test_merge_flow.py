@@ -5,6 +5,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -96,6 +97,23 @@ class TestMergeFlow:
         assert "AUDIT_FAKE_KEY" not in result.error_message
         assert "OLD_NOISE" not in result.error_message
         assert len(result.error_message) < 2200
+        assert raw.read_bytes() == b"raw"
+        traceback_log.assert_not_called()
+
+    def test_insufficient_space_is_one_line_failure_without_traceback(
+        self, monitor, output_dir, monkeypatch
+    ):
+        raw = output_dir / "20260306_120000_title.ts"
+        raw.write_bytes(b"raw")
+        monkeypatch.setattr(
+            "core.disk_space.shutil.disk_usage", lambda _: SimpleNamespace(free=0)
+        )
+        with patch.object(monitor.logger, "exception") as traceback_log:
+            result = monitor._merge_session_to_mp4(_merge_job(output_dir))
+        assert isinstance(result, MergeFailed)
+        assert result.insufficient_space
+        assert result.error_message.startswith("Insufficient merge space")
+        assert "\n" not in result.error_message
         assert raw.read_bytes() == b"raw"
         traceback_log.assert_not_called()
 

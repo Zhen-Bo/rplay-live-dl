@@ -4,9 +4,13 @@ from unittest.mock import Mock
 
 import pytest
 
-from core.disk_space import DiskSpaceMonitor, GIB
+from core.disk_space import (
+    GIB,
+    DiskSpaceMonitor,
+    InsufficientMergeSpaceError,
+    ensure_merge_space,
+)
 from core.orphan_recovery import recover_orphaned_sessions
-from core.utils import merge_ts_files_to_mp4
 from models.env import EnvConfig
 
 
@@ -40,18 +44,36 @@ def test_alert_transitions_hysteresis_and_reminders(tmp_path, monkeypatch):
     assert check(9) == "critical"
 
 
-def test_merge_preflight_does_not_run_or_delete_inputs(tmp_path, monkeypatch):
+def test_merge_preflight_rejects_without_touching_inputs(tmp_path, monkeypatch):
     raw = tmp_path / "raw.ts"
     raw.write_bytes(b"raw")
-    run = Mock()
     monkeypatch.setattr(
         "core.disk_space.shutil.disk_usage", lambda _: SimpleNamespace(free=0)
     )
-    with pytest.raises(OSError, match="Insufficient merge space"):
-        merge_ts_files_to_mp4([raw], tmp_path / "out.mp4", run)
-    run.assert_not_called()
+    with pytest.raises(InsufficientMergeSpaceError, match="Insufficient merge space"):
+        ensure_merge_space([raw], tmp_path / "out.mp4")
     assert raw.read_bytes() == b"raw"
-    assert not (tmp_path / "merge-inputs.txt").exists()
+
+
+@pytest.mark.parametrize("free_gib,ok", [(1.6, True), (1.4, False)])
+def test_default_merge_budget_covers_one_temp_copy_plus_reserve(
+    tmp_path, monkeypatch, free_gib, ok
+):
+    raw = tmp_path / "raw.ts"
+    raw.write_bytes(b"raw")
+    monkeypatch.setattr(
+        "core.disk_space.Path.stat", lambda _: SimpleNamespace(st_size=GIB // 2)
+    )
+    monkeypatch.setattr(
+        "core.disk_space.shutil.disk_usage",
+        lambda _: SimpleNamespace(free=int(free_gib * GIB)),
+    )
+    # 0.5 GiB input x 1.1 + 1 GiB reserve = 1.55 GiB.
+    if ok:
+        ensure_merge_space([raw], tmp_path / "out.mp4")
+    else:
+        with pytest.raises(InsufficientMergeSpaceError):
+            ensure_merge_space([raw], tmp_path / "out.mp4")
 
 
 def test_recovery_retains_raw_when_space_is_insufficient(tmp_path, monkeypatch):

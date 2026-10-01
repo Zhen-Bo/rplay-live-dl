@@ -42,9 +42,9 @@ DEFAULT_DISK_RECOVERY_MARGIN_GB = 2.0
 DEFAULT_DISK_REMINDER_SECONDS = 3600
 
 # Merge preflight: free space must cover input bytes x multiplier + reserve GiB.
-# 2.2 budgets the temporary output plus the copy fallback.
+# 1.1 budgets the FFmpeg temp output; a failed copy fallback keeps raw inputs.
 DEFAULT_MERGE_MIN_FREE_DISK_GB = 1.0
-DEFAULT_MERGE_SPACE_MULTIPLIER = 2.2
+DEFAULT_MERGE_SPACE_MULTIPLIER = 1.1
 
 # Ceiling for one ffmpeg concat merge, shared by the live executor and orphan recovery
 DEFAULT_MERGE_TIMEOUT_SECONDS = 7200

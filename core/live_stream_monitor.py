@@ -39,14 +39,18 @@ from .config import read_app_config as read_config
 from .download_merge_executor import DownloadMergeExecutor
 from .downloader import StreamDownloader
 from .health import touch_heartbeat
-from .disk_space import DiskSpaceMonitor
+from .disk_space import (
+    DiskSpaceMonitor,
+    InsufficientMergeSpaceError,
+    ensure_merge_space,
+)
 from .recording_metadata import recording_metadata, utc_timestamp
 from .notifications import DiscordNotifier
 from .logger import bind, clip, setup_logger
 from .orphan_recovery import install_merge_output_without_overwrite
 from .rplay import RPlayAPI, RPlayAPIError, RPlayAuthError, RPlayConnectionError
 from .utils import (
-    format_ffmpeg_failure,
+    format_merge_failure,
     fit_filename_component_bytes,
     merge_ts_files_to_mp4,
     terminate_child_processes,
@@ -1288,13 +1292,19 @@ class LiveStreamMonitor:
                 output_path=output_path,
             )
 
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.CalledProcessError,
+            InsufficientMergeSpaceError,
+        ) as exc:
+            # Expected failures: one readable reason, no Python stack trace.
             self._discard_partial_merge_output(temp_path)
             if output_path is not None and output_path != temp_path:
                 self._discard_partial_merge_output(output_path)
             return MergeFailed(
                 session_key=merge_job.session_key,
-                error_message=format_ffmpeg_failure(exc),
+                error_message=format_merge_failure(exc),
+                insufficient_space=isinstance(exc, InsufficientMergeSpaceError),
             )
         except Exception as exc:
             self._discard_partial_merge_output(temp_path)
@@ -1369,13 +1379,11 @@ class LiveStreamMonitor:
         *,
         metadata: Optional[Dict[str, str]] = None,
     ) -> None:
+        ensure_merge_space(
+            ts_files, output_path, self.merge_reserve_gb, self.merge_space_multiplier
+        )
         merge_ts_files_to_mp4(
-            ts_files,
-            output_path,
-            self._run_merge_subprocess,
-            reserve_gb=self.merge_reserve_gb,
-            space_multiplier=self.merge_space_multiplier,
-            metadata=metadata,
+            ts_files, output_path, self._run_merge_subprocess, metadata=metadata
         )
 
     def _run_merge_subprocess(self, command: List[str]) -> None:

@@ -11,7 +11,7 @@ from core.logger import redact_sensitive_text
 __all__ = [
     "MAX_FILENAME_COMPONENT_BYTES",
     "format_file_size",
-    "format_ffmpeg_failure",
+    "format_merge_failure",
     "fit_filename_component_bytes",
     "merge_ts_files_to_mp4",
     "terminate_child_processes",
@@ -106,8 +106,6 @@ def merge_ts_files_to_mp4(
     output_path: Path,
     run_command: Callable[[List[str]], object],
     *,
-    reserve_gb: float = 1,
-    space_multiplier: float = 2.2,
     metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
     """
@@ -116,11 +114,9 @@ def merge_ts_files_to_mp4(
     The caller supplies ``run_command`` so the monitor can register the child
     pid under its state lock and shutdown can spare an active merge. It must
     raise ``CalledProcessError`` on non-zero exit and ``TimeoutExpired`` on timeout.
-    Callers own collision policy and validation of the result.
+    Callers own the free-space preflight, collision policy, and validation of
+    the result.
     """
-    from core.disk_space import ensure_merge_space
-
-    ensure_merge_space(ts_files, output_path, reserve_gb, space_multiplier)
     list_path = ts_files[0].parent / "merge-inputs.txt"
     list_content = "\n".join(
         _format_ffconcat_input_path(ts_file) for ts_file in ts_files
@@ -156,8 +152,8 @@ def merge_ts_files_to_mp4(
         list_path.unlink(missing_ok=True)
 
 
-def format_ffmpeg_failure(error: Exception) -> str:
-    """Keep the failure reason, not an entire FFmpeg transcript or Python stack."""
+def format_merge_failure(error: Exception) -> str:
+    """One readable merge failure reason, not a whole FFmpeg transcript or stack."""
     if isinstance(error, subprocess.TimeoutExpired):
         summary = f"ffmpeg merge timeout after {error.timeout:g} seconds"
     elif isinstance(error, subprocess.CalledProcessError):

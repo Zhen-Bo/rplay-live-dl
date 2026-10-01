@@ -20,6 +20,10 @@ from core.constants import (
 GIB = 1024**3
 
 
+class InsufficientMergeSpaceError(OSError):
+    """The merge was skipped before FFmpeg ran; every raw input is untouched."""
+
+
 def existing_parent(path: Path) -> Path:
     return next(candidate for candidate in (path, *path.parents) if candidate.exists())
 
@@ -97,14 +101,14 @@ def ensure_merge_space(
     reserve_gb: float = DEFAULT_MERGE_MIN_FREE_DISK_GB,
     multiplier: float = DEFAULT_MERGE_SPACE_MULTIPLIER,
 ) -> None:
-    """Budget temp output plus copy fallback; this is an estimate, not a reservation."""
+    """Budget the FFmpeg temp output; this is an estimate, not a reservation."""
     input_bytes = sum(path.stat().st_size for path in ts_files)
     required = math.ceil(input_bytes * multiplier + reserve_gb * GIB)
     free = shutil.disk_usage(existing_parent(output_path.parent)).free
     if free < required:
-        raise OSError(
+        raise InsufficientMergeSpaceError(
             f"Insufficient merge space: {free / GIB:.2f} GiB free, "
             f"estimated requirement {required / GIB:.2f} GiB "
             f"({multiplier:g} x input + {reserve_gb:g} GiB reserve); "
-            "raw recordings retained. Free space and restart to retry recovery."
+            "free space and restart to retry"
         )

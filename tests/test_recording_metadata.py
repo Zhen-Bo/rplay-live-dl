@@ -73,7 +73,6 @@ def test_real_mp4_roundtrip_preserves_custom_unicode_metadata(tmp_path):
         output,
         lambda argv: subprocess.run(argv, check=True, capture_output=True, timeout=15),
         metadata=tags,
-        reserve_gb=0,
     )
     probe = subprocess.run(
         [

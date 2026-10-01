@@ -13,12 +13,13 @@ from core.constants import (
     DEFAULT_MERGE_SPACE_MULTIPLIER,
     DEFAULT_MERGE_TIMEOUT_SECONDS,
 )
+from core.disk_space import ensure_merge_space
 from core.downloader import StreamDownloader
 from core.notifications import DiscordNotifier
 from models.notification import Notification
 from core.utils import (
     fit_filename_component_bytes,
-    format_ffmpeg_failure,
+    format_merge_failure,
     merge_ts_files_to_mp4,
 )
 
@@ -136,6 +137,7 @@ def _recover_one_session(
                 f"could not clear stale recovery output {temp_path.name}: {exc}"
             ) from exc
 
+        ensure_merge_space(ts_files, temp_path, reserve_gb, space_multiplier)
         merge_ts_files_to_mp4(
             ts_files,
             temp_path,
@@ -146,8 +148,6 @@ def _recover_one_session(
                 text=True,
                 timeout=DEFAULT_MERGE_TIMEOUT_SECONDS,
             ),
-            reserve_gb=reserve_gb,
-            space_multiplier=space_multiplier,
             metadata={
                 "rplay_metadata_version": "1",
                 "rplay_recovered": "true",
@@ -185,7 +185,7 @@ def _recover_one_session(
         # can retry unchanged.
         _discard_partial_output(logger, temp_path)
         logger.warning(
-            f"⚠️ Orphan recovery merge failed for session {session_id}: {format_ffmpeg_failure(exc)}. "
+            f"⚠️ Orphan recovery merge failed for session {session_id}: {format_merge_failure(exc)}. "
             f"Raw .ts files left in: {output_dir}"
         )
         return

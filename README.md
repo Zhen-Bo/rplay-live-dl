@@ -296,12 +296,17 @@ cadence (`INTERVAL`), not continuously; a stalled poll delays the next check.
 
 Both normal merges and startup recovery check free space before launching FFmpeg:
 `sum(raw TS bytes) * MERGE_SPACE_MULTIPLIER + MERGE_MIN_FREE_DISK_GB * 1024^3`.
-Defaults are `2.2` (minimum `2`, budgets temporary output and copy fallback) and
-`1` GiB reserve. This is a conservative estimate, not a disk reservation: concurrent
+Defaults are `1.1` (minimum `1`) and a `1` GiB reserve. The multiplier budgets the
+temporary MP4 that FFmpeg writes. The finished file is then installed with a
+hardlink, which needs no extra space. On filesystems without hardlinks (exFAT,
+some CIFS mounts) the file is copied instead; set `MERGE_SPACE_MULTIPLIER=2.2`
+there. If a copy still runs out of space, the partial copy is removed and the raw
+inputs are kept. This is an estimate, not a disk reservation: concurrent
 recordings or other applications can still consume space during the merge.
-An insufficient or unreadable space check skips that merge and preserves the raw
-inputs. Free space and restart to retry startup recovery; there is no automatic
-running merge retry. These environment settings require container recreation.
+An insufficient or unreadable space check skips that merge, logs one line with
+the reason, and preserves the raw inputs. Free space and restart to retry startup
+recovery; there is no automatic running merge retry. These environment settings
+require container recreation.
 
 ### Discord notifications
 

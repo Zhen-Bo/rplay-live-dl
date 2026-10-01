@@ -88,3 +88,4 @@ class MergeCompleted:
 class MergeFailed:
     session_key: str
     error_message: str
+    insufficient_space: bool = False

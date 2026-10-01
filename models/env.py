@@ -105,7 +105,7 @@ class EnvConfig(BaseSettings):
         default=DEFAULT_MERGE_MIN_FREE_DISK_GB, ge=0, allow_inf_nan=False
     )
     merge_space_multiplier: float = Field(
-        default=DEFAULT_MERGE_SPACE_MULTIPLIER, ge=2, allow_inf_nan=False
+        default=DEFAULT_MERGE_SPACE_MULTIPLIER, ge=1, allow_inf_nan=False
     )
     discord_webhook_url: SecretStr = Field(default=SecretStr(""), repr=False)
     discord_webhook_events: str = Field(default=DEFAULT_EVENTS)
