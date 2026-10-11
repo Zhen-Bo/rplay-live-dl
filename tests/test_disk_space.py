@@ -59,11 +59,9 @@ def test_merge_preflight_rejects_without_touching_inputs(tmp_path, monkeypatch):
 def test_default_merge_budget_covers_one_temp_copy_plus_reserve(
     tmp_path, monkeypatch, free_gib, ok
 ):
-    raw = tmp_path / "raw.ts"
-    raw.write_bytes(b"raw")
-    monkeypatch.setattr(
-        "core.disk_space.Path.stat", lambda _: SimpleNamespace(st_size=GIB // 2)
-    )
+    # ensure_merge_space only reads .stat().st_size from each input, so a fake
+    # input stands in for a real file without touching the filesystem.
+    raw = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=GIB // 2))
     monkeypatch.setattr(
         "core.disk_space.shutil.disk_usage",
         lambda _: SimpleNamespace(free=int(free_gib * GIB)),
